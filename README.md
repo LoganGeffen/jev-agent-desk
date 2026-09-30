@@ -123,11 +123,10 @@ Pending requests and selection are not restored across restarts.
 
 ## Voice and mobile use
 
-Mobile tabs run down the left sidebar. The terminal is visible by default; its
-Terminal button toggles the view. Type literal text in Direct terminal input and
-tap Paste, then Enter to submit. Escape sends a raw key. This input bypasses Jev
-and stays bound to the pane where typing began; the conversation composer remains
-separate.
+Mobile opens with the terminal filling the available space. **Tabs** opens or
+collapses the left sidebar. Type and dictate into the same composer; Send uses
+Jev. Options contains **Paste to terminal** for inserting that same draft literally,
+plus Enter and Escape. History and secondary controls stay collapsed until needed.
 
 Allow microphone access and wait for Listening. Speech and typing share a draft
 bound to the conversation where composition began. Speech sends after roughly
