@@ -2,10 +2,9 @@ from datetime import datetime, timezone
 import json
 import os
 import re
-from pathlib import Path
-import subprocess
-import tempfile
 import time
+
+from model_stream import stream_answer
 
 from codex_actions import check_target, thread_read, tmux, working_indicator
 import claude_actions
@@ -29,6 +28,7 @@ or finished, not still working. A past background-command message is not proof i
 Use recent conversation and tool results for context. Distinguish requested/planned work from observed
 execution and completion. Do not infer success from a command being started or from the user's request.
 If evidence is missing, truncated, or does not answer the question, say so briefly rather than guessing.
+For an unverified outcome, lead with 'Not confirmed' or 'I cannot tell', never a categorical yes or no.
 Describe the snapshot, not changes after it. Answer only the question, without offering to act.
 """
 
@@ -92,32 +92,13 @@ def terminal_content(text):
                      and not re.match(r"^\s*GPT-\S+.* · /", line))
 
 
-def answer_question(question, snapshot, instructions=INSTRUCTIONS):
-    model = os.environ.get("JEV_ASK_MODEL", "gpt-5.6-luna")
+def answer_question(question, snapshot, instructions=INSTRUCTIONS, on_text=None):
+    model = os.environ.get("JEV_ASK_MODEL", "gpt-6-luna")
     evidence = {key: terminal_content(value) if key in ("visible_terminal", "recent_terminal") else value
                 for key, value in snapshot.items()}
-    started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="jev-ask-") as directory:
-        output = Path(directory) / "answer.txt"
-        command = ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
-                   "--skip-git-repo-check", "--sandbox", "read-only", "-m", model,
-                   "-c", "model_reasoning_effort=low", "-c", "project_doc_max_bytes=0",
-                   "-c", "agents.enabled=false", "-c", "web_search=disabled",
-                   "--disable", "shell_tool", "--disable", "apps", "--disable", "plugins",
-                   "-c", "developer_instructions=" + json.dumps(instructions),
-                   "--output-last-message", str(output), "-"]
-        result = subprocess.run(command, input=json.dumps({"question": question, "evidence": evidence}),
-                                cwd=directory, env={key: value for key, value in os.environ.items()
-                                if key not in ("TYPESAFE_API_KEY", "ELEVENLABS_API_KEY")},
-                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=45)
-        if result.returncode:
-            raise RuntimeError(f"Session answer failed (Codex exit {result.returncode}): {result.stderr[-1500:]}")
-        text = output.read_text().strip() if output.exists() else ""
-        if not text:
-            raise RuntimeError("Session answer returned no text")
-    return {"text": text, "model": model, "answer_ms": round((time.monotonic() - started) * 1000)}
+    return stream_answer(question, evidence, instructions, model, on_text)
 
 
-def ask_session(socket, agent, question):
+def ask_session(socket, agent, question, on_text=None):
     snapshot = session_snapshot(socket, agent)
-    return {**answer_question(question, snapshot), "snapshot": snapshot}
+    return {**answer_question(question, snapshot, on_text=on_text), "snapshot": snapshot}

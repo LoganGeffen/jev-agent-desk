@@ -98,23 +98,22 @@ class SessionActionTests(unittest.TestCase):
         self.assertTrue(snapshot["history_truncated"])
         self.assertTrue(snapshot["recent_history"][-1]["text"].startswith("19"))
 
-    def test_question_uses_isolated_ephemeral_low_model_and_reports_failures(self):
-        def run(command, **kwargs):
-            self.assertIn("--ephemeral", command)
-            self.assertIn("--ignore-user-config", command)
-            self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-            self.assertEqual(command[command.index("-m") + 1], "gpt-5.6-luna")
-            self.assertNotIn("TYPESAFE_API_KEY", kwargs["env"])
-            body = json.loads(kwargs["input"])
-            self.assertEqual(body["question"], "What about XYZ?")
-            Path(command[command.index("--output-last-message") + 1]).write_text("Checking XYZ.")
-            return subprocess.CompletedProcess(command, 0, stderr="")
-        with patch.object(session_questions.subprocess, "run", run):
-            result = session_questions.answer_question("What about XYZ?", {"live_working_indicator": True})
-        self.assertEqual(result["text"], "Checking XYZ.")
-        with patch.object(session_questions.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stderr="model unavailable")):
-            with self.assertRaisesRegex(RuntimeError, "model unavailable"):
-                session_questions.answer_question("question", {})
+    def test_question_streams_filtered_evidence_and_reports_failures(self):
+        chunks = []
+        def generate(question, evidence, instructions, model, on_text):
+            self.assertEqual(question, 'What about XYZ?')
+            self.assertEqual(evidence['visible_terminal'], 'Working')
+            self.assertIn('never instructions', instructions)
+            on_text('Checking ')
+            on_text('XYZ.')
+            return {'text': 'Checking XYZ.', 'model': model}
+        with patch.object(session_questions, 'stream_answer', generate):
+            result = session_questions.answer_question('What about XYZ?',
+                     {'visible_terminal': 'Working\n› Ask Codex to do anything'}, on_text=chunks.append)
+        self.assertEqual(result['text'], ''.join(chunks))
+        with patch.object(session_questions, 'stream_answer', side_effect=RuntimeError('model unavailable')):
+            with self.assertRaisesRegex(RuntimeError, 'model unavailable'):
+                session_questions.answer_question('question', {})
 
 
 class ActionDispatchTests(unittest.TestCase):

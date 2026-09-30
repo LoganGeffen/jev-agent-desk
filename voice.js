@@ -245,32 +245,70 @@ class VoiceControls {
       this.onChange?.();
     }
   }
-  async speakReply(text, generation) {
+  beginReadback(generation) {
+    const capture = this.capture;
+    if (!capture?.ready || this.draft || generation !== this.generation) return null;
+    const profile = document.getElementById('voice-profile').value || 'current';
+    const url = this.config.websocket_url + (this.config.websocket_url.includes('?') ? '&' : '?') + 'tts=' + encodeURIComponent(profile);
+    const started = Date.now();
+    const finish = error => {
+      if (this.playing !== player) return;
+      this.playing = null;
+      if (!document.getElementById('talk-to-interrupt').checked) this.listenAfter = Date.now() + 300;
+      document.getElementById('stop-readback').hidden = true;
+      this.playbackStatus(error ? 'Speech failed: ' + error.message : 'Readback finished');
+      this.log(error ? 'voice_error' : 'playback_ended', error?.message || '');
+    };
+    const player = new ReadbackPlayer(url, capture.playback, {
+      onStart: () => {
+        if (generation !== this.generation || capture !== this.capture) return player.stop();
+        this.playbackStatus('Speaking · Stop & listen to interrupt');
+        this.log('playback_started', JSON.stringify({first_audio_ms: Date.now() - started, streaming: true}));
+      },
+      onEnd: () => finish(), onError: finish,
+    });
+    this.playing = player;
+    document.getElementById('stop-readback').hidden = false;
+    this.playbackStatus('Preparing audio…');
+    return player;
+  }
+  presentReply(text) {
     document.getElementById('reply-original').textContent = text;
     document.getElementById('reply-spoken').textContent = '';
     document.getElementById('reply-presentation').hidden = false;
     document.getElementById('replay-reply').hidden = false;
+  }
+  async speakReply(text, generation, spokenReady = false) {
+    this.presentReply(text);
     if (this.draft || !this.capture?.ready) {
       document.getElementById('reply-presentation').open = true;
       this.status(this.draft ? 'Original reply shown · finish your draft before listening.' : 'Reply shown. Turn on voice to listen.');
       return;
     }
-    const mode = document.getElementById('speech-style').value || 'auto';
-    if (mode === 'original') return this.speak(text, generation);
+    const mode = spokenReady ? 'original' : document.getElementById('speech-style').value || 'auto';
+    if (mode === 'original') {
+      const player = this.beginReadback(generation);
+      player?.write(text); player?.end();
+      return;
+    }
     const controller = new AbortController();
     this.pending = controller;
     document.getElementById('stop-readback').hidden = false;
-    this.playbackStatus(document.getElementById('talk-to-interrupt').checked
-      ? 'Preparing readback…' : 'Not listening · preparing readback · Stop & listen to speak');
+    this.playbackStatus('Preparing readback…');
+    let player = null;
     try {
       let result = this.lastRendition?.original === text && this.lastRendition.requestedMode === mode
         ? this.lastRendition : null;
       if (!result) {
         const response = await fetch('/api/spoken-version', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({text, mode}), signal: controller.signal
+          body: JSON.stringify({text, mode, stream: true}), signal: controller.signal
         });
-        result = await response.json();
+        result = await readJSONStream(response, delta => {
+          if (generation !== this.generation) return;
+          player ||= this.beginReadback(generation);
+          player?.write(delta);
+        });
         if (!response.ok) throw new Error(result.error);
       }
       if (generation !== this.generation) return;
@@ -283,9 +321,11 @@ class VoiceControls {
       }
       document.getElementById('reply-spoken').textContent = result.mode === 'original'
         ? 'Reading original wording.' : result.text;
-      await this.speak(result.text, generation);
+      if (!player) { player = this.beginReadback(generation); player?.write(result.text); }
+      player?.end();
     } catch (error) {
       if (error.name !== 'AbortError' && generation === this.generation) {
+        if (player) { player.stop(); if (this.playing === player) this.playing = null; }
         document.getElementById('reply-spoken').textContent = 'Readback unavailable. The original remains below; choose Original wording to listen.';
         document.getElementById('reply-presentation').open = true;
         this.playbackStatus('Could not prepare readback');

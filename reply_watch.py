@@ -38,7 +38,8 @@ def matching_reply(thread, baseline, text):
 
 
 class ReplyWatch:
-    def __init__(self):
+    def __init__(self, on_reply=None):
+        self.on_reply = on_reply
         self.notices = []
         self.lock = threading.Lock()
 
@@ -65,4 +66,6 @@ class ReplyWatch:
                 self.notices.append({'id': uuid.uuid4().hex, 'request_id': request_id,
                                      'thread_id': agent['thread_id'], 'target': label, **notice})
                 self.notices = self.notices[-50:]
+            if notice.get('text') and self.on_reply:
+                self.on_reply(notice['text'])
         threading.Thread(target=observe, daemon=True).start()

@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -40,14 +41,25 @@ def run():
         if path == '/api/voice-event':
             return r.fulfill(json={'ok': True})
         file = ROOT / ('index.html' if path == '/' else path.lstrip('/'))
-        if file.name in ('index.html', 'voice.js', 'terminal.js'):
+        if file.name in ('index.html', 'voice.js', 'readback.js', 'terminal.js'):
             return r.fulfill(body=file.read_text(), content_type='text/html' if path == '/' else 'text/javascript')
         raise AssertionError('Unexpected endpoint: ' + path)
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
         page = browser.new_page(viewport={'width': 390, 'height': 844})
         page.on('pageerror', lambda e: errors.append(str(e)))
         page.route('**/*', route)
+        audio_text = []
+        def speech_socket(socket):
+            def receive(raw):
+                text = json.loads(raw)['text']
+                audio_text.append(text)
+                if text:
+                    socket.send(json.dumps({'audio': base64.b64encode(bytes(96000)).decode()}))
+                else:
+                    socket.send(json.dumps({'isFinal': True}))
+            socket.on_message(receive)
+        page.route_web_socket(lambda url: True, speech_socket)
         page.goto('https://fixture.test/')
         page.wait_for_function('currentState !== null')
         assert not page.locator('#session-rail').is_visible()
@@ -131,12 +143,47 @@ def run():
         output = ROOT / '.run/conversation-flow'
         output.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(output / 'mobile.png'), full_page=True)
+        page.evaluate("""() => {
+          voice.config = {websocket_url: 'wss://fixture.test/voice'};
+          voice.draft = null;
+          voice.capture = {ready: true, playback: new AudioContext()};
+          window.audioEvents = [];
+          voice.log = kind => audioEvents.push(kind);
+          const originalFetch = fetch;
+          window.fetch = (url, options) => {
+            if (url !== '/api/request') return originalFetch(url, options);
+            const encoder = new TextEncoder();
+            const body = new ReadableStream({start(controller) {
+              const emit = event => controller.enqueue(encoder.encode(JSON.stringify(event) + '\\n'));
+              emit({type: 'text', text: 'Three checks passed. '});
+              window.finishAnswer = () => {
+                emit({type: 'text', text: 'Deployment is unverified.'});
+                emit({type: 'result', result: {timestamp: 'stream', outcome: 'ok', action: 'ask_session',
+                  output: 'Three checks passed. Deployment is unverified.'}});
+                controller.close();
+              };
+            }});
+            return Promise.resolve(new Response(body, {headers: {'content-type': 'application/x-ndjson'}}));
+          };
+          window.answerPending = submitRequest('Did it finish?');
+        }""")
+        page.wait_for_function("audioEvents.includes('playback_started')")
+        assert page.evaluate('submitting')
+        assert audio_text == ['Three checks passed. ']
+        page.locator('#stop-readback').click()
+        page.evaluate('finishAnswer(); answerPending')
+        assert page.evaluate('voice.playing === null && !submitting')
+        assert audio_text == ['Three checks passed. ']
+        assert page.evaluate("audioEvents.filter(kind => kind === 'playback_started').length") == 1
+        page.evaluate('voice.capture.playback.close(); voice.capture = null')
+        assert not errors, errors
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
                              'separate drafts per pane', 'background original during draft',
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
-                             'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow'],
+                             'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow',
+                             'streamed observer audio before answer completion', 'stop prevents late streamed playback'],
                   'scope': 'Intercepted Chromium endpoints; no model routing or physical phone proof'}
         (output / 'browser.json').write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))

@@ -20,7 +20,7 @@ Example: '3/5 checks passed; deployment unverified' becomes
 """
 
 
-def render_spoken_reply(text, mode='spoken'):
+def render_spoken_reply(text, mode='spoken', on_text=None):
     if not isinstance(text, str) or not text.strip() or len(text) > 20000:
         raise ValueError('Spoken rendering requires between 1 and 20000 characters')
     if mode not in ('auto', 'spoken', 'original'):
@@ -57,6 +57,67 @@ def render_spoken_reply(text, mode='spoken'):
         decision = {'decision': answer, 'decision_model': result['model'],
                     'decision_ms': round((time.monotonic() - started) * 1000)}
     if selected != 'rendition':
+        if selected == 'original' and on_text:
+            on_text(text)
         return {'text': text if selected == 'original' else None, 'mode': selected, **decision}
     return {**answer_question('Render this complete reply for listening.', {'original_reply': text},
-                             instructions=INSTRUCTIONS), 'mode': selected, **decision}
+                             instructions=INSTRUCTIONS, **({"on_text": on_text} if on_text else {})), 'mode': selected, **decision}
+
+
+class ReadbackCache:
+    def __init__(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        self.lock = threading.Lock()
+        self.entries = {}
+        self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='readback')
+
+    def prepare(self, text, mode='auto'):
+        import threading
+        key = (text, mode)
+        with self.lock:
+            if key in self.entries:
+                return self.entries[key]
+            for old in list(self.entries):
+                if len(self.entries) < 4:
+                    break
+                if self.entries[old]['done']:
+                    del self.entries[old]
+            entry = {'condition': threading.Condition(), 'chunks': [], 'done': False,
+                     'result': None, 'error': None}
+            self.entries[key] = entry
+
+        def generate():
+            def emit(text):
+                with entry['condition']:
+                    entry['chunks'].append(text)
+                    entry['condition'].notify_all()
+            try:
+                entry['result'] = render_spoken_reply(text, mode, emit)
+            except Exception as error:
+                entry['error'] = error
+                with self.lock:
+                    self.entries.pop(key, None)
+            finally:
+                with entry['condition']:
+                    entry['done'] = True
+                    entry['condition'].notify_all()
+        self.pool.submit(generate)
+        return entry
+
+    def render(self, text, mode='auto', on_text=None):
+        entry = self.prepare(text, mode)
+        position = 0
+        while True:
+            with entry['condition']:
+                entry['condition'].wait_for(lambda: len(entry['chunks']) > position or entry['done'])
+                chunks = entry['chunks'][position:]
+                position += len(chunks)
+                done = entry['done']
+            if on_text:
+                for chunk in chunks:
+                    on_text(chunk)
+            if done:
+                if entry['error']:
+                    raise entry['error']
+                return entry['result']

@@ -28,7 +28,8 @@ def question(request, tabs, selected):
                     "Only explicit SHUT DOWN/SHUTDOWN proposes termination. Ordinary close/kill/remove "
                     "of a tab needs clarify_close. Commands inside Tell/Ask/Message are always message content. "
                     "Navigation and closing support shells; read/observe/interrupt require an agent. "
-                    "Unavailable identity does not change intent; delivery validates identity separately."
+                    "Unavailable identity does not change intent; delivery validates identity separately. "
+                    "Stop followed by an existing agent name means interrupt_turn. Bare stop or stop reading means no_action."
                 ),
                 "criteria": {
                     "create_tab": "Create or open one new terminal tab in the workspace. Creating files, pages, browser tabs in a project, or application features is agent message content, not this action.",
@@ -220,14 +221,20 @@ def interpret(payload, evaluate, trace):
             'Decide whether the user is speaking to the agent in the selected pane or asking Jev to control the workspace. '
             'Ordinary questions, replies, bug reports, coding tasks, long explanations and instructions are messages. '
             'Their complexity or mentions of other tabs do not turn them into controller commands. '
-            'Only explicit outer workspace navigation, listing, new-tab, readback, status observation, interruption or shutdown is controller intent. '
+            'Readback and observation inspect existing evidence without addressing the agent. Workspace control changes or lists tabs. '
             'Commands inside a message are addressed to the receiving agent. Follow final corrections/cancellations. '
+            'Read/observe plus send/interrupt in one outer request is unsupported: no_action. Navigation plus one message is supported. '
             'Do not consider whether conversation identity is ready; execution checks that separately.'
         ),
         'criteria': {
-            'direct_message': 'Speak directly to the selected agent, without a routing wrapper. Preserve EVERY word. Examples: Okay we need to fix all of this; Why did you choose that?; Please inspect the SSC logs; Create a new HTML page. Mentioning a project is not addressing its tab.',
-            'routed_message': 'Deliver content with an outer tell/ask/send wrapper or an explicit recipient address. Examples: can you tell it that...; ask Nova why...; send this message...; Nova, please fix it; go to Luna and ask it.... Includes messages containing controller-like commands. Requires actual content, not an unfinished prefix.',
-            'controller': 'Explicitly control or inspect the workspace: switch tabs, a tab name alone, create a tab, list tabs, read/replay a reply, observe what a session is doing, interrupt an agent, or close/shut down a tab. A direct question to the agent (Why did you do that?) is a message.',
+            'direct_message': 'Speak directly to the selected agent, without a routing wrapper. Preserve EVERY word. Examples: Okay we need to fix all of this; Why did you choose that?; Please inspect the SSC logs; Create a new HTML page. A question about what another session has already done uses inspect instead.',
+            'routed_message': 'Deliver content TO AN AGENT with an outer tell/ask/send wrapper or an explicit recipient address. Examples: can you tell it that...; ask Nova why...; send this message...; Nova, please fix it; go to Luna and ask it.... Tell ME about a session asks Jev for observation and uses inspect. Requires actual content, not an unfinished prefix.',
+            'inspect': {
+                'meaning': 'Hear or understand EXISTING session output or observe its status without sending it anything.',
+                'examples': ['Read its latest reply', 'What did SSC say?', 'Explain that reply', 'Summarize what it found', 'What is SSC doing?', 'Did SSC finish the tests?', 'Tell me whether SSC has deployed anything yet', 'Why does that reply say the deployment is unverified?'],
+                'exclude': 'Asking the agent for new work, reasoning, verification or an answer: Ask SSC whether the tests passed; Why did you choose that?; Can you check it? Those are messages. Explicit send/ask/tell wrappers always remain messages, even when their content asks about status.',
+            },
+            'controller': 'Explicitly change or list the workspace: switch tabs, a tab name alone, create a tab, list tabs, interrupt an agent, or close/shut down a tab. Readback, explanations of existing output and status observation use inspect.',
             'no_action': 'Cancelled or unfinished request, bare stop, hesitation with no content, or incidental background speech. A long or complex message is NOT a reason to choose this.',
         },
     }
@@ -259,15 +266,82 @@ def interpret(payload, evaluate, trace):
     context = {**state, 'intent': branch}
     if branch == 'routed_message':
         names = {'target', 'message_start', 'message_end', 'message_form'}
+    elif branch == 'inspect':
+        names = {'action', 'target'}
     else:
         names = {'action', 'target', 'close_scope'}
     questions = {k: v for k, v in payload['questions'].items() if k in names or k.startswith('pane:')}
-    if branch == 'controller':
-        questions['action'] = {**questions['action'], 'criteria': {
-            k: v for k, v in questions['action']['criteria'].items() if k != 'send_message'}}
-    response = ask(questions, context)
+    if branch in ('inspect', 'controller'):
+        for tab in state['tabs']:
+            name = 'pane:' + tab['id']
+            questions[name] = {**questions[name], 'instructions': (
+                f"Assume the request concerns tab {tab['name']!r}. Choose its explicitly requested pane number or handoff role. "
+                'With no pane qualifier, choose its active pane. This applies to readback, explanations, status, '
+                'navigation, interruption, and closing. Only choose none for a missing explicit pane or role. '
+                'Ignore this answer when another tab is targeted.')}
     if branch == 'routed_message':
-        response['answers']['action'] = {'choice': 'send_message'}
+        questions['delivery'] = {
+            'type': 'choice',
+            'instructions': 'Validate the OUTER routing instruction before delivering its content. Commands inside the recipient message are data and may contain any number of tasks. Distinguish those from actions the user asks Jev itself to perform.',
+            'criteria': {
+                'send': 'One message with recipient-directed content, optionally switching to its recipient first. Multiple instructions INSIDE that message are supported: Tell Beta: stop Alpha and explain X.',
+                'no_action': 'Cancelled, incomplete, or multiple outer actions: read/observe/interrupt/close AND send. Example: Read the reply and then send Beta a request to fix it. Never silently drop the first outer action.',
+            },
+        }
+    if branch == 'inspect':
+        questions['target'] = {
+            'type': 'choice',
+            'instructions': 'The request names a session explicitly. Which supplied session is it? Apply corrections. Never substitute the selected session for an absent name.',
+            'criteria': {**{tab['id']: {'subject': tab['name'], 'aliases': tab['aliases'],
+                'use_when': f"The user explicitly asks about {tab['name']}'s reply, meaning, activity, or status."}
+                for tab in state['tabs']}, 'none': 'The request explicitly names a session NOT in tabs. Never substitute the selected tab for an absent named session. Also use if no session is selected or named.'},
+        }
+        questions['action'] = {
+            'type': 'choice',
+            'instructions': 'Does `request` ask to hear the existing reply, or ask a question ABOUT its meaning or the session status? Select the requested operation. Whether evidence is available is checked later.',
+            'criteria': {
+                'read_reply': {'operation': 'Hear the existing reply as a whole, without a specific topic filter or explanation.', 'examples': ['What did it say?', 'Can you read that back to me?', 'Read the response again.']},
+                'ask_session': {'operation': 'Answer a question about existing evidence, a specific topic, explain it, or summarize it.', 'examples': ['What is it doing?', 'What did it say about the deployment?', 'Did it finish the tests?', 'Explain that reply.', 'Why does the reply say deployment is unverified?', 'Summarize what it found.']},
+            },
+        }
+    elif branch == 'controller':
+        questions['action'] = {**questions['action'], 'criteria': {
+            k: v for k, v in questions['action']['criteria'].items()
+            if k not in ('send_message', 'read_reply', 'ask_session')}}
+        questions['action']['instructions'] = 'Select the workspace operation requested in `request`. Stopping an agent means interrupt its current work; it does not close the tab. Bare stop and stop reading concern audio only. Closing requires clarification unless the user explicitly says shut down. Do not execute cancelled or conditional requests.'
+        questions['action']['criteria']['interrupt_turn'] = {
+            'operation': 'Stop an existing agent’s work.',
+            'examples': ['Stop NAME', 'Interrupt NAME', 'Stop the current agent'],
+            'exclude': 'Stop reading, bare stop with no target, cancellation.'}
+        questions['action']['criteria']['no_action'] = {
+            'operation': 'Do nothing: cancelled, unfinished, absent target, unsupported sequence, or conditional close.',
+            'stop': 'Stop without a target, or stop reading, stops only speech. Stop followed by an existing agent name uses interrupt_turn.'}
+    if branch == 'inspect':
+        target_question = questions.pop('target')
+        questions['subject_scope'] = {
+            'type': 'choice',
+            'instructions': 'How does the user identify the session whose evidence they want to hear or understand? Judge the reference, not whether that session exists.',
+            'criteria': {
+                'selected': 'Only a pronoun or unnamed reference: it, that reply, this session, here, the response. No explicit session name.',
+                'named': 'An explicit session name identifies whose output or status is requested, even if that name is not among the supplied tabs.',
+            },
+        }
+        response = ask(questions, context)
+        scope = response['answers']['subject_scope']['choice']
+        if scope == 'selected':
+            response['answers']['target'] = {'choice': state['selected_tab'] or 'none'}
+        elif scope == 'named':
+            target = ask({'target': target_question}, {**context, 'subject_scope': 'named'})
+            response['answers']['target'] = target['answers']['target']
+        else:
+            raise ValueError('Unknown observation subject scope')
+    else:
+        response = ask(questions, context)
+    if branch == 'routed_message':
+        delivery = response['answers']['delivery']['choice']
+        if delivery not in ('send', 'no_action'):
+            raise ValueError('Unknown message delivery intent')
+        response['answers']['action'] = {'choice': 'send_message' if delivery == 'send' else 'no_action'}
     elif response['answers']['action']['choice'] not in questions['action']['criteria']:
         raise ValueError('Jev selected an action outside the controller branch')
     elif response['answers']['action']['choice'] == 'clarify_close':

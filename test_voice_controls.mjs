@@ -9,10 +9,13 @@ function setup() {
   const logs = [];
   const submitted = [];
   const sources = [];
+  const sockets = [];
   const tracks = [{stopped: false, stop() { this.stopped = true; }}];
   const stream = {getTracks: () => tracks};
   class Context {
+    currentTime = 0;
     sampleRate = 16000;
+    createBuffer = (_, length, rate) => ({duration: length / rate, getChannelData: () => new Float32Array(length)});
     destination = {};
     audioWorklet = {addModule: async () => {}};
     resume = async () => {};
@@ -26,10 +29,11 @@ function setup() {
     }
   }
   class Socket {
+    constructor(url) { this.url = url; this.messages = []; sockets.push(this); }
     static OPEN = 1;
     readyState = 1;
     bufferedAmount = 0;
-    send() {}
+    send(text) { this.messages.push(JSON.parse(text)); }
     close() { this.closed = true; }
   }
   const document = {
@@ -44,16 +48,17 @@ function setup() {
     navigator: {mediaDevices: {getUserMedia: async () => stream}},
     AudioContext: Context, WebSocket: Socket,
     AudioWorkletNode: class { port = {}; connect() {} disconnect() {} },
-    AbortController, setTimeout, clearTimeout, Uint8Array, btoa,
+    AbortController, setTimeout, clearTimeout, Uint8Array, DataView, TextDecoder, btoa, atob,
     fetch: async (url, options) => {
       if (url === '/api/voice-event') logs.push(JSON.parse(options.body));
       return {ok: true, arrayBuffer: async () => new ArrayBuffer(8)};
     }
   });
+  vm.runInContext(readFileSync(new URL('./readback.js', import.meta.url), 'utf8'), context);
   vm.runInContext(readFileSync(new URL('./voice.js', import.meta.url), 'utf8') + '\nglobalThis.Controls = VoiceControls;', context);
   const voice = new context.Controls(async text => { submitted.push(text); });
   voice.configure({configured: true, websocket_url: 'ws://test'});
-  return {voice, context, document, elements, listeners, logs, submitted, sources, tracks, stream};
+  return {voice, context, document, elements, listeners, logs, submitted, sources, tracks, stream, sockets};
 }
 
 async function listening(s) {
@@ -259,7 +264,7 @@ test('original-mode new reply clears previous spoken rendition', async () => {
   s.voice.stop();
 });
 
-test('replaying the same reply reuses rendition and audio without resubmitting', async () => {
+test('replaying the same reply reuses rendition and streams audio without resubmitting', async () => {
   const s = setup();
   await listening(s);
   const originalFetch = s.context.fetch;
@@ -273,8 +278,8 @@ test('replaying the same reply reuses rendition and audio without resubmitting',
   s.voice.stopReadback('interrupted');
   await s.voice.speak('Your words are saved.', s.voice.generation);
   await s.voice.speakReply('Original reply.', s.voice.stopReadback('replay'));
-  assert.deepEqual(calls, ['/api/spoken-version', '/api/speech', '/api/speech']);
-  assert.equal(s.sources.length, 3);
+  assert.deepEqual(calls, ['/api/spoken-version', '/api/speech']);
+  assert.equal(s.sockets.filter(socket => socket.url.includes('tts=')).length, 2);
   assert.equal(s.elements.get('reply-original').textContent, 'Original reply.');
   assert.equal(s.elements.get('reply-spoken').textContent, 'Spoken reply.');
   assert.deepEqual(s.submitted, []);
@@ -494,12 +499,12 @@ test('automatic original readback preserves exact speech and explicit rendition 
   };
   await s.voice.speakReply('Exact original.', s.voice.generation);
   assert.equal(calls[0].body.mode, 'auto');
-  assert.equal(calls[1].body.text, 'Exact original.');
+  assert.equal(s.sockets.at(-1).messages[0].text.trim(), 'Exact original.');
   assert.equal(s.elements.get('reply-spoken').textContent, 'Reading original wording.');
   s.document.getElementById('speech-style').value = 'spoken';
   await s.voice.speakReply('Exact original.', s.voice.stopReadback('style'));
-  assert.equal(calls[2].body.mode, 'spoken');
-  assert.equal(calls[3].body.text, 'Converted.');
+  assert.equal(calls[1].body.mode, 'spoken');
+  assert.equal(s.sockets.at(-1).messages[0].text.trim(), 'Converted.');
   assert.deepEqual(s.submitted, []);
   s.voice.stop();
 });

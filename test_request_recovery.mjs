@@ -12,6 +12,7 @@ function setup(fetch, refresh = () => new Promise(() => {})) {
   const restored = [];
   const context = vm.createContext({
     $, fetch, refresh, AbortController, setTimeout, clearTimeout,
+    readJSONStream: response => response.json(),
     retainSpeech(record) { records.set(record.id, {...records.get(record.id), ...record}); }, requestOutcome: result => result.error || result.action,
  crypto: {randomUUID: () => Math.random().toString()},
     voice: {stopReadback() { return 1; }, speak() {}, restoreDraft(...args) { restored.push(args); return true; }},
@@ -50,6 +51,21 @@ test('poll completion releases busy state when POST response is lost', async () 
   await request;
   assert.equal(s.context.busy(), false);
   assert.equal(signal.aborted, true);
+});
+
+test('poll recovery completes partially streamed observer audio without replay or a second rewrite', async () => {
+  const s = setup(async () => ({ok: true}));
+  const audio = [];
+  const player = {write: text => audio.push(text), end: () => audio.push('END'), stop() {}};
+  s.context.voice = {generation: 1, capture: {ready: true}, stopReadback: () => 1,
+    beginReadback: () => player, presentReply() {}, status() {}, speakReply() { throw new Error('Unexpected rewrite'); }};
+  s.context.readJSONStream = (response, onText) => { onText('First. '); return new Promise(() => {}); };
+  const request = s.context.submit('What is it doing?');
+  await tick();
+  assert.deepEqual(audio, ['First. ']);
+  s.context.complete({...success, action: 'ask_session', output: 'First. Last.'});
+  await request;
+  assert.deepEqual(audio, ['First. ', 'Last.', 'END']);
 });
 
 test('provider error is displayed and busy clears without waiting for refresh', async () => {

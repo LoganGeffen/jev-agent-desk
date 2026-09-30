@@ -56,6 +56,28 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(response['answers']['action']['choice'], 'no_action')
         self.assertEqual(evaluate.call_count, 1)
 
+    def test_inspection_cannot_send_or_interrupt_even_with_a_bad_model_answer(self):
+        for action in ('read_reply', 'ask_session', 'send_message', 'interrupt_turn'):
+            result = answer(action, '@a')
+            result['answers']['subject_scope'] = {'choice': 'selected'}
+            evaluate = Mock(side_effect=[{'answers': {'intent': {'choice': 'inspect'}}}, result])
+            if action in ('read_reply', 'ask_session'):
+                response = jev.interpret(self.payload('Explain Beta’s reply'), evaluate, [])
+                self.assertEqual(response['answers']['action']['choice'], action)
+            else:
+                with self.assertRaises(ValueError):
+                    jev.interpret(self.payload('Explain Beta’s reply'), evaluate, [])
+            questions = evaluate.call_args.args[0]['questions']
+            self.assertEqual(set(questions['action']['criteria']), {'read_reply', 'ask_session'})
+            self.assertNotIn('message_start', questions)
+
+    def test_outer_read_then_send_is_not_collapsed_into_a_message(self):
+        result = answer('send_message', '@b')
+        result['answers']['delivery'] = {'choice': 'no_action'}
+        evaluate = Mock(side_effect=[{'answers': {'intent': {'choice': 'routed_message'}}}, result])
+        response = jev.interpret(self.payload('Read it then send Beta a request to fix it'), evaluate, [])
+        self.assertEqual(response['answers']['action']['choice'], 'no_action')
+
 
 class CreateTabRoutingTests(unittest.TestCase):
     def test_workspace_create_action_opens_one_selected_terminal(self):

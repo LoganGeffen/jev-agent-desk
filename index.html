@@ -463,6 +463,7 @@
       </section>
     </main>
   </div>
+  <script src="/readback.js"></script>
   <script src="/voice.js"></script>
   <script src="/terminal.js"></script>
   <script>
@@ -1072,15 +1073,22 @@
       const generation = voice.stopReadback('new request');
       const controller = new AbortController();
       const observed = new Promise(resolve => { pendingRequest = {id, resolve}; });
-      let deadline;
+      let deadline, observerPlayback = null;
+      let observerText = '';
       setSubmitting(true);
       try {
         const delivered = fetch('/api/request', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget}),
+          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget, stream: !!voice.capture?.ready}),
           signal: controller.signal
         }).then(async response => {
-          const result = await response.json();
+          const result = await readJSONStream(response, delta => {
+            observerText += delta;
+            if (generation !== voice.generation) return;
+            voice.presentReply(observerText);
+            observerPlayback ||= voice.beginReadback(generation);
+            observerPlayback?.write(delta);
+          });
           if (!response.ok && !result.timestamp) throw new Error(result.error);
           return result;
         });
@@ -1101,9 +1109,20 @@
         const spoken = ['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
           : result.outcome === 'error' && result.delivery === 'not_attempted'
           ? 'I could not complete that request. Nothing was sent. Your words and the error are on screen.' : outcome;
-        if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok') voice.speakReply(spoken, generation);
+        if (observerPlayback) {
+          if (result.outcome === 'ok') {
+            if (generation === voice.generation) {
+              voice.presentReply(result.output);
+              if (result.output.startsWith(observerText)) observerPlayback.write(result.output.slice(observerText.length));
+            }
+            observerPlayback.end();
+          }
+          else { observerPlayback.stop(); if (voice.playing === observerPlayback) voice.playing = null; }
+        } else if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok') voice.speakReply(spoken, generation, result.action === 'ask_session');
         else voice.speak(spoken, generation);
       } catch (error) {
+        observerPlayback?.stop();
+        if (voice.playing === observerPlayback) voice.playing = null;
         const status = 'Outcome unknown. ' + error.message;
         retainSpeech({id, status});
         showError(new Error(status));

@@ -17,7 +17,9 @@ from server import Playground, activity_state, make_server, tmux
 
 def answer(action, target="unused", pane=None):
     return {"model": "test-stub-not-jev", "answers": {
-        "intent": {"choice": "routed_message" if action == "send_message" else "no_action" if action == "no_action" else "controller"},
+        "delivery": {"choice": "send"},
+        "subject_scope": {"choice": "named"},
+        "intent": {"choice": "routed_message" if action == "send_message" else "no_action" if action == "no_action" else "inspect" if action in ("read_reply", "ask_session") else "controller"},
         "action": {"type": "choice", "choice": action, "probabilities": {action: 0.4}},
         f"pane:{target}": {"type": "choice", "choice": pane or target.replace('@', '%')},
         "target": {"type": "choice", "choice": target, "probabilities": {target: 0.4}}}}

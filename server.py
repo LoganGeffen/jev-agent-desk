@@ -19,7 +19,7 @@ from claude_runtime import read_binding
 from claude_actions import working_indicator as claude_working_indicator
 from session_questions import ask_session
 from message_delivery import prepare_message
-from spoken_reply import render_spoken_reply
+from spoken_reply import ReadbackCache
 from reply_watch import ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
@@ -208,7 +208,8 @@ class Playground:
             raise ValueError("The source and view sessions do not share a tmux session group")
         self.latest = latest_event(self.log)
         self.recent_requests = {}
-        self.reply_watch = ReplyWatch()
+        self.readbacks = ReadbackCache()
+        self.reply_watch = ReplyWatch(lambda text: self.readbacks.prepare(text) if self.voice.config()['configured'] else None)
         self.read_output = None
         self.pending_close = None
         self.pending_clarification = None
@@ -332,7 +333,7 @@ class Playground:
                 "voice": self.voice.config(),
                 "api_configured": bool(os.environ.get("TYPESAFE_API_KEY"))}
 
-    def submit(self, request, source="typed", request_id=None, capture_target=None):
+    def submit(self, request, source="typed", request_id=None, capture_target=None, on_text=None):
         with self.lock:
             self.pending_close = None
             started = time.monotonic()
@@ -464,7 +465,7 @@ class Playground:
                     elif action == "interrupt_turn":
                         event["output"] = interrupt_turn(self.socket, agent)
                     elif action == "ask_session":
-                        result = ask_session(self.socket, agent, request)
+                        result = ask_session(self.socket, agent, request, **({'on_text': on_text} if on_text else {}))
                         event["execution"]["observation"] = result
                         event["output"] = result["text"]
                         self.read_output = {"target": event['target_label'], "text": event["output"],
@@ -763,6 +764,17 @@ def make_server(playground, port=0, public_origin=None):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def start_stream(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Accel-Buffering', 'no')
+            self.end_headers()
+
+        def stream_event(self, type, **data):
+            self.wfile.write((json.dumps({'type': type, **data}) + '\n').encode())
+            self.wfile.flush()
+
         def local_request(self):
             host = f"127.0.0.1:{self.server.server_port}"
             origin = f"http://{host}"
@@ -785,7 +797,7 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.state())
                 except Exception as error:
                     self.send(503, {"error": str(error)})
-            elif self.path in ("/voice.js", "/microphone.js", "/terminal.js"):
+            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
             elif self.path == "/favicon.ico":
                 self.send(204, b"")
@@ -810,9 +822,24 @@ def make_server(playground, port=0, public_origin=None):
                     raise ValueError(f"Send a JSON request up to {limit} bytes")
                 body = json.loads(self.rfile.read(size))
                 if self.path == '/api/spoken-version':
-                    result = render_spoken_reply(body['text'], body.get('mode', 'spoken'))
-                    playground.voice.record('spoken_rendition', original=body['text'], **result)
-                    self.send(200, result)
+                    if body.get('stream'):
+                        self.start_stream()
+                        try:
+                            result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'),
+                                      lambda text: self.stream_event('text', text=text))
+                            playground.voice.record('spoken_rendition', original=body['text'], **result)
+                            self.stream_event('result', result=result)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        except Exception as error:
+                            try:
+                                self.stream_event('error', error=str(error))
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                    else:
+                        result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'))
+                        playground.voice.record('spoken_rendition', original=body['text'], **result)
+                        self.send(200, result)
                     return
                 if self.path == "/api/speech":
                     self.send(200, playground.voice.speak(body["text"], body.get('profile', 'current')), "audio/mpeg")
@@ -874,9 +901,19 @@ def make_server(playground, port=0, public_origin=None):
             except (RuntimeError, OSError) as error:
                 self.send(502, {"error": str(error)})
                 return
+            streaming = body.get('stream', False)
+            if streaming:
+                self.start_stream()
             event = playground.submit(request, "voice" if body.get("source") == "voice" else "typed",
-                                      request_id=body.get("request_id"), capture_target=body.get('capture_target'))
-            self.send(200 if event["outcome"] == "ok" else 502, event)
+                                      request_id=body.get("request_id"), capture_target=body.get('capture_target'),
+                                      on_text=(lambda text: self.stream_event('text', text=text)) if streaming else None)
+            if streaming:
+                try:
+                    self.stream_event('result', result=event)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            else:
+                self.send(200 if event["outcome"] == "ok" else 502, event)
 
         def log_message(self, *_):
             pass

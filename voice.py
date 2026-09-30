@@ -7,7 +7,7 @@ import shlex
 import threading
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlsplit, parse_qs
 from urllib.request import Request, urlopen
 
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -80,7 +80,67 @@ class Voice:
                     elapsed_ms=round((time.monotonic() - started) * 1000))
         return audio
 
+    def speech_relay(self, browser, profile):
+        models = {'current': 'eleven_flash_v2_5', 'alternate': 'eleven_multilingual_v2'}
+        if profile not in models or not self.config()['configured']:
+            browser.send(json.dumps({'error': 'Speech is unavailable'}))
+            return
+        params = urlencode({'model_id': models[profile], 'output_format': 'pcm_24000', 'auto_mode': 'true'})
+        url = 'wss://api.elevenlabs.io/v1/text-to-speech/' + quote(os.environ['ELEVENLABS_VOICE_ID'], safe='') + '/stream-input?' + params
+        started = time.monotonic()
+        first_audio = None
+        try:
+            with connect(url, additional_headers={'xi-api-key': os.environ['ELEVENLABS_API_KEY']},
+                         open_timeout=10, close_timeout=1) as provider:
+                provider.send(json.dumps({'text': ' '}))
+
+                def upload():
+                    size = 0
+                    try:
+                        for raw in browser:
+                            text = json.loads(raw)['text']
+                            if not isinstance(text, str):
+                                raise ValueError('Invalid speech text')
+                            size += len(text)
+                            if size > 24000:
+                                raise ValueError('Speech text is too long')
+                            provider.send(json.dumps({'text': text, **({'flush': True} if text else {})}))
+                            if not text:
+                                return
+                        provider.close()
+                    except (KeyError, ValueError, TypeError, ConnectionClosed):
+                        provider.close()
+
+                worker = threading.Thread(target=upload, daemon=True)
+                worker.start()
+                try:
+                    for raw in provider:
+                        data = json.loads(raw)
+                        if data.get('audio'):
+                            if first_audio is None:
+                                first_audio = round((time.monotonic() - started) * 1000)
+                            browser.send(json.dumps({'audio': data['audio']}))
+                        if data.get('isFinal'):
+                            browser.send(json.dumps({'isFinal': True}))
+                            break
+                        if data.get('error'):
+                            raise RuntimeError('Speech provider rejected the stream')
+                finally:
+                    browser.close()
+                    worker.join(timeout=2)
+        except (OSError, TimeoutError, ConnectionClosed, InvalidStatus, RuntimeError):
+            try:
+                browser.send(json.dumps({'error': 'Speech stream failed'}))
+            except ConnectionClosed:
+                pass
+        finally:
+            self.record('tts_stream', first_audio_ms=first_audio,
+                        elapsed_ms=round((time.monotonic() - started) * 1000))
+
     def relay(self, browser):
+        profile = parse_qs(urlsplit(browser.request.path).query).get('tts')
+        if profile:
+            return self.speech_relay(browser, profile[0])
         if not self.config()["configured"]:
             browser.send(json.dumps({"message_type": "error", "error": "ElevenLabs is not configured"}))
             return

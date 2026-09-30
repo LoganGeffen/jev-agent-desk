@@ -53,7 +53,8 @@ Set configuration in the environment **before starting** the app:
 | `TYPESAFE_API_KEY` | TypeSafe Jev request interpretation and automatic readback choice |
 | `ELEVENLABS_API_KEY` | ElevenLabs realtime recognition and speech synthesis |
 | `ELEVENLABS_VOICE_ID` | A voice accessible to that ElevenLabs account |
-| `JEV_ASK_MODEL` | Codex model for session questions, indirect-question grammar, and spoken renditions; default `gpt-5.6-luna` |
+| `JEV_ASK_MODEL` | Codex model for session questions, indirect-question grammar, and spoken renditions; default `gpt-6-luna` |
+| `JEV_ASK_EFFORT` | Reasoning effort for those calls; default `none`. Must be supported by the selected model. |
 | `JEV_SETTINGS_FILE` | Optional explicit path to a private settings file; no file is loaded by default |
 
 `python launch.py start --ask-key` prompts privately for just the TypeSafe key.
@@ -141,9 +142,18 @@ or changing identity holds the draft until you return or explicitly retarget it.
 Replies appear with their originating request. Automatic readback preserves prose
 when Jev chooses original, and rewrites visual structure when it chooses rendition.
 This choice is probabilistic. Uncertainty or provider failure leaves the original
-visible without substitute speech or retries. Renditions wait for rewriting and
-synthesis. Stop ignores late preparation results; server work already in progress
-may finish. Replay caches are bounded to the current page.
+visible without substitute speech or retries. Generated text streams into speech
+sentence by sentence, and audio plays as it arrives. Completed replies tracked by
+the app start preparing their readback in the background. Original wording remains
+available. Fresh explanations still wait for the model's first sentence; streaming
+does not make that initial inference instant. Stop cancels queued audio and ignores
+late results; server preparation already in progress may finish.
+
+Jev first separates agent messages, inspection of existing output, and workspace
+control. Inspection then chooses readback or an observer explanation; that branch
+cannot send or interrupt. “Tell me what Beta is doing” observes its evidence;
+“Ask Beta what it is doing” sends Beta a message. Observer answers go straight to
+speech without another rendition pass.
 
 Recognition pauses during playback by default. Use Stop & listen, or enable Talk
 to interrupt with headphones. Hiding the page stops voice; enable it again on
@@ -184,6 +194,11 @@ The test runner removes service configuration from its child environment. Tests
 use disposable tmux sockets, synthetic identities, mocked providers, and an
 intercepted browser page; they do not send to existing agent conversations or make
 paid inference calls. Browser artifacts are generated under `.run/`.
+
+For an optional live Jev routing evaluation with synthetic tabs, run
+`python eval_routing.py` with `TYPESAFE_API_KEY` configured. It makes paid inference
+calls but does not access terminals. Its cases exercise routing judgments;
+passing them is not a guarantee for every phrasing.
 
 See [verification](VERIFICATION.md) for the export checks and their limits.
 

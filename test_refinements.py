@@ -52,7 +52,7 @@ class DeliveryFailureTests(unittest.TestCase):
 
     def test_normalizer_failure_never_delivers_a_message(self):
         target = self.register()
-        self.response = {"answers": {"intent": {"choice": "routed_message"}, "action": {"choice": "send_message"}, "target": {"choice": target},
+        self.response = {"answers": {"delivery": {"choice": "send"}, "intent": {"choice": "routed_message"}, "action": {"choice": "send_message"}, "target": {"choice": target},
                                     f'pane:{target}': {'choice': '%1'},
                                     "message_start": {"choice": "9"}, "message_end": {"choice": "24"},
                                     "message_form": {"choice": "indirect_question"}}}

@@ -4,10 +4,15 @@ The browser's typed and spoken drafts converge on `/api/request`. It sends exact
 composed text, a request ID, and a captured tab/pane/process-conversation identity.
 `server.py` snapshots available targets, calls Jev, validates the selected action
 and identity, then dispatches through `session_actions.py` to a provider adapter.
-Jev first distinguishes a direct message, a routed message, a workspace command,
-or cancelled input. Direct messages use the selected pane and complete original
+Jev first distinguishes a direct message, a routed message, inspection of existing
+output, a workspace command, or cancelled input. Direct messages use the selected pane and complete original
 text without boundary extraction. Routed messages resolve the recipient and text;
-workspace commands choose an action without message extraction. Close requests
+inspection chooses readback or an observer answer and identifies the subject session;
+unnamed references use the selected session, while named references get a separate
+lookup with no selected-session fallback.
+workspace commands choose an action without message extraction. Code restricts each
+branch's available actions. A delivery judgment rejects unsupported outer action
+sequences without treating commands inside a message as workspace commands. Close requests
 retain clarification and explicit confirmation paths.
 
 `jev.py` builds typed choice questions for action, recipient, pane and message
@@ -42,7 +47,11 @@ under `~/.claude/projects`. Alternate Claude config roots are not supported.
 
 `reply_watch.py` associates new completed replies with their original request and
 recipient. `session_questions.py` captures history plus live terminal evidence and
-asks an isolated, tool-disabled Codex invocation for an observer answer.
+asks an isolated Codex app-server for an observer answer. `model_stream.py` reuses
+up to two connections, creating a new ephemeral, read-only thread per request with
+shell, web search, apps and plugins disabled. It streams answer deltas; it never
+starts an observer turn in the real agent's conversation.
+Configured MCP servers are explicitly disabled for each observer thread.
 
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
@@ -53,8 +62,10 @@ still rejects any identity change after that click. Delivery pastes and presses
 Enter in one operation; uncertain delivery is never automatically retried.
 `spoken_reply.py` first asks Jev whether original wording or a faithful rendition
 is appropriate; an explicit mode bypasses that judgment. A rendition is generated
-as a complete text before synthesis. This is not streaming text generation or
-incremental audio playback.
+incrementally over NDJSON. A small in-memory cache shares background preparation
+and readback of the same exact reply and mode. `readback.js` sends completed
+sentences to the speech WebSocket and schedules incoming PCM audio immediately.
+Observer answers already use spoken prose and bypass the rendition step.
 
 The browser can recover a lost POST response through request IDs in polling.
 Submitted means input delivery, not task completion. Uncertain outcomes never
