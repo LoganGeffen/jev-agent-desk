@@ -1,0 +1,9 @@
+.venv/
+.run/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*.env
+playwright-report/
+test-results/

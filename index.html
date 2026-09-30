@@ -1,0 +1,1211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jev</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #090c0b;
+      color: #e6ece8;
+      --panel: #0e1211;
+      --line: #26312c;
+      --line-strong: #3b4a43;
+      --muted: #8d9b94;
+      --accent: #9de2bc;
+      --danger: #ff9f97;
+      --working: #8dbdff;
+      --ready: #9de2bc;
+      --attention: #ffc66d;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; overflow: hidden; background: #090c0b; }
+    button, textarea { font: inherit; }
+    button { color: inherit; }
+    #app {
+      display: grid;
+      grid-template-columns: 238px minmax(0, 1fr);
+      height: 100dvh;
+      min-height: 0;
+    }
+    #session-rail {
+      min-width: 0;
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+    }
+    .rail-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 48px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    #connection { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rail-actions { display: flex; gap: 3px; margin-left: auto; }
+    .rail-action, .group-action, .tab-action {
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    .rail-action { width: 27px; height: 27px; }
+    .rail-action:disabled { opacity: .3; cursor: default; }
+    .rail-action:hover, .group-action:hover, .tab-action:hover { background: #1d2522; color: #e6ece8; }
+    .rail-action:focus-visible, .group-action:focus-visible, .tab-action:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -1px;
+    }
+    .rail-action svg, .group-action svg, .tab-action svg {
+      width: 15px;
+      height: 15px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.7;
+    }
+    .connection-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--attention);
+      box-shadow: 0 0 0 3px rgb(255 198 109 / 10%);
+    }
+    .rail-status[data-state="live"] .connection-dot {
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgb(157 226 188 / 10%);
+    }
+    .rail-status[data-state="offline"] .connection-dot {
+      background: var(--danger);
+      box-shadow: 0 0 0 3px rgb(255 159 151 / 10%);
+    }
+    #tabs {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px 10px 24px;
+    }
+    .tab-group + .tab-group { margin-top: 20px; }
+    .group-heading {
+      display: flex;
+      align-items: center;
+      min-height: 23px;
+      margin: 0 5px 4px 8px;
+    }
+    .tab-group h2 {
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      color: #7e8c85;
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: .12em;
+      text-overflow: ellipsis;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .group-action { width: 23px; height: 23px; margin-left: auto; opacity: 0; }
+    .tab-group:hover .group-action, .group-action:focus-visible { opacity: 1; }
+    .tab-list { display: grid; gap: 3px; }
+    .tab-list.drop-target { outline: 1px dashed var(--accent); outline-offset: 2px; border-radius: 7px; }
+    .tab-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 27px 27px;
+      align-items: center;
+      border: 1px solid transparent;
+      border-radius: 7px;
+    }
+    .tab-row:hover { background: #151b19; }
+    .tab-row.active { border-color: #33413b; background: #19211e; }
+    .tab-row.dragging { opacity: .35; }
+    .tab-row.drop-before::before {
+      content: "";
+      position: absolute;
+      z-index: 1;
+      inset: -3px 3px auto;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+    .tab {
+      width: 100%;
+      min-width: 0;
+      padding: 9px 9px 8px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .tab:disabled { cursor: wait; opacity: .65; }
+    .tab-action { width: 24px; height: 28px; opacity: 0; }
+    .tab-row:hover .tab-action, .tab-row:focus-within .tab-action { opacity: 1; }
+    .tab-name {
+      display: block;
+      overflow: hidden;
+      color: #dfe7e2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tab-row.active .tab-name { color: #fff; }
+    .activity {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .activity::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #637069;
+    }
+    .state-needs_you { color: var(--attention); }
+    .state-needs_you::before { background: var(--attention); }
+    .state-working { color: var(--working); }
+    .state-working::before { background: var(--working); }
+    .state-ready { color: var(--ready); }
+    .state-ready::before { background: var(--ready); }
+    .empty-group {
+      min-height: 34px;
+      padding: 8px;
+      border: 1px dashed #26312c;
+      border-radius: 7px;
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+    }
+    #workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      background: #070a09;
+    }
+    #panes { position: relative; min-height: 0; overflow: auto; }
+    .pane { position: absolute; display: grid; grid-template-rows: 32px minmax(0, 1fr); border: 1px solid var(--line); }
+    .pane.active { border-color: var(--accent); }
+    .pane-heading { display: flex; align-items: center; gap: 8px; padding: 0 10px; min-width: 0; background: var(--panel); }
+    .pane-label { border: 0; background: none; color: var(--muted); flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .pane.active .pane-label { color: #dfe7e2; }
+    .pane-close { border: 0; background: none; color: var(--muted); cursor: pointer; }
+    .terminal {
+      --terminal-foreground: #dce5df;
+      --terminal-background: #070a09;
+      min-width: 0;
+      min-height: 0;
+      margin: 0;
+      overflow: auto;
+      padding: 12px 14px 20px;
+      border: 0;
+      background: var(--terminal-background);
+      color: var(--terminal-foreground);
+      font: 13px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: pre;
+      tab-size: 2;
+      cursor: text;
+    }
+    .terminal:focus { outline: 1px solid var(--line-strong); outline-offset: -1px; }
+    #composer {
+      position: relative;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      padding: 11px 14px 10px;
+    }
+    #close-actions, #clarification-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+    #close-actions[hidden], #clarification-actions[hidden] { display: none; }
+    #close-actions button, #clarification-actions button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); cursor: pointer; }
+    #confirm-close, #clarify-shutdown { color: var(--danger); }
+    #composer[data-pending="true"]::before {
+      content: "";
+      position: absolute;
+      inset: -1px 0 auto;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--working), transparent);
+      animation: sweep 1.2s linear infinite;
+    }
+    @keyframes sweep { from { transform: translateX(-45%); } to { transform: translateX(45%); } }
+    #transcript {
+      grid-column: 1 / -1;
+      margin: 0 2px;
+      color: #c8d4cd;
+      font-size: 12px;
+    }
+    #transcript:empty { display: none; }
+    .icon-button {
+      display: grid;
+      place-items: center;
+      height: 38px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #151b19;
+      cursor: pointer;
+    }
+    .icon-button:hover:not(:disabled) { border-color: #5a6c63; background: #1a221f; }
+    .icon-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .icon-button:disabled { opacity: .34; cursor: default; }
+    .icon-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+    #voice-toggle[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: #173024;
+      color: var(--accent);
+    }
+    #result {
+      min-width: 0;
+      min-height: 20px;
+      overflow: hidden;
+      color: #b8c5be;
+      font: 12px/20px "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #result.error { color: var(--danger); }
+    #result.pending { color: var(--working); }
+    #composer[data-choice-pending="true"] #result {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 160px;
+      overflow: auto;
+    }
+    #details[hidden] { display: none; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    #speech-draft { grid-column: 1 / -1; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+    #speech-draft-text { width: 100%; min-height: 64px; color: inherit; background: var(--panel); font-size: 16px; }
+    #speech-draft[hidden] { display: none; }
+    #reply-notice:empty { display: none; }
+    #reply-notice, #read-ready-reply { grid-column: 1 / -1; }
+    #voice-profile-label, #speech-style-label, #interrupt-label, #reply-presentation { grid-column: 1 / -1; font-size: 12px; }
+    #playback-status, #target-status { grid-column: 1 / -1; font-size: 12px; }
+    #readback-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+    #reply-presentation { max-height: 220px; overflow: auto; }
+    #reply-original, #reply-spoken { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #speech-history { grid-column: 1 / -1; max-height: 180px; overflow: auto; font-size: 12px; }
+    #speech-records p { white-space: pre-wrap; overflow-wrap: anywhere; }
+    #phone-input { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
+    #phone-text { width: 100%; min-height: 80px; font: inherit; color: inherit; background: var(--panel); }
+    #speech-draft-text { display: none; }
+    #speech-history { max-height: 320px; }
+    #turn-bar { display: contents; }
+    #primary-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+    #turn-status, .mobile-label, #terminal-toggle, #manage-tabs-label { display: none; }
+    #more-controls { grid-column: 1 / -1; }
+    #more-controls > summary { display: none; }
+    #more-controls label { display: block; margin: 8px 0; }
+
+    @media (max-width: 700px) {
+      #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+      #session-rail { border-right: 0; border-bottom: 1px solid var(--line); }
+      .rail-status { min-height: 36px; padding: 0 14px; }
+      #terminal-toggle { display: block; margin-left: auto; background: none; border: 0; padding: 8px; color: var(--muted); }
+      .rail-actions, .group-heading, .tab-action, .empty-group { display: none; }
+      #app.manage-tabs .rail-actions, #app.manage-tabs .group-heading { display: flex; }
+      #app.manage-tabs .tab-action { display: grid; }
+      #tabs { display: flex; gap: 8px; padding: 8px 12px; overflow-x: auto; }
+      .tab-group { flex: 0 0 auto; }
+      .tab-list { display: flex; gap: 6px; }
+      .tab-row { display: flex; min-width: 0; }
+      .tab { width: auto; min-width: 104px; padding: 8px 12px; }
+      #workspace { display: flex; flex-direction: column; overflow-y: auto; min-height: 0; }
+      #panes { display: none; }
+      #app.show-terminal #panes { display: flex; flex-direction: column; min-height: 220px; height: 40dvh; flex: 0 0 auto; }
+      .pane { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; min-height: 220px; flex: 1; }
+      .terminal { padding: 10px; font-size: 12px; }
+      #composer { display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; border-top: 0; flex: 1 0 auto; }
+      #turn-bar { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 14px; align-items: center; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 10px 0; }
+      #turn-status { display: block; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
+      #primary-actions { grid-column: 2; }
+      #voice-toggle { height: 56px; width: 56px; }
+      .mobile-label { display: block; font-size: 11px; }
+      #voice-toggle svg { width: 19px; height: 19px; }
+      #result, #voice-status, #playback-status, #speech-draft-status { display: none; }
+      #target-status { color: var(--muted); margin: 0; }
+      #speech-draft { max-height: none; overflow: visible; white-space: normal; }
+      #speech-draft-text { min-height: 112px; max-height: 26dvh; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; font: inherit; font-size: 16px; }
+      #composer button:not(.icon-button) { min-height: 44px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; cursor: pointer; }
+      #speech-send { color: #102219; background: var(--accent) !important; }
+      #speech-draft button { margin-top: 8px; }
+      #speech-hold, #speech-discard { color: var(--muted); }
+      #phone-input { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+      #phone-input textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: var(--panel); }
+      #more-controls { margin-top: auto; border-top: 1px solid var(--line); padding-top: 16px; }
+      #more-controls > summary { display: list-item; color: var(--muted); cursor: pointer; padding: 8px 0; }
+      #more-controls label { margin: 16px 0; }
+      #more-controls select { max-width: 100%; min-height: 36px; background: #151b19; color: inherit; border: 1px solid var(--line); border-radius: 5px; }
+      #manage-tabs-label { display: block; }
+      #reply-notice { margin: 0; }
+      #reply-presentation { max-height: none; }
+      #speech-history { max-height: 40dvh; margin-top: 16px; }
+      #speech-records p { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #composer[data-pending="true"]::before { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="session-rail" aria-label="Sessions">
+      <h1 class="sr-only">Jev</h1>
+      <div class="rail-status" data-state="connecting">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection" role="status">Connecting</span>
+        <button id="terminal-toggle" type="button" aria-pressed="false">Terminal</button>
+        <div class="rail-actions">
+          <button class="rail-action" id="new-tab" type="button" disabled aria-label="New tab" title="New tab">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+          </button>
+          <button class="rail-action" id="new-group" type="button" disabled aria-label="New tab group" title="New tab group">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"></rect><path d="M8 9h8M12 9v6"></path></svg>
+          </button>
+        </div>
+      </div>
+      <nav id="tabs" aria-label="Session tabs"></nav>
+    </aside>
+    <main id="workspace">
+      <div id="panes" aria-label="Terminal panes"></div>
+      <section id="composer" aria-label="Jev controls" data-pending="false">
+        <span id="target-status" role="status"></span>
+        <div id="transcript" aria-label="Speech transcript" aria-live="polite"></div>
+        <div id="turn-bar">
+        <button class="icon-button" id="voice-toggle" type="button" disabled aria-pressed="false" aria-label="Start voice input" title="Start voice input">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
+        </button>
+        <span id="turn-status" role="status" aria-live="polite">Tap the microphone to talk.</span>
+        <span id="result" role="status" aria-live="polite"></span>
+        <div id="primary-actions">
+          <button id="speech-send" type="button" hidden>Send now</button>
+          <button id="stop-readback" type="button" hidden>Stop &amp; listen</button>
+        </div>
+        </div>
+        <div id="close-actions" hidden>
+          <button id="confirm-close" type="button">Confirm shutdown</button>
+          <button id="cancel-close" type="button">Cancel</button>
+        </div>
+        <div id="clarification-actions" hidden aria-label="Clarify Jev request">
+          <button id="clarify-send" type="button">Send message</button>
+          <button id="clarify-shutdown" type="button">Shut down instead</button>
+          <button id="clarify-cancel" type="button">Cancel</button>
+        </div>
+        <div id="speech-draft" hidden>
+          <p id="speech-draft-status" role="status"></p><textarea id="speech-draft-text" aria-label="Recognized speech draft"></textarea>
+          <button id="speech-hold" type="button">Hold</button>
+          <button id="speech-retarget" type="button" hidden>Use selected pane</button>
+          <button id="speech-discard" type="button">Discard</button>
+        </div>
+        <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
+        <div id="readback-actions">
+          <button id="replay-reply" type="button" hidden>Replay reply</button>
+        </div>
+        <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
+        <form id="phone-input" aria-label="Conversation message">
+          <textarea id="phone-text" aria-label="Message" placeholder="Type or speak a message…" autocapitalize="sentences"></textarea>
+          <button type="submit">Send</button>
+        </form>
+        <section id="speech-history" aria-label="Conversation turns"><div id="speech-records"></div></section>
+        <details id="more-controls"><summary>Options &amp; terminal keys</summary>
+        <div aria-label="Raw terminal keys"><span>Selected terminal:</span>
+          <button id="phone-enter" type="button">Enter</button>
+          <button id="phone-escape" type="button">Escape</button>
+        </div>
+        <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
+        <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
+        <label id="speech-style-label">Read replies as <select id="speech-style"><option value="auto">Automatic · Jev chooses</option><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
+        <label id="manage-tabs-label"><input id="manage-tabs" type="checkbox"> Manage tabs</label>
+        </details>
+        <span class="sr-only" id="voice-status" role="status">Microphone off</span>
+        <span id="playback-status" role="status">Readback idle</span>
+        <pre id="details" hidden>No requests yet.</pre>
+      </section>
+    </main>
+  </div>
+  <script src="/voice.js"></script>
+  <script src="/terminal.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const activityLabels = {
+      needs_you: 'needs you', working: 'working', ready: 'ready', idle: 'idle', open: 'open'
+    };
+    let activeTab = null;
+    let currentState = null;
+    let lastEvent = null;
+    let tabSignature = null;
+    let submitting = false;
+    let pendingRequest = null;
+    let selecting = null;
+    let draggingTab = null;
+    let pendingText = null;
+    let pendingTextTimer = null;
+    let terminalQueue = Promise.resolve();
+    const openedAt = Date.now();
+    const voice = new VoiceControls(submitRequest, phoneTarget);
+    voice.onChange = renderTurnStatus;
+    function renderTurnStatus(playbackText) {
+      const draft = voice.draft;
+      const textValue = draft ? [draft.text, draft.partial].filter(Boolean).join(' ') : '';
+      if ($('phone-text').value !== textValue) $('phone-text').value = textValue;
+      $('phone-text').readOnly = !!draft?.awaitingCommit || !!draft?.partial;
+      $('phone-input').querySelector('[type="submit"]').disabled = !!draft?.awaitingCommit || !!draft?.partial;
+
+      if (playbackText) {
+        $('result').className = '';
+        $('result').textContent = playbackText;
+      }
+      $('read-ready-reply').textContent = voice.capture?.ready ? 'Read reply' : 'View reply';
+      const text = voice.pending || voice.playing ? $('playback-status').textContent
+        : submitting ? $('result').textContent
+        : voice.draft ? $('speech-draft-status').textContent
+        : $('result').textContent || $('voice-status').textContent;
+      $('turn-status').textContent = text === 'Microphone off' ? 'Tap the microphone to talk.' : text;
+    }
+    const renameIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.2-1 10.7-10.7a2.1 2.1 0 0 0-3-3L5.2 16 4 20Z"></path><path d="m14.7 6.7 3 3"></path></svg>';
+
+    let notifiedReplies = [];
+    try { notifiedReplies = JSON.parse(sessionStorage.getItem('jev-reply-notices') || '[]'); } catch {}
+    const announcedReplies = new Set(notifiedReplies);
+    let readyReply = null;
+    let pendingNotices = [];
+    function observeReplies(state) {
+      for (const notice of state.reply_notices || []) {
+        const record = speechRecords.find(item => item.id === notice.request_id);
+        if (record && record.reply?.id !== notice.id) retainSpeech({id: record.id, reply: notice});
+        if (announcedReplies.has(notice.id)) continue;
+        announcedReplies.add(notice.id);
+        if (voice.capture?.ready) pendingNotices.push(notice);
+        $('reply-notice').textContent = notice.error ? notice.target + ': ' + notice.error : notice.target + ' has replied.';
+        if (notice.text) {
+          readyReply = notice;
+          $('read-ready-reply').hidden = false;
+        }
+        notifiedReplies.push(notice.id);
+        try { sessionStorage.setItem('jev-reply-notices', JSON.stringify(notifiedReplies.slice(-100))); } catch {}
+      }
+      if (!voice.capture?.ready) pendingNotices = [];
+      if (!voice.capture?.ready || voice.playing || voice.pending || voice.draft || Date.now() - (voice.lastSpeechAt || 0) < 1500 || submitting || !pendingNotices.length) return;
+      const notice = pendingNotices.shift();
+      const text = notice.error ? notice.target + ': ' + notice.error : notice.target + ' has replied.';
+      voice.speak(text, voice.generation);
+    }
+    let speechRecords = [];
+    try { speechRecords = JSON.parse(sessionStorage.getItem('jev-speech-records') || '[]'); } catch {}
+    function retainSpeech(record) {
+      const index = speechRecords.findIndex(item => item.id === record.id);
+      if (index < 0) speechRecords.push(record);
+      else Object.assign(speechRecords[index], record);
+      speechRecords = speechRecords.slice(-50);
+      try { sessionStorage.setItem('jev-speech-records', JSON.stringify(speechRecords)); } catch {}
+      $('speech-records').replaceChildren(...speechRecords.slice().reverse().map(item => {
+        const line = document.createElement('p');
+        line.textContent = (item.recipient || item.targetLabel || 'Captured conversation') + '\n' + item.status + '\n' + item.text;
+        if (item.deliveredText && item.deliveredText !== item.text) {
+          const sent = document.createElement('pre');
+          sent.textContent = 'Delivered wording: ' + item.deliveredText;
+          line.append(sent);
+        }
+        if (item.reply) {
+          const original = document.createElement('pre');
+          original.textContent = item.reply.target + ' · original reply\n' + (item.reply.text || item.reply.error);
+          line.append(original);
+          if (item.reply.text) {
+            const read = document.createElement('button');
+            read.textContent = 'Read this reply';
+            read.onclick = () => voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'));
+            line.append(read);
+          }
+        }
+        if (item.recoverable) {
+          const review = document.createElement('button');
+          review.type = 'button';
+          review.textContent = 'Review words';
+          review.onclick = () => {
+            if (!voice.restoreDraft(item.text, item.target, item.status)) showError(new Error('Your current draft is still open. Finish or discard it before restoring another.'));
+          };
+          line.append(document.createElement('br'), review);
+        }
+        return line;
+      }));
+    }
+    function retainOutcome(id, result) {
+      retainSpeech({id, status: requestOutcome(result), delivery: result.delivery,
+        recipient: result.target_label, deliveredText: result.execution?.text || result.delivered_text,
+        recoverable: result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action')});
+      if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok' && result.output) {
+        retainSpeech({id, reply: {id, target: targetName(result), text: result.output}});
+      }
+    }
+    function requestOutcome(result) {
+      if (result.delivery === 'uncertain') return 'Delivery is uncertain. Check the recipient before sending again; the text may already be in its input.';
+      if (result.delivery === 'submitted') return 'Submitted to ' + targetName(result) + '.' + (result.reply_watch_error ? ' Reply notification is unavailable; ask to read the reply later.' : '');
+      if (result.outcome === 'error') return (result.delivery === 'not_attempted' ? 'Nothing was sent. ' : '') + (result.error || 'Request failed.');
+      if (result.action === 'no_action') return result.output || 'No action taken. Your words are saved.';
+      return result.output || result.action.replaceAll('_', ' ') + (result.target ? ' · ' + targetName(result) : '');
+    }
+
+    function targetName(event) {
+      return event.target_label || event.before?.tabs.find(tab => tab.id === event.target)?.name || 'session';
+    }
+
+    function decisionText(event) {
+      if (event.confirmation_required || event.clarification_required) return event.output;
+      return requestOutcome(event);
+    }
+
+    function showError(error) {
+      $('result').className = 'error';
+      $('result').textContent = error.message;
+      renderTurnStatus();
+    }
+
+    async function post(path, body) {
+      const response = await fetch(path, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Request failed');
+      return result;
+    }
+
+    function groupDefinitions(state) {
+      if (state.groups?.length) return state.groups;
+      return [...new Set(state.tabs.map(tab => tab.group))].map(name => ({id: name, name}));
+    }
+
+    function tabsInGroup(state, group) {
+      return state.tabs.filter(tab => tab.group_id === group.id || (!tab.group_id && tab.group === group.name));
+    }
+
+    function clearDragMarks() {
+      document.querySelectorAll('.dragging, .drop-before, .drop-target').forEach(element => {
+        element.classList.remove('dragging', 'drop-before', 'drop-target');
+      });
+    }
+
+    function renderTabs(state) {
+      const definitions = groupDefinitions(state);
+      const signature = JSON.stringify([
+        state.selected,
+        selecting,
+        definitions.map(group => [group.id, group.name]),
+        state.tabs.map(tab => [tab.id, tab.name, tab.group_id, tab.group, tab.state, tab.panes.length])
+      ]);
+      if (signature === tabSignature) return;
+      tabSignature = signature;
+      const sections = [];
+      let selectedButton = null;
+      for (const [groupIndex, group] of definitions.entries()) {
+        const tabs = tabsInGroup(state, group);
+        const section = document.createElement('section');
+        section.className = 'tab-group';
+        section.dataset.groupId = group.id;
+        const headingRow = document.createElement('div');
+        headingRow.className = 'group-heading';
+        const heading = document.createElement('h2');
+        heading.textContent = group.name;
+        const renameGroupButton = document.createElement('button');
+        renameGroupButton.type = 'button';
+        renameGroupButton.className = 'group-action';
+        renameGroupButton.setAttribute('aria-label', `Rename ${group.name} group`);
+        renameGroupButton.title = 'Rename group';
+        renameGroupButton.innerHTML = renameIcon;
+        renameGroupButton.addEventListener('click', () => renameGroup(group));
+        headingRow.append(heading, renameGroupButton);
+        const list = document.createElement('div');
+        list.className = 'tab-list';
+        list.setAttribute('role', 'group');
+        list.setAttribute('aria-label', group.name);
+        section.addEventListener('dragover', event => {
+          if (!draggingTab) return;
+          event.preventDefault();
+          list.classList.add('drop-target');
+        });
+        section.addEventListener('dragleave', event => {
+          if (!section.contains(event.relatedTarget)) list.classList.remove('drop-target');
+        });
+        section.addEventListener('drop', event => {
+          if (!draggingTab) return;
+          event.preventDefault();
+          clearDragMarks();
+          moveTab(draggingTab, group.id, null);
+        });
+        for (const [tabIndex, tab] of tabs.entries()) {
+          const row = document.createElement('div');
+          const selected = tab.id === state.selected;
+          row.className = 'tab-row' + (selected ? ' active' : '');
+          row.draggable = true;
+          row.dataset.tabId = tab.id;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'tab';
+          button.dataset.tabId = tab.id;
+          if (selected) button.setAttribute('aria-current', 'page');
+          button.title = 'Alt + arrow keys move this tab';
+          button.disabled = selecting === tab.id;
+          button.innerHTML = `<span class="tab-name"></span><span class="activity state-${tab.state}"></span>`;
+          button.querySelector('.tab-name').textContent = tab.name;
+          button.querySelector('.activity').textContent = (activityLabels[tab.state] || tab.state) + (tab.panes.length > 1 ? ` · ${tab.panes.length} panes` : '');
+          button.addEventListener('click', () => selectTab(tab.id));
+          button.addEventListener('keydown', event => {
+            if (!event.altKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+            event.preventDefault();
+            if (event.key === 'ArrowUp' && tabIndex > 0) {
+              moveTab(tab.id, group.id, tabs[tabIndex - 1].id, true);
+            } else if (event.key === 'ArrowDown' && tabIndex < tabs.length - 1) {
+              moveTab(tab.id, group.id, tabs[tabIndex + 2]?.id || null, true);
+            } else if (event.key === 'ArrowLeft' && groupIndex > 0) {
+              moveTab(tab.id, definitions[groupIndex - 1].id, null, true);
+            } else if (event.key === 'ArrowRight' && groupIndex < definitions.length - 1) {
+              moveTab(tab.id, definitions[groupIndex + 1].id, null, true);
+            }
+          });
+          const renameTabButton = document.createElement('button');
+          renameTabButton.type = 'button';
+          renameTabButton.className = 'tab-action';
+          renameTabButton.setAttribute('aria-label', `Rename ${tab.name}`);
+          renameTabButton.title = 'Rename tab';
+          renameTabButton.innerHTML = renameIcon;
+          renameTabButton.addEventListener('click', () => renameTab(tab));
+          const closeTabButton = document.createElement('button');
+          closeTabButton.type = 'button';
+          closeTabButton.className = 'tab-action';
+          closeTabButton.textContent = '×';
+          closeTabButton.setAttribute('aria-label', `Close tab ${tab.name}`);
+          closeTabButton.addEventListener('click', () => closeTab(tab.id));
+          row.addEventListener('dragstart', event => {
+            draggingTab = tab.id;
+            row.classList.add('dragging');
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', tab.id);
+          });
+          row.addEventListener('dragend', () => {
+            draggingTab = null;
+            clearDragMarks();
+          });
+          row.addEventListener('dragover', event => {
+            if (!draggingTab || draggingTab === tab.id) return;
+            event.preventDefault();
+            event.stopPropagation();
+            row.classList.add('drop-before');
+          });
+          row.addEventListener('dragleave', () => row.classList.remove('drop-before'));
+          row.addEventListener('drop', event => {
+            if (!draggingTab || draggingTab === tab.id) return;
+            event.preventDefault();
+            event.stopPropagation();
+            clearDragMarks();
+            moveTab(draggingTab, group.id, tab.id);
+          });
+          if (selected) selectedButton = button;
+          row.append(button, renameTabButton, closeTabButton);
+          list.append(row);
+        }
+        if (!tabs.length) {
+          const empty = document.createElement('div');
+          empty.className = 'empty-group';
+          empty.textContent = 'Drop tabs here';
+          list.append(empty);
+        }
+        section.append(headingRow, list);
+        sections.push(section);
+      }
+      const navigation = $('tabs');
+      navigation.replaceChildren(...sections);
+      if (selectedButton && window.matchMedia('(max-width: 700px)').matches) {
+        requestAnimationFrame(() => {
+          const navigationBox = navigation.getBoundingClientRect();
+          const selectedBox = selectedButton.getBoundingClientRect();
+          const groupBox = selectedButton.closest('.tab-group').getBoundingClientRect();
+          if (groupBox.width <= navigationBox.width) {
+            navigation.scrollLeft += groupBox.left - navigationBox.left - 10;
+          } else if (selectedBox.right > navigationBox.right) {
+            navigation.scrollLeft += selectedBox.right - navigationBox.right + 10;
+          } else if (selectedBox.left < navigationBox.left) {
+            navigation.scrollLeft -= navigationBox.left - selectedBox.left + 10;
+          }
+        });
+      } else {
+        navigation.scrollLeft = 0;
+      }
+    }
+
+    function render(state) {
+      currentState = state;
+      const selectedTab = state.tabs.find(tab => tab.id === state.selected);
+      const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
+      $('target-status').textContent = selectedPane
+        ? `Selected: ${selectedTab.name} · pane ${selectedPane.number}` +
+          (['codex', 'claude'].includes(selectedPane.command) && !selectedPane.agent && !selectedPane.codex
+            ? ' · conversation unavailable; voice messages cannot be delivered yet' : '') : '';
+      if (voice.draft && JSON.stringify(voice.draft.target) !== JSON.stringify(phoneTarget())) voice.holdDraft();
+      $('close-actions').hidden = !state.pending_close;
+      $('clarification-actions').hidden = !state.pending_clarification;
+      $('clarify-send').disabled = !state.pending_clarification?.message;
+      $('composer').dataset.choicePending = String(Boolean(state.pending_close || state.pending_clarification));
+      $('new-tab').disabled = false;
+      $('new-group').disabled = false;
+      voice.configure(state.voice);
+      const status = document.querySelector('.rail-status');
+      status.dataset.state = state.api_configured ? 'live' : 'limited';
+      $('connection').textContent = state.api_configured ? 'Live' : 'Jev unavailable';
+      renderTabs(state);
+
+      renderPanes(state);
+      observeReplies(state);
+      activeTab = state.selected;
+
+      for (const receipt of state.request_results || []) {
+        if (speechRecords.some(item => item.id === receipt.request_id)) {
+          retainOutcome(receipt.request_id, receipt);
+        }
+        if (receipt.request_id === pendingRequest?.id) pendingRequest.resolve(receipt);
+      }
+      const event = state.latest;
+      if (event?.request_id && event.request_id === pendingRequest?.id) {
+        pendingRequest.resolve(event);
+      }
+      if (event && event.timestamp !== lastEvent && (!submitting || event.request_id === pendingRequest?.id)) {
+        lastEvent = event.timestamp;
+        $('details').textContent = JSON.stringify(event, null, 2);
+        if (!speechRecords.some(record => record.id === event.request_id) ||
+            (Date.parse(event.timestamp) < openedAt && !state.pending_close && !state.pending_clarification)) {
+          renderTurnStatus();
+          return;
+        }
+        $('result').className = event.outcome === 'error' ? 'error' : '';
+        $('result').textContent = (event.confirmation_required && !state.pending_close)
+          || (event.clarification_required && !state.pending_clarification)
+          ? 'Pending request expired. Ask again.' : decisionText(event);
+      }
+      renderTurnStatus();
+    }
+
+    function selectedTerminal() {
+      return document.querySelector('.pane.active .terminal');
+    }
+
+    function renderPanes(state) {
+      const tab = state.tabs.find(tab => tab.id === state.selected);
+      const container = $('panes');
+      const ids = tab.panes.map(pane => pane.id);
+      for (const element of [...container.children]) {
+        if (!ids.includes(element.dataset.pane)) element.remove();
+      }
+      const width = Math.max(...tab.panes.map(pane => pane.left + pane.width));
+      const height = Math.max(...tab.panes.map(pane => pane.top + pane.height));
+      for (const pane of tab.panes) {
+        let element = [...container.children].find(element => element.dataset.pane === pane.id);
+        if (!element) {
+          element = document.createElement('section');
+          element.dataset.pane = pane.id;
+          element.innerHTML = '<div class="pane-heading"><button class="pane-label" type="button"></button><button class="pane-close" type="button">×</button></div><pre class="terminal" tabindex="0" role="region"></pre>';
+          element.querySelector('.pane-label').addEventListener('click', () => element.querySelector('.terminal').focus());
+          element.querySelector('.pane-close').addEventListener('click', () => closePane(tab.id, pane.id));
+          container.append(element);
+        }
+        element.className = 'pane' + (pane.active ? ' active' : '');
+        Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
+        const role = pane.handoff.role ? ` · ${pane.handoff.role}` : '';
+        const identity = pane.thread_id ? `${pane.provider || 'codex'} · …${pane.thread_id.slice(-8)}`
+          : ['codex', 'claude'].includes(pane.command) ? 'identity unresolved' : pane.command;
+        const label = `${tab.name} · pane ${pane.number}${role} · ${identity}`;
+        element.querySelector('.pane-label').textContent = label;
+        const trackingNote = pane.command === 'codex' && pane.tracking !== 'live_title'
+          ? '\nLimited tracking: launch Codex with -c tui.terminal_title=["session-id"] to follow /new, resume and fork.'
+          : pane.command === 'claude' && pane.tracking !== 'lifecycle_hooks'
+          ? '\nClaude identity unavailable: launch with the sandbox lifecycle hooks.' : '';
+        element.querySelector('.pane-label').title = (pane.thread_id || label) + trackingNote;
+        element.querySelector('.pane-close').setAttribute('aria-label', `Close ${tab.name} pane ${pane.number}`);
+        const terminal = element.querySelector('.terminal');
+        terminal.dataset.tab = tab.id;
+        terminal.dataset.pane = pane.id;
+        terminal.dataset.identity = pane.identity;
+        terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
+        const nearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 36;
+        renderTerminal(terminal, pane.terminal_ansi || '');
+        if (activeTab !== state.selected || nearBottom) terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    async function closePane(tabId, paneId) {
+      const tab = currentState.tabs.find(tab => tab.id === tabId);
+      const pane = tab?.panes.find(pane => pane.id === paneId);
+      if (!pane || !window.confirm(`Close ${tab.name}, pane ${pane.number}? Its running process will end.`)) return;
+      flushTerminalText();
+      await terminalQueue;
+      await mutate('/api/panes/close', {tab: tabId, pane: paneId, identity: pane.identity});
+    }
+
+    async function closeTab(tabId) {
+      const tab = currentState.tabs.find(tab => tab.id === tabId);
+      if (!tab || !window.confirm(`Close tab ${tab.name} and all ${tab.panes.length} pane(s)? Their running processes will end.`)) return;
+      const identities = Object.fromEntries(tab.panes.map(pane => [pane.id, pane.identity]));
+      flushTerminalText();
+      await terminalQueue;
+      await mutate('/api/tabs/close', {tab: tabId, identities});
+    }
+
+    async function mutate(path, body) {
+      try {
+        const state = await post(path, body);
+        tabSignature = null;
+        render(state);
+        return state;
+      } catch (error) {
+        showError(error);
+        return null;
+      }
+    }
+
+    async function createGroup() {
+      const name = window.prompt('Name the new tab group', 'New group');
+      if (name === null || !name.trim()) return;
+      await mutate('/api/groups/create', {name});
+    }
+
+    async function renameGroup(group) {
+      const name = window.prompt('Rename tab group', group.name);
+      if (name === null || !name.trim() || name.trim() === group.name) return;
+      await mutate('/api/groups/rename', {group: group.id, name});
+    }
+
+    async function createTab() {
+      if (!currentState) return;
+      const name = window.prompt('Name the new terminal tab', 'Shell');
+      if (name === null || !name.trim()) return;
+      flushTerminalText();
+      await terminalQueue;
+      const selected = currentState?.tabs.find(tab => tab.id === currentState.selected);
+      const group = selected?.group_id || groupDefinitions(currentState)[0]?.id;
+      const state = await mutate('/api/tabs/create', {name, group});
+      if (state) selectedTerminal()?.focus({preventScroll: true});
+    }
+
+    async function renameTab(tab) {
+      const name = window.prompt('Rename tab', tab.name);
+      if (name === null || !name.trim() || name.trim() === tab.name) return;
+      await mutate('/api/tabs/rename', {tab: tab.id, name});
+    }
+
+    async function moveTab(tab, group, before, restoreFocus = false) {
+      const state = await mutate('/api/tabs/move', {tab, group, before});
+      if (state && restoreFocus) {
+        requestAnimationFrame(() => [...document.querySelectorAll('.tab')]
+          .find(button => button.dataset.tabId === tab)?.focus());
+      }
+    }
+
+    async function refresh() {
+      const response = await fetch('/api/state');
+      const state = await response.json();
+      if (!response.ok) throw new Error(state.error);
+      render(state);
+    }
+
+    async function poll() {
+      try { await refresh(); }
+      catch (error) {
+        const status = document.querySelector('.rail-status');
+        status.dataset.state = 'offline';
+        $('connection').textContent = 'Offline';
+      }
+      setTimeout(poll, 500);
+    }
+
+    function setSubmitting(pending) {
+      submitting = pending;
+      $('composer').dataset.pending = String(pending);
+      if (pending) {
+        $('result').className = 'pending';
+        $('result').textContent = 'Jev is interpreting your request…';
+      }
+      renderTurnStatus();
+    }
+
+    async function selectTab(tabId) {
+      if (selecting || tabId === currentState?.selected) return;
+      flushTerminalText();
+      await terminalQueue;
+      selecting = tabId;
+      tabSignature = null;
+      renderTabs(currentState);
+      try {
+        const state = await post('/api/select', {tab: tabId});
+        render(state);
+        selectedTerminal()?.focus({preventScroll: true});
+      } catch (error) {
+        showError(error);
+      } finally {
+        selecting = null;
+        tabSignature = null;
+        if (currentState) renderTabs(currentState);
+      }
+    }
+
+    function queueTerminalInput(payload) {
+      terminalQueue = terminalQueue.then(async () => {
+        const state = await post('/api/input', payload);
+        if (currentState?.selected === payload.tab) render(state);
+      }).catch(showError);
+      return terminalQueue;
+    }
+
+    function flushTerminalText() {
+      if (!pendingText) return;
+      clearTimeout(pendingTextTimer);
+      const {text, ...target} = pendingText;
+      pendingText = null;
+      pendingTextTimer = null;
+      for (let offset = 0; offset < text.length; offset += 4000) {
+        queueTerminalInput({...target, text: text.slice(offset, offset + 4000)});
+      }
+    }
+
+    function queueTerminalText(text, target) {
+      if (!target?.pane || !text) return;
+      if (pendingText && (pendingText.pane !== target.pane || pendingText.identity !== target.identity)) flushTerminalText();
+      if (!pendingText) pendingText = {...target, text: ''};
+      pendingText.text += text;
+      if (pendingText.text.length >= 4000) flushTerminalText();
+      clearTimeout(pendingTextTimer);
+      if (pendingText) pendingTextTimer = setTimeout(flushTerminalText, 24);
+    }
+
+    function queueTerminalKey(key, target) {
+      if (!target?.pane) return;
+      flushTerminalText();
+      queueTerminalInput({...target, key});
+    }
+
+    function terminalKey(event) {
+      const plain = {
+        Enter: 'Enter', Escape: 'Escape', Backspace: 'BSpace', Tab: 'Tab',
+        ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+        Home: 'Home', End: 'End', Delete: 'DC', Insert: 'IC',
+        PageUp: 'PPage', PageDown: 'NPage',
+        F1: 'F1', F2: 'F2', F3: 'F3', F4: 'F4', F5: 'F5', F6: 'F6',
+        F7: 'F7', F8: 'F8', F9: 'F9', F10: 'F10', F11: 'F11', F12: 'F12'
+      };
+      if (event.metaKey || (event.ctrlKey && event.altKey)) return null;
+      if (event.ctrlKey) {
+        if (event.key.toLowerCase() === 'v') return null;
+        if (event.key === ' ') return 'C-Space';
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+          return 'C-' + plain[event.key];
+        }
+        if (event.key.length === 1) return 'C-' + event.key.toLowerCase();
+      }
+      if (event.altKey) {
+        if (event.key === ' ') return 'M-Space';
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+          return 'M-' + plain[event.key];
+        }
+        if (event.key.length === 1) return 'M-' + event.key;
+      }
+      if (event.shiftKey && event.key === 'Tab') return 'BTab';
+      if (event.shiftKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+        return 'S-' + plain[event.key];
+      }
+      return plain[event.key] || null;
+    }
+
+    async function submitRequest(text, captureTarget = null, source = 'voice') {
+      const id = crypto.randomUUID();
+      const tab = currentState?.tabs.find(tab => tab.id === captureTarget?.tab);
+      const pane = tab?.panes.find(pane => pane.id === captureTarget?.pane);
+      retainSpeech({id, text, source, target: captureTarget,
+        targetLabel: tab && pane ? `${tab.name} · pane ${pane.number}` : 'Captured conversation', status: 'Waiting to interpret'});
+      if (submitting) {
+        retainSpeech({id, status: 'Held, not sent — another request is still being processed.', recoverable: true});
+        voice.restoreDraft(text, captureTarget, 'Held, not sent — another request is still being processed.');
+        showError(new Error('Your new words are saved, but were not sent while Jev was busy.'));
+        voice.speak('Your new words are saved, but were not sent while Jev was busy.', voice.stopReadback('held busy input'));
+        return;
+      }
+      const generation = voice.stopReadback('new request');
+      const controller = new AbortController();
+      const observed = new Promise(resolve => { pendingRequest = {id, resolve}; });
+      let deadline;
+      setSubmitting(true);
+      try {
+        const delivered = fetch('/api/request', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget}),
+          signal: controller.signal
+        }).then(async response => {
+          const result = await response.json();
+          if (!response.ok && !result.timestamp) throw new Error(result.error);
+          return result;
+        });
+        const timeout = new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('Still awaiting the outcome. Your words are saved. Check the recipient before sending again.')), 90000);
+        });
+        const result = await Promise.race([delivered, observed, timeout]);
+        pendingRequest = null;
+        setSubmitting(false);
+        controller.abort();
+        const outcome = requestOutcome(result);
+        const recoverable = result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action');
+        retainOutcome(id, result);
+        if (recoverable) voice.restoreDraft(text, captureTarget, outcome);
+        $('result').className = result.outcome === 'error' ? 'error' : '';
+        $('result').textContent = outcome;
+        refresh().catch(showError);
+        const spoken = ['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
+          : result.outcome === 'error' && result.delivery === 'not_attempted'
+          ? 'I could not complete that request. Nothing was sent. Your words and the error are on screen.' : outcome;
+        if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok') voice.speakReply(spoken, generation);
+        else voice.speak(spoken, generation);
+      } catch (error) {
+        const status = 'Outcome unknown. ' + error.message;
+        retainSpeech({id, status});
+        showError(new Error(status));
+        voice.speak('I have not confirmed the outcome. Your words are saved. Check the recipient before sending again.', generation);
+      } finally {
+        clearTimeout(deadline);
+        controller.abort();
+        if (pendingRequest?.id === id) pendingRequest = null;
+        setSubmitting(false);
+        if (voice.capture?.ready) voice.status('Listening');
+      }
+    }
+
+    $('terminal-toggle').onclick = () => {
+      const shown = $('app').classList.toggle('show-terminal');
+      $('terminal-toggle').setAttribute('aria-pressed', String(shown));
+    };
+    $('manage-tabs').onchange = event => $('app').classList.toggle('manage-tabs', event.target.checked);
+    const mobileLayout = window.matchMedia('(max-width: 700px)');
+    $('more-controls').open = !mobileLayout.matches;
+    mobileLayout.addEventListener('change', event => { $('more-controls').open = !event.matches; });
+    $('read-ready-reply').onclick = () => {
+      if (readyReply) {
+        $('result').textContent = '';
+        voice.speakReply(readyReply.text, voice.stopReadback('read ready reply'));
+      }
+    };
+    $('read-original').onclick = () => voice.speak($('reply-original').textContent, voice.stopReadback('read original'));
+    $('voice-toggle').addEventListener('click', () => {
+      if (voice.capture && !submitting) {
+        $('result').className = '';
+        $('result').textContent = '';
+      }
+    });
+
+    function phoneTarget() {
+      const tab = currentState?.tabs.find(tab => tab.id === currentState.selected);
+      const pane = tab?.panes.find(pane => pane.id === currentState.selected_pane);
+      return pane ? {tab: tab.id, pane: pane.id, identity: pane.identity} : null;
+    }
+    $('phone-text').addEventListener('input', event => {
+      const text = event.target.value;
+      voice.stopReadback('editing message');
+      if (!voice.draft) voice.restoreDraft(text, phoneTarget());
+      else voice.draft.text = text;
+      voice.draft.source = 'typed';
+      voice.draft.unfinalized = false;
+      voice.holdDraft();
+    });
+    $('phone-input').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (selecting) return showError(new Error('Wait for pane selection to finish before sending.'));
+      flushTerminalText();
+      await terminalQueue;
+      await voice.finishDraft();
+    });
+    for (const key of ['Enter', 'Escape']) {
+      $('phone-' + key.toLowerCase()).onclick = async () => {
+        const target = phoneTarget();
+        if (!target) return;
+        try { render(await post('/api/input', {...target, key})); }
+        catch (error) { showError(error); }
+      };
+    }
+    $('new-tab').addEventListener('click', createTab);
+    for (const choice of ['send', 'shutdown', 'cancel']) {
+      $('clarify-' + choice).addEventListener('click', async () => {
+        const id = currentState?.pending_clarification?.id;
+        if (!id) return;
+        voice.stopReadback('clarification answered');
+        flushTerminalText();
+        await terminalQueue;
+        await mutate('/api/clarification', {id, choice});
+      });
+    }
+    for (const action of ['confirm', 'cancel']) {
+      $(action + '-close').addEventListener('click', async () => {
+        const id = currentState?.pending_close?.id;
+        if (!id) return;
+        flushTerminalText();
+        await terminalQueue;
+        await mutate('/api/close/' + action, {id});
+      });
+    }
+    $('new-group').addEventListener('click', createGroup);
+    $('panes').addEventListener('focusin', event => {
+      if (!event.target.matches('.terminal')) return;
+      const {tab, pane} = event.target.dataset;
+      if (pane === currentState?.selected_pane) return;
+      flushTerminalText();
+      terminalQueue = terminalQueue.then(async () => render(await post('/api/select', {tab, pane}))).catch(showError);
+    });
+    $('panes').addEventListener('keydown', event => {
+      if (!event.target.matches('.terminal')) return;
+      const target = {...event.target.dataset};
+      if (event.ctrlKey && event.key.toLowerCase() === 'c' && window.getSelection()?.toString()) return;
+      const key = terminalKey(event);
+      if (key) {
+        event.preventDefault();
+        queueTerminalKey(key, target);
+      } else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        queueTerminalText(event.key, target);
+      }
+    });
+    $('panes').addEventListener('paste', event => {
+      if (!event.target.matches('.terminal')) return;
+      const text = event.clipboardData?.getData('text/plain');
+      if (!text) return;
+      event.preventDefault();
+      queueTerminalText(text, {...event.target.dataset});
+      flushTerminalText();
+    });
+    window.matchMedia('(max-width: 700px)').addEventListener('change', () => {
+      tabSignature = null;
+      if (currentState) renderTabs(currentState);
+    });
+    if (speechRecords.length) retainSpeech(speechRecords[0]);
+    poll();
+  </script>
+</body>
+</html>

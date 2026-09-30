@@ -1,0 +1,16 @@
+[
+  {"request":"Uh, can you say to Luna, \"Hey, how's it going, Luna?\"", "action":"send_message", "target":"Luna", "message":"Hey, how's it going, Luna?"},
+  {"request":"Can you say to Luna, uh... Wait, actually, no, Nova. Um, \"Hey, Nova, how are you doing?\"", "action":"send_message", "target":"Nova", "message":"Hey, Nova, how are you doing?"},
+  {"request":"Um, ask Luna or tell Luna, say, \"Hey, Luna, can you...\" Um, actually, no, never mind. Wait. Um, can you tell Luna to please just, uh, give me a short story, maybe just, like, one paragraph about, um, anything really?", "action":"send_message", "target":"Luna", "message":"please just, uh, give me a short story, maybe just, like, one paragraph about, um, anything really?"},
+  {"request":"Send Luna a message, um, uh, please explain the failing test. Do not change any files.", "action":"send_message", "target":"Luna", "message":"please explain the failing test. Do not change any files."},
+  {"request":"Tell Luna: Write a short story. Actually, scratch that message. Tell Luna: Explain the test failure. Do not use tools.", "action":"send_message", "target":"Luna", "message":"Explain the test failure. Do not use tools."},
+  {"request":"Tell Luna: Reply with exactly OLD. No, replace that whole message with: Reply with exactly NEW. Do not use tools.", "action":"send_message", "target":"Luna", "message":"Reply with exactly NEW. Do not use tools."},
+  {"request":"Tell Luna: \"Please explain the test failure.\" Actually, send that to Nova instead.", "action":"send_message", "target":"Nova", "message":"Please explain the test failure."},
+  {"request":"Tell Luna: \"Write a story, actually a poem, about rain.\"", "action":"send_message", "target":"Luna", "message":"Write a story, actually a poem, about rain."},
+  {"request":"Tell Luna verbatim: \"Um, I like this. Maybe keep it.\"", "action":"send_message", "target":"Luna", "message":"Um, I like this. Maybe keep it."},
+  {"request":"Tell Luna: Reply with the word \"actually\". Do not use tools.", "action":"send_message", "target":"Luna", "message":"Reply with the word \"actually\". Do not use tools."},
+  {"request":"Tell Luna, um...", "action":"no_action"},
+  {"request":"Tell Luna: Hey, can you... actually never mind, don't send it.", "action":"no_action"},
+  {"request":"Send Luna a message, uh, wait, let me think.", "action":"no_action"},
+  {"request":"Tell Nova: Please, um, explain why you chose this. Maybe we should keep it?", "action":"send_message", "target":"Nova", "message":"Please, um, explain why you chose this. Maybe we should keep it?"}
+]
