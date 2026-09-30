@@ -7,6 +7,7 @@ ROOT = Path(__file__).parent
 
 def run():
     state = {'selected': '@a', 'selected_pane': '%a', 'api_configured': True,
+             'groups': [{'id': 'workspace', 'name': 'Workspace'}],
              'voice': {'configured': False}, 'latest': None, 'pending_close': None,
              'pending_clarification': None, 'request_results': [], 'reply_notices': [], 'tabs': []}
     for letter in ('a', 'b'):
@@ -16,6 +17,7 @@ def run():
                        'command': 'codex', 'agent': True, 'codex': True, 'thread_id': letter,
                        'left': 0, 'top': 0, 'width': 80, 'height': 24, 'terminal_ansi': '', 'handoff': {}}]})
     requests, raw, errors = [], [], []
+    lose_terminal_response = False
     def route(r):
         path = r.request.url.split('fixture.test')[-1]
         body = r.request.post_data_json if r.request.method == 'POST' else None
@@ -35,6 +37,8 @@ def run():
             return r.fulfill(json=state)
         if path == '/api/input':
             raw.append(body)
+            if lose_terminal_response:
+                return r.abort()
             return r.fulfill(json=state)
         if path == '/api/voice-event':
             return r.fulfill(json={'ok': True})
@@ -49,6 +53,12 @@ def run():
         page.route('**/*', route)
         page.goto('https://fixture.test/')
         page.wait_for_function('currentState !== null')
+        rail = page.locator('#session-rail').bounding_box()
+        workspace = page.locator('#workspace').bounding_box()
+        tabs = page.locator('.tab').all()
+        assert rail['x'] == 0 and rail['x'] + rail['width'] <= workspace['x']
+        assert tabs[1].bounding_box()['y'] >= tabs[0].bounding_box()['y'] + tabs[0].bounding_box()['height']
+        assert page.locator('#panes').is_visible() and page.locator('#terminal-text').is_visible()
         assert page.locator('#speech-style').input_value() == 'auto'
         page.locator('#phone-text').fill('Please inspect B without changing my recipient.')
         page.locator('#phone-input button').click()
@@ -83,15 +93,55 @@ def run():
         page.locator('#more-controls').evaluate('(el) => el.open = true')
         page.locator('#phone-escape').click()
         assert raw[-1]['key'] == 'Escape' and len(requests) == 2
+        literal = 'Exact terminal text: $HOME "quotes"\nsecond line'
+        page.locator('#terminal-text').fill(literal)
+        page.evaluate("selectTab('@b')")
+        page.wait_for_function("currentState.selected === '@b'")
+        before = len(raw)
+        page.locator('#terminal-input [type=submit]').click()
+        assert len(raw) == before and page.locator('#terminal-text').input_value() == literal
+        page.evaluate("selectTab('@a')")
+        page.wait_for_function("currentState.selected === '@a'")
+        page.locator('#terminal-input [type=submit]').click()
+        page.wait_for_function("document.getElementById('terminal-text').value === ''")
+        assert raw[-1] == {'tab': '@a', 'pane': '%a', 'identity': 'a:replacement', 'text': literal}
+        assert len(raw) == before + 1 and len(requests) == 2
+        page.locator('#phone-enter').click()
+        assert raw[-1]['key'] == 'Enter'
+        assert page.locator('#phone-text').input_value() == 'Keep this draft in A.'
+        page.locator('#terminal-text').fill('Held for the original process')
+        state['tabs'][0]['panes'][0]['identity'] = 'a:second-replacement'
+        page.wait_for_function("phoneTarget().identity === 'a:second-replacement'")
+        before = len(raw)
+        page.locator('#terminal-input [type=submit]').click()
+        assert len(raw) == before
+        assert page.locator('#terminal-text').input_value() == 'Held for the original process'
+        page.locator('#terminal-text').fill('')
+        page.locator('#terminal-text').fill('Uncertain paste')
+        lose_terminal_response = True
+        page.locator('#terminal-input [type=submit]').click()
+        page.wait_for_function("document.getElementById('terminal-input-status').textContent.includes('Delivery not confirmed')")
+        assert len(raw) == before + 1 and page.locator('#terminal-text').input_value() == 'Uncertain paste'
+        assert len(requests) == 2
+        page.locator('#terminal-toggle').click()
+        assert not page.locator('#panes').is_visible() and not page.locator('#terminal-text').is_visible()
+        page.locator('#terminal-toggle').click()
+        for width in (320, 390, 700, 1280):
+            page.set_viewport_size({'width': width, 'height': 844})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+        page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors, errors
         output = ROOT / '.run/conversation-flow'
         output.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(output / 'mobile.png'), full_page=True)
-        report = {'passed': True, 'requests': len(requests), 'raw_keys': len(raw),
+        report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
                              'draft navigation hold', 'background original during draft',
-                             'identity replacement hold', 'explicit raw key', 'mobile overflow'],
+                             'identity replacement hold', 'explicit raw key', 'left mobile tabs',
+                             'literal terminal paste', 'terminal draft target hold',
+                             'terminal identity replacement hold', 'uncertain paste retained without retry',
+                             'terminal toggle', '320–1280px overflow'],
                   'scope': 'Intercepted Chromium endpoints; no model routing or physical phone proof'}
         (output / 'browser.json').write_text(json.dumps(report, indent=2) + '\n')
         print(json.dumps(report))

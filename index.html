@@ -323,30 +323,39 @@
     #more-controls { grid-column: 1 / -1; }
     #more-controls > summary { display: none; }
     #more-controls label { display: block; margin: 8px 0; }
+    #terminal-input { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .terminal-entry { display: none; }
+    #terminal-text { width: 100%; min-height: 64px; resize: vertical; }
+    #terminal-input-status { width: 100%; margin: 0; font-size: 12px; overflow-wrap: anywhere; color: var(--muted); }
 
     @media (max-width: 700px) {
-      #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-      #session-rail { border-right: 0; border-bottom: 1px solid var(--line); }
-      .rail-status { min-height: 36px; padding: 0 14px; }
-      #terminal-toggle { display: block; margin-left: auto; background: none; border: 0; padding: 8px; color: var(--muted); }
+      #app { grid-template-columns: clamp(96px, 28vw, 160px) minmax(0, 1fr); }
+      .rail-status { min-height: 36px; padding: 8px; flex-wrap: wrap; gap: 6px; }
+      #connection { flex: 1; font-size: 11px; }
+      #terminal-toggle { display: block; width: 100%; min-height: 44px; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 8px 2px; color: var(--muted); }
+      #terminal-toggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
       .rail-actions, .group-heading, .tab-action, .empty-group { display: none; }
       #app.manage-tabs .rail-actions, #app.manage-tabs .group-heading { display: flex; }
       #app.manage-tabs .tab-action { display: grid; }
-      #tabs { display: flex; gap: 8px; padding: 8px 12px; overflow-x: auto; }
-      .tab-group { flex: 0 0 auto; }
-      .tab-list { display: flex; gap: 6px; }
-      .tab-row { display: flex; min-width: 0; }
-      .tab { width: auto; min-width: 104px; padding: 8px 12px; }
+      #tabs { padding: 8px 4px; overflow-y: auto; overflow-x: hidden; }
+      .tab-group + .tab-group { margin-top: 12px; }
+      .tab-list { display: grid; gap: 6px; }
+      .tab-row { grid-template-columns: minmax(0, 1fr); }
+      .tab { min-height: 52px; padding: 8px 6px; }
+      .tab-name { white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+      .activity { font-size: 10px; flex-wrap: wrap; }
+      #app.manage-tabs .tab-row { grid-template-columns: 1fr 1fr; }
+      #app.manage-tabs .tab { grid-column: 1 / -1; }
       #workspace { display: flex; flex-direction: column; overflow-y: auto; min-height: 0; }
       #panes { display: none; }
       #app.show-terminal #panes { display: flex; flex-direction: column; min-height: 220px; height: 40dvh; flex: 0 0 auto; }
       .pane { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; min-height: 220px; flex: 1; }
       .terminal { padding: 10px; font-size: 12px; }
-      #composer { display: flex; flex-direction: column; align-items: stretch; gap: 14px; padding: 16px; border-top: 0; flex: 1 0 auto; }
-      #turn-bar { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 14px; align-items: center; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 10px 0; }
+      #composer { display: flex; flex-direction: column; align-items: stretch; gap: 12px; padding: 12px; border-top: 0; flex: 1 0 auto; }
+      #turn-bar { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; align-items: center; background: var(--panel); padding: 10px 0; }
       #turn-status { display: block; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
-      #primary-actions { grid-column: 2; }
-      #voice-toggle { height: 56px; width: 56px; }
+      #primary-actions { grid-column: 1 / -1; flex-wrap: wrap; }
+      #voice-toggle { height: 48px; width: 48px; }
       .mobile-label { display: block; font-size: 11px; }
       #voice-toggle svg { width: 19px; height: 19px; }
       #result, #voice-status, #playback-status, #speech-draft-status { display: none; }
@@ -359,6 +368,10 @@
       #speech-hold, #speech-discard { color: var(--muted); }
       #phone-input { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
       #phone-input textarea { width: 100%; min-height: 80px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: var(--panel); }
+      #terminal-input { display: none; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+      #app.show-terminal #terminal-input { display: flex; }
+      .terminal-entry { display: block; }
+      #terminal-text { padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: #070a09; }
       #more-controls { margin-top: auto; border-top: 1px solid var(--line); padding-top: 16px; }
       #more-controls > summary { display: list-item; color: var(--muted); cursor: pointer; padding: 8px 0; }
       #more-controls label { margin: 16px 0; }
@@ -375,13 +388,13 @@
   </style>
 </head>
 <body>
-  <div id="app">
+  <div id="app" class="show-terminal">
     <aside id="session-rail" aria-label="Sessions">
       <h1 class="sr-only">Jev</h1>
       <div class="rail-status" data-state="connecting">
         <span class="connection-dot" aria-hidden="true"></span>
         <span id="connection" role="status">Connecting</span>
-        <button id="terminal-toggle" type="button" aria-pressed="false">Terminal</button>
+        <button id="terminal-toggle" type="button" aria-pressed="true">Terminal</button>
         <div class="rail-actions">
           <button class="rail-action" id="new-tab" type="button" disabled aria-label="New tab" title="New tab">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
@@ -396,6 +409,14 @@
     <main id="workspace">
       <div id="panes" aria-label="Terminal panes"></div>
       <section id="composer" aria-label="Jev controls" data-pending="false">
+        <form id="terminal-input" aria-label="Direct terminal input">
+          <label for="terminal-text">Direct terminal input</label>
+          <textarea class="terminal-entry" id="terminal-text" aria-label="Terminal text" placeholder="Type literal terminal text…" maxlength="4096" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+          <button class="terminal-entry" type="submit">Paste</button>
+          <button id="phone-enter" type="button">Enter</button>
+          <button id="phone-escape" type="button">Escape</button>
+          <p class="terminal-entry" id="terminal-input-status" role="status">Paste inserts text. Enter submits it.</p>
+        </form>
         <span id="target-status" role="status"></span>
         <div id="transcript" aria-label="Speech transcript" aria-live="polite"></div>
         <div id="turn-bar">
@@ -434,11 +455,7 @@
           <button type="submit">Send</button>
         </form>
         <section id="speech-history" aria-label="Conversation turns"><div id="speech-records"></div></section>
-        <details id="more-controls"><summary>Options &amp; terminal keys</summary>
-        <div aria-label="Raw terminal keys"><span>Selected terminal:</span>
-          <button id="phone-enter" type="button">Enter</button>
-          <button id="phone-escape" type="button">Escape</button>
-        </div>
+        <details id="more-controls"><summary>Options</summary>
         <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
         <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
         <label id="speech-style-label">Read replies as <select id="speech-style"><option value="auto">Automatic · Jev chooses</option><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
@@ -468,6 +485,7 @@
     let pendingText = null;
     let pendingTextTimer = null;
     let terminalQueue = Promise.resolve();
+    let terminalDraftTarget = null;
     const openedAt = Date.now();
     const voice = new VoiceControls(submitRequest, phoneTarget);
     voice.onChange = renderTurnStatus;
@@ -745,13 +763,10 @@
         requestAnimationFrame(() => {
           const navigationBox = navigation.getBoundingClientRect();
           const selectedBox = selectedButton.getBoundingClientRect();
-          const groupBox = selectedButton.closest('.tab-group').getBoundingClientRect();
-          if (groupBox.width <= navigationBox.width) {
-            navigation.scrollLeft += groupBox.left - navigationBox.left - 10;
-          } else if (selectedBox.right > navigationBox.right) {
-            navigation.scrollLeft += selectedBox.right - navigationBox.right + 10;
-          } else if (selectedBox.left < navigationBox.left) {
-            navigation.scrollLeft -= navigationBox.left - selectedBox.left + 10;
+          if (selectedBox.bottom > navigationBox.bottom) {
+            navigation.scrollTop += selectedBox.bottom - navigationBox.bottom + 8;
+          } else if (selectedBox.top < navigationBox.top) {
+            navigation.scrollTop -= navigationBox.top - selectedBox.top + 8;
           }
         });
       } else {
@@ -1143,10 +1158,47 @@
       await terminalQueue;
       await voice.finishDraft();
     });
+    $('terminal-text').addEventListener('input', event => {
+      if (!event.target.value) terminalDraftTarget = null;
+      else if (!terminalDraftTarget) terminalDraftTarget = phoneTarget();
+      $('terminal-input-status').textContent = 'Paste inserts text into the captured terminal. Enter submits it.';
+    });
+    $('terminal-input').addEventListener('submit', async event => {
+      event.preventDefault();
+      const text = $('terminal-text').value;
+      const target = terminalDraftTarget;
+      if (!text) return;
+      if (selecting || !target || JSON.stringify(target) !== JSON.stringify(phoneTarget())) {
+        $('terminal-input-status').textContent = 'Terminal changed. Return to the original pane, or clear and re-enter the text.';
+        return;
+      }
+      $('terminal-text').readOnly = true;
+      const buttons = [...$('terminal-input').querySelectorAll('button')];
+      buttons.forEach(button => { button.disabled = true; });
+      flushTerminalText();
+      terminalQueue = terminalQueue.then(async () => {
+        try {
+          const state = await post('/api/input', {...target, text});
+          render(state);
+          $('terminal-text').value = '';
+          terminalDraftTarget = null;
+          $('terminal-input-status').textContent = 'Text pasted. Enter submits it.';
+        } catch (error) {
+          $('terminal-input-status').textContent = 'Delivery not confirmed. Check the terminal before pasting again. ' + error.message;
+        } finally {
+          $('terminal-text').readOnly = false;
+          buttons.forEach(button => { button.disabled = false; });
+        }
+      });
+      await terminalQueue;
+    });
     for (const key of ['Enter', 'Escape']) {
       $('phone-' + key.toLowerCase()).onclick = async () => {
+        if (selecting) return;
         const target = phoneTarget();
         if (!target) return;
+        flushTerminalText();
+        await terminalQueue;
         try { render(await post('/api/input', {...target, key})); }
         catch (error) { showError(error); }
       };
