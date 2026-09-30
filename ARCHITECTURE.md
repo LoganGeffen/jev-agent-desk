@@ -4,8 +4,11 @@ The browser's typed and spoken drafts converge on `/api/request`. It sends exact
 composed text, a request ID, and a captured tab/pane/process-conversation identity.
 `server.py` snapshots available targets, calls Jev, validates the selected action
 and identity, then dispatches through `session_actions.py` to a provider adapter.
-The controller chooses one action. Close requests have clarification and explicit
-confirmation paths.
+Jev first distinguishes a direct message, a routed message, a workspace command,
+or cancelled input. Direct messages use the selected pane and complete original
+text without boundary extraction. Routed messages resolve the recipient and text;
+workspace commands choose an action without message extraction. Close requests
+retain clarification and explicit confirmation paths.
 
 `jev.py` builds typed choice questions for action, recipient, pane and message
 boundaries. Message delivery slices the selected span from the original request;
@@ -15,7 +18,11 @@ judgments, not measured guarantees.
 
 `codex_actions.py` reads history through Codex app-server and sends via tmux.
 `pane_identity.py` reads `/proc`, writer locks and, when needed, the local Codex
-metadata database in read-only mode. Identity is checked again before delivery.
+metadata database in read-only mode. For daemon-backed Codex terminals, Linux `ss`
+identifies the connected daemon; its live writer locks and a unique exact session
+name matching the terminal title resolve the conversation. Missing or duplicate
+names remain unresolved. This path requires `ss` from iproute2.
+Identity is checked again before delivery.
 Unresolved identity blocks the action instead of guessing the recipient.
 
 `claude_runtime.py` binds a pane process to Claude's session ID using SessionStart,
@@ -39,7 +46,11 @@ asks an isolated, tool-disabled Codex invocation for an observer answer.
 
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
-manages draft identity, recognition pauses, readback cancellation and audio caches.
+manages drafts per pane, recognition pauses, readback cancellation and audio caches.
+An identity change stops automatic sending; pressing Send explicitly accepts the
+reviewed draft for the current conversation in that same pane. Backend validation
+still rejects any identity change after that click. Delivery pastes and presses
+Enter in one operation; uncertain delivery is never automatically retried.
 `spoken_reply.py` first asks Jev whether original wording or a faithful rendition
 is appropriate; an explicit mode bypasses that judgment. A rendition is generated
 as a complete text before synthesis. This is not streaming text generation or

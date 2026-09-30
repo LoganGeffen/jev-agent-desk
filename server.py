@@ -367,7 +367,8 @@ class Playground:
                     for tab in before["tabs"]
                 ]
                 event["input"] = jev.question(request, routing_tabs, before["selected"])
-                response = self.evaluate(event["input"])
+                event["routing_steps"] = []
+                response = jev.interpret(event["input"], self.evaluate, event["routing_steps"])
                 event["response"] = response
                 event['boundary_refinement'] = jev.refine_boundaries(event['input'], response, self.evaluate)
                 action = event["action"] = response["answers"]["action"]["choice"]
@@ -473,6 +474,7 @@ class Playground:
                         self.read_output = {"target": event['target_label'], "text": event["output"]}
 
                 {"select_tab": select, "list_tabs": lambda: None,
+                 "create_tab": lambda: self.create_tab('Terminal', next(tab['group_id'] for tab in before['tabs'] if tab['id'] == before['selected'])),
                  "close_tab": close, "close_pane": close, 'clarify_close': close,
                  "send_message": agent_action, "read_reply": agent_action,
                  "interrupt_turn": agent_action, "ask_session": agent_action,

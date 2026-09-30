@@ -17,7 +17,6 @@ def run():
                        'command': 'codex', 'agent': True, 'codex': True, 'thread_id': letter,
                        'left': 0, 'top': 0, 'width': 80, 'height': 24, 'terminal_ansi': '', 'handoff': {}}]})
     requests, raw, errors = [], [], []
-    lose_terminal_response = False
     def route(r):
         path = r.request.url.split('fixture.test')[-1]
         body = r.request.post_data_json if r.request.method == 'POST' else None
@@ -37,8 +36,6 @@ def run():
             return r.fulfill(json=state)
         if path == '/api/input':
             raw.append(body)
-            if lose_terminal_response:
-                return r.abort()
             return r.fulfill(json=state)
         if path == '/api/voice-event':
             return r.fulfill(json={'ok': True})
@@ -86,57 +83,36 @@ def run():
         page.locator('#phone-text').fill('Keep this draft in A.')
         page.evaluate("selectTab('@b')")
         page.wait_for_function("currentState.selected === '@b'")
-        page.locator('#phone-input [type=submit]').click()
-        assert len(requests) == 2
-        assert page.locator('#phone-text').input_value() == 'Keep this draft in A.'
+        assert page.locator('#phone-text').input_value() == ''
+        assert not page.locator('#speech-retarget').count()
+        page.locator('#phone-text').fill('Separate draft in B.')
         state['reply_notices'].append({'id': 'reply-b', 'request_id': requests[1]['request_id'],
                                      'thread_id': 'b', 'target': 'B · pane 1', 'text': 'Original B reply.'})
         page.wait_for_function("document.getElementById('speech-records').textContent.includes('Original B reply.')")
-        assert page.locator('#phone-text').input_value() == 'Keep this draft in A.'
+        assert page.locator('#phone-text').input_value() == 'Separate draft in B.'
+        page.locator('#speech-history > summary').click()
         page.locator('#read-ready-reply').click()
         assert page.locator('#reply-original').inner_text() == 'Original B reply.'
+        page.locator('#speech-history > summary').click()
         page.evaluate("selectTab('@a')")
         page.wait_for_function("currentState.selected === '@a'")
+        assert page.locator('#phone-text').input_value() == 'Keep this draft in A.'
         state['tabs'][0]['panes'][0]['identity'] = 'a:replacement'
         page.wait_for_function("phoneTarget().identity === 'a:replacement'")
-        page.locator('#phone-input [type=submit]').click()
+        assert page.locator('#turn-status').inner_text() == 'Session changed. Review this draft, then press Send.'
+        page.evaluate('voice.finishDraft()')
         assert len(requests) == 2
-        assert page.locator('#phone-text').input_value() == 'Keep this draft in A.'
+        page.locator('#phone-input [type=submit]').click()
+        page.wait_for_function('!submitting && speechRecords.length === 3')
+        assert requests[-1]['capture_target']['identity'] == 'a:replacement'
+        assert requests[-1]['request'] == 'Keep this draft in A.'
         page.locator('#more-controls').evaluate('(el) => el.open = true')
         page.locator('#phone-escape').click()
-        assert raw[-1]['key'] == 'Escape' and len(requests) == 2
-        literal = 'Exact terminal text: $HOME "quotes"\nsecond line'
-        page.locator('#speech-discard').click()
-        page.locator('#phone-text').fill(literal)
-        page.evaluate("selectTab('@b')")
-        page.wait_for_function("currentState.selected === '@b'")
-        before = len(raw)
-        page.locator('#paste-terminal').click()
-        assert len(raw) == before and page.locator('#phone-text').input_value() == literal
-        page.evaluate("selectTab('@a')")
-        page.wait_for_function("currentState.selected === '@a'")
-        page.locator('#paste-terminal').click()
-        page.wait_for_function("document.getElementById('phone-text').value === ''")
-        assert raw[-1] == {'tab': '@a', 'pane': '%a', 'identity': 'a:replacement', 'text': literal}
-        assert len(raw) == before + 1 and len(requests) == 2
+        assert raw[-1]['key'] == 'Escape'
         page.locator('#phone-enter').click()
         assert raw[-1]['key'] == 'Enter'
-        assert page.locator('#phone-text').input_value() == ''
-        page.locator('#phone-text').fill('Held for the original process')
-        state['tabs'][0]['panes'][0]['identity'] = 'a:second-replacement'
-        page.wait_for_function("phoneTarget().identity === 'a:second-replacement'")
-        before = len(raw)
-        page.locator('#paste-terminal').click()
-        assert len(raw) == before
-        assert page.locator('#phone-text').input_value() == 'Held for the original process'
-        page.locator('#speech-discard').click()
-        page.evaluate("voice.committed('Uncertain paste'); voice.holdDraft()")
-        assert page.locator('#phone-text').input_value() == 'Uncertain paste'
-        lose_terminal_response = True
-        page.locator('#paste-terminal').click()
-        page.wait_for_function("document.getElementById('turn-status').textContent.includes('Delivery not confirmed')")
-        assert len(raw) == before + 1 and page.locator('#phone-text').input_value() == 'Uncertain paste'
-        assert len(requests) == 2
+        assert not page.locator('#paste-terminal').count()
+        assert page.locator('textarea').count() == 1
         page.locator('#terminal-toggle').click()
         assert not page.locator('#panes').is_visible() and page.locator('#phone-text').is_visible()
         page.locator('#terminal-toggle').click()
@@ -146,7 +122,7 @@ def run():
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
         page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        page.locator('#speech-discard').click()
+        page.locator('#phone-text').fill('')
         page.set_viewport_size({'width': 390, 'height': 430})
         assert page.locator('#phone-input').bounding_box()['y'] + page.locator('#phone-input').bounding_box()['height'] <= 430
         assert page.locator('#panes').bounding_box()['height'] > 150
@@ -157,10 +133,8 @@ def run():
         page.screenshot(path=str(output / 'mobile.png'), full_page=True)
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
-                             'draft navigation hold', 'background original during draft',
-                             'identity replacement hold', 'explicit raw key', 'left mobile tabs',
-                             'literal terminal paste', 'terminal draft target hold',
-                             'terminal identity replacement hold', 'uncertain paste retained without retry',
+                             'separate drafts per pane', 'background original during draft',
+                             'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow'],
                   'scope': 'Intercepted Chromium endpoints; no model routing or physical phone proof'}

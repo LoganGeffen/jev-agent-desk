@@ -3,6 +3,7 @@ class VoiceControls {
     this.submit = submit;
     this.target = target;
     this.draft = null;
+    this.drafts = new Map();
     this.draftTimer = null;
     this.recognitionTimer = null;
     this.recognitionWaitMs = 2500;
@@ -20,33 +21,13 @@ class VoiceControls {
     document.getElementById('voice-toggle').onclick = () => this.capture ? this.stop() : this.start();
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.stop(); });
     window.addEventListener('pagehide', () => this.stop());
-    document.getElementById('speech-send').onclick = () => this.finishDraft();
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
     document.getElementById('replay-reply').onclick = () => {
       const text = document.getElementById('reply-original').textContent;
       if (text) this.speakReply(text, this.stopReadback('replay reply'));
     };
-    document.getElementById('speech-hold').onclick = () => this.holdDraft();
-    document.getElementById('speech-retarget').onclick = () => {
-      const target = this.target();
-      if (!this.draft || !target || this.draft.awaitingCommit || this.draft.partial) return;
-      this.draft.target = target;
-      this.onsetTarget = target;
-      this.holdDraft();
-    };
-    document.getElementById('speech-discard').onclick = () => {
-      clearTimeout(this.draftTimer);
-      this.draft = null;
-      this.onsetTarget = undefined;
-      this.renderDraft();
-    };
-    document.getElementById('speech-draft-text').oninput = event => {
-      if (!this.draft) return;
-      this.draft.text = event.target.value;
-      this.draft.unfinalized = false;
-      this.holdDraft();
-    };
     try {
+      this.drafts = new Map(JSON.parse(sessionStorage.getItem('jev-pane-drafts') || '[]'));
       const saved = sessionStorage.getItem('jev-speech-draft');
       if (saved) {
         this.draft = {...JSON.parse(saved), held: true};
@@ -58,24 +39,32 @@ class VoiceControls {
   renderDraft() {
     const draft = this.draft;
     const changed = !!draft && JSON.stringify(draft.target) !== JSON.stringify(this.target());
-    document.getElementById('speech-draft').hidden = !draft;
-    document.getElementById('speech-send').hidden = !draft;
-    document.getElementById('speech-send').disabled = !!draft?.partial || !!draft?.awaitingCommit;
-    document.getElementById('speech-retarget').hidden = !changed || !draft.held;
-    document.getElementById('speech-retarget').disabled = !this.target() || !!draft?.awaitingCommit || !!draft?.partial;
-    const field = document.getElementById('speech-draft-text');
-    const text = draft ? [draft.text, draft.partial].filter(Boolean).join(' ') : '';
-    if (field.value !== text) field.value = text;
-    field.readOnly = !!draft && (!draft.held || draft.awaitingCommit);
     document.getElementById('speech-draft-status').textContent = !draft ? '' : draft.held && changed
-      ? 'Held · the selected pane or conversation changed. Return to the original, or use the selected pane and review before sending.' : draft.held
-      ? draft.unfinalized ? 'Held · last words were not finalized. Review before sending.' : draft.recoveryReason || 'Held for review · nothing sent'
+      ? 'Session changed. Review this draft, then press Send.' : draft.held
+      ? draft.unfinalized ? 'Review the last recognized words before sending.' : draft.recoveryReason || ''
       : draft.partial ? 'Listening…' : draft.awaitingCommit ? 'Waiting for recognized words…' : 'Pause to send · keep talking to continue';
     try {
+      sessionStorage.setItem('jev-pane-drafts', JSON.stringify([...this.drafts]));
       if (draft) sessionStorage.setItem('jev-speech-draft', JSON.stringify(draft));
       else sessionStorage.removeItem('jev-speech-draft');
     } catch {}
     this.onChange?.();
+  }
+  selectTarget() {
+    const target = this.target();
+    const key = value => value ? JSON.stringify([value.tab, value.pane]) : '';
+    if (this.draft && key(this.draft.target) !== key(target)) {
+      this.stop();
+      this.drafts.set(key(this.draft.target), this.draft);
+      this.draft = null;
+    }
+    if (!this.draft && this.drafts.has(key(target))) {
+      this.draft = this.drafts.get(key(target));
+      this.drafts.delete(key(target));
+      this.draft.held = true;
+    }
+    if (this.draft && JSON.stringify(this.draft.target) !== JSON.stringify(target)) this.holdDraft();
+    this.renderDraft();
   }
   speechOnset(recognized = false) {
     clearTimeout(this.draftTimer);
@@ -119,7 +108,7 @@ class VoiceControls {
     this.draft.partial = '';
     this.draft.awaitingCommit = false;
   }
-  async finishDraft() {
+  async finishDraft(manual = false) {
     const draft = this.draft;
     clearTimeout(this.draftTimer);
     if (!draft?.text || draft.partial || draft.awaitingCommit) {
@@ -127,9 +116,12 @@ class VoiceControls {
       return;
     }
     if (JSON.stringify(draft.target) !== JSON.stringify(this.target())) {
-      this.holdDraft();
-      this.status('Selection changed. Return to the original pane before sending this draft.');
-      return;
+      const target = this.target();
+      if (!manual || !target || target.tab !== draft.target?.tab || target.pane !== draft.target?.pane) {
+        this.holdDraft();
+        return;
+      }
+      draft.target = target;
     }
     if (draft.recognitionStalled) this.lateWordsTarget = draft.target;
     this.draft = null;

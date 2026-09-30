@@ -81,3 +81,37 @@ class SessionIdentityTests(unittest.TestCase):
         self.database.unlink()
         self.assertEqual(self.live()['thread_id'], ROOT)
         self.assertEqual(self.live()['tracking'], 'single_writer')
+
+
+class DaemonIdentityTests(unittest.TestCase):
+    live = SessionIdentityTests.live
+    def setUp(self):
+        SessionIdentityTests.setUp(self)
+        self.peer = self.proc / '99'
+        self.peer.mkdir()
+        (self.proc / '42' / 'fd').rename(self.peer / 'fd')
+        (self.proc / '42' / 'fd').mkdir()
+        (self.proc / '42' / 'fd' / '0').symlink_to('socket:[100]')
+        (self.peer / 'comm').write_text('codex')
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('ALTER TABLE threads ADD COLUMN name')
+            connection.execute('UPDATE threads SET name = ?, source = ?', ('Same name', 'vscode'))
+        self.sockets = patch('pane_identity.subprocess.run')
+        self.run = self.sockets.start()
+        self.addCleanup(self.sockets.stop)
+        self.run.return_value.stdout = 'u_str ESTAB 0 0 /tmp/codex-daemon-1000/fixture 200 * 100 users:(("codex",pid=99,fd=8))'
+
+    def test_daemon_title_requires_unique_name_and_live_writer(self):
+        self.assertIsNone(self.live('Same name | user')['thread_id'])
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('UPDATE threads SET name = ? WHERE id = ?', ('Other name', CHILD))
+        self.assertEqual(self.live('Same name | user')['thread_id'], ROOT)
+        self.assertEqual(self.live('Same name | user')['tracking'], 'daemon_title')
+        self.assertEqual(self.live('Other name | user')['thread_id'], CHILD)
+        self.assertIsNone(self.live('Same')['thread_id'])
+        (self.peer / 'fd' / '0').unlink()
+        self.assertIsNone(self.live('Same name | user')['thread_id'])
+
+    def test_unconnected_daemon_cannot_supply_identity(self):
+        self.run.return_value.stdout = self.run.return_value.stdout.replace('* 100 ', '* 101 ')
+        self.assertIsNone(self.live('Same name | user')['thread_id'])

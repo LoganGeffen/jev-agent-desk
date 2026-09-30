@@ -301,9 +301,6 @@
       white-space: nowrap;
       border: 0;
     }
-    #speech-draft { grid-column: 1 / -1; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-    #speech-draft-text { width: 100%; min-height: 64px; color: inherit; background: var(--panel); font-size: 16px; }
-    #speech-draft[hidden] { display: none; }
     #reply-notice:empty { display: none; }
     #reply-notice, #read-ready-reply { grid-column: 1 / -1; }
     #voice-profile-label, #speech-style-label, #interrupt-label, #reply-presentation { grid-column: 1 / -1; font-size: 12px; }
@@ -315,7 +312,6 @@
     #speech-records p { white-space: pre-wrap; overflow-wrap: anywhere; }
     #phone-input { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
     #phone-text { width: 100%; min-height: 80px; font: inherit; color: inherit; background: var(--panel); }
-    #speech-draft-text { display: none; }
     #speech-history { max-height: 320px; }
     #turn-bar { display: contents; }
     #primary-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
@@ -329,7 +325,6 @@
     #composer-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
     #composer-actions [type="submit"] { margin-left: auto; }
     #turn-status:empty, #primary-actions:has(> [hidden]:only-child), #readback-actions:has(> [hidden]:only-child) { display: none; }
-    #speech-send { display: none; }
     #speech-history > summary { cursor: pointer; }
     #terminal-keys { display: flex; flex-wrap: wrap; gap: 8px; }
     #composer-extras { display: flex; flex-wrap: wrap; align-items: start; gap: 12px; grid-column: 1 / -1; }
@@ -375,8 +370,6 @@
       #turn-status { display: block; font-size: 12px; overflow-wrap: anywhere; }
       #turn-status:empty { display: none; }
       #result, #voice-status, #playback-status, #speech-draft-status, #target-status, #transcript { display: none; }
-      #speech-draft { max-height: none; overflow: visible; white-space: normal; }
-      #speech-hold, #speech-discard { color: var(--muted); }
       #more-controls > summary, #speech-history > summary { display: list-item; color: var(--muted); cursor: pointer; padding: 4px; }
       #more-controls label { margin: 12px 0; }
       #more-controls select { max-width: 100%; min-height: 36px; background: #151b19; color: inherit; border: 1px solid var(--line); border-radius: 5px; }
@@ -421,7 +414,6 @@
         <div id="turn-bar">
         <span id="turn-status" role="status" aria-live="polite"></span>
         <span id="result" role="status" aria-live="polite"></span>
-        <button id="speech-send" type="button" hidden>Send now</button>
         <div id="primary-actions">
           <button id="stop-readback" type="button" hidden>Stop &amp; listen</button>
         </div>
@@ -435,17 +427,7 @@
           <button id="clarify-shutdown" type="button">Shut down instead</button>
           <button id="clarify-cancel" type="button">Cancel</button>
         </div>
-        <div id="speech-draft" hidden>
-          <p id="speech-draft-status" role="status"></p><textarea id="speech-draft-text" aria-label="Recognized speech draft"></textarea>
-          <button id="speech-hold" type="button">Hold</button>
-          <button id="speech-retarget" type="button" hidden>Use selected pane</button>
-          <button id="speech-discard" type="button">Discard</button>
-        </div>
-        <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
-        <div id="readback-actions">
-          <button id="replay-reply" type="button" hidden>Replay reply</button>
-        </div>
-        <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
+        <span id="speech-draft-status" hidden></span>
         <form id="phone-input" aria-label="Conversation message">
           <textarea id="phone-text" aria-label="Message" placeholder="Type or speak a message…" autocapitalize="sentences"></textarea>
           <div id="composer-actions">
@@ -456,10 +438,15 @@
           </div>
         </form>
         <div id="composer-extras">
-        <details id="speech-history"><summary>History</summary><div id="speech-records"></div></details>
+        <details id="speech-history"><summary>History</summary>
+        <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
+        <div id="readback-actions">
+          <button id="replay-reply" type="button" hidden>Replay reply</button>
+        </div>
+        <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
+        <div id="speech-records"></div></details>
         <details id="more-controls"><summary>Options</summary>
         <div id="terminal-keys">
-          <button id="paste-terminal" type="button">Paste to terminal</button>
           <button id="phone-enter" type="button">Enter</button>
           <button id="phone-escape" type="button">Escape</button>
         </div>
@@ -494,7 +481,6 @@
     let pendingText = null;
     let pendingTextTimer = null;
     let terminalQueue = Promise.resolve();
-    let terminalPasting = false;
     const openedAt = Date.now();
     const voice = new VoiceControls(submitRequest, phoneTarget);
     voice.onChange = renderTurnStatus;
@@ -502,10 +488,9 @@
       const draft = voice.draft;
       const textValue = draft ? [draft.text, draft.partial].filter(Boolean).join(' ') : '';
       if ($('phone-text').value !== textValue) $('phone-text').value = textValue;
-      $('phone-text').readOnly = terminalPasting || !!draft?.awaitingCommit || !!draft?.partial;
-      $('phone-input').querySelector('[type="submit"]').disabled = terminalPasting || !!draft?.awaitingCommit || !!draft?.partial;
-      $('paste-terminal').disabled = terminalPasting || !draft?.text || !!draft?.awaitingCommit || !!draft?.partial;
-      $('voice-toggle').disabled = terminalPasting || !voice.config.configured;
+      $('phone-text').readOnly = !!draft?.awaitingCommit || !!draft?.partial;
+      $('phone-input').querySelector('[type="submit"]').disabled = !!draft?.awaitingCommit || !!draft?.partial;
+      $('voice-toggle').disabled = !voice.config.configured;
 
       if (playbackText) {
         $('result').className = '';
@@ -787,6 +772,10 @@
     }
 
     function render(state) {
+      if (currentState && (currentState.selected !== state.selected || currentState.selected_pane !== state.selected_pane)) {
+        $('result').textContent = '';
+        $('result').className = '';
+      }
       currentState = state;
       const selectedTab = state.tabs.find(tab => tab.id === state.selected);
       const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
@@ -795,7 +784,7 @@
         ? `Selected: ${selectedTab.name} · pane ${selectedPane.number}` +
           (['codex', 'claude'].includes(selectedPane.command) && !selectedPane.agent && !selectedPane.codex
             ? ' · conversation unavailable; voice messages cannot be delivered yet' : '') : '';
-      if (voice.draft && JSON.stringify(voice.draft.target) !== JSON.stringify(phoneTarget())) voice.holdDraft();
+      voice.selectTarget();
       $('close-actions').hidden = !state.pending_close;
       $('clarification-actions').hidden = !state.pending_clarification;
       $('clarify-send').disabled = !state.pending_clarification?.message;
@@ -975,7 +964,7 @@
       $('composer').dataset.pending = String(pending);
       if (pending) {
         $('result').className = 'pending';
-        $('result').textContent = 'Jev is interpreting your request…';
+        $('result').textContent = 'Sending…';
       }
       renderTurnStatus();
     }
@@ -1166,56 +1155,21 @@
       voice.stopReadback('editing message');
       if (!voice.draft) voice.restoreDraft(text, phoneTarget());
       else voice.draft.text = text;
+      if (!text) { voice.draft = null; voice.onsetTarget = undefined; voice.renderDraft(); return; }
       voice.draft.source = 'typed';
       voice.draft.unfinalized = false;
       voice.holdDraft();
     });
     $('phone-input').addEventListener('submit', async event => {
       event.preventDefault();
-      if (terminalPasting) return;
       if (selecting) return showError(new Error('Wait for pane selection to finish before sending.'));
       flushTerminalText();
       await terminalQueue;
-      await voice.finishDraft();
+      await voice.finishDraft(true);
     });
-    $('paste-terminal').onclick = async () => {
-      if (terminalPasting) return;
-      voice.holdDraft();
-      const draft = voice.draft;
-      if (!draft?.text || draft.partial || draft.awaitingCommit) return;
-      const {text, target} = draft;
-      if (text.length > 4096) return showError(new Error('Terminal input is limited to 4096 characters.'));
-      if (selecting || !target || JSON.stringify(target) !== JSON.stringify(phoneTarget())) {
-        return showError(new Error('Terminal changed. Return to the original pane or explicitly choose Use selected pane.'));
-      }
-      voice.stop();
-      terminalPasting = true;
-      renderTurnStatus();
-      flushTerminalText();
-      terminalQueue = terminalQueue.then(async () => {
-        try {
-          const state = await post('/api/input', {...target, text});
-          if (voice.draft === draft) {
-            voice.draft = null;
-            voice.onsetTarget = undefined;
-            voice.renderDraft();
-          }
-          render(state);
-          $('result').textContent = '';
-        } catch (error) {
-          draft.recoveryReason = 'Delivery not confirmed. Check the terminal before pasting again. ' + error.message;
-          voice.renderDraft();
-          showError(new Error(draft.recoveryReason));
-        } finally {
-          terminalPasting = false;
-          renderTurnStatus();
-        }
-      });
-      await terminalQueue;
-    };
     for (const key of ['Enter', 'Escape']) {
       $('phone-' + key.toLowerCase()).onclick = async () => {
-        if (selecting || terminalPasting) return;
+        if (selecting) return;
         const target = phoneTarget();
         if (!target) return;
         flushTerminalText();

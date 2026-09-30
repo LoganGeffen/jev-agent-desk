@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 from contextlib import closing
 
 
@@ -49,8 +50,10 @@ def thread_metadata(codex_home, held):
                                 uri=True, timeout=1)) as connection:
         connection.row_factory = sqlite3.Row
         placeholders = ','.join('?' for _ in held)
+        columns = {row[1] for row in connection.execute('PRAGMA table_info(threads)')}
+        name = 'name' if 'name' in columns else 'NULL AS name'
         rows = connection.execute(
-            f'SELECT id, source, model, reasoning_effort, sandbox_policy, approval_mode '
+            f'SELECT id, source, {name}, model, reasoning_effort, sandbox_policy, approval_mode '
             f'FROM threads WHERE id IN ({placeholders})', sorted(held)).fetchall()
     return {row['id']: dict(row) for row in rows}
 
@@ -71,6 +74,30 @@ def select_conversation(held, title='', metadata=None):
     return {'thread_id': thread, 'tracking': tracking if thread else 'unresolved'}
 
 
+def daemon_conversation(process, title, home, proc):
+    if not title:
+        return None
+    sockets = {os.readlink(fd)[8:-1] for fd in (process / 'fd').iterdir()
+               if os.readlink(fd).startswith('socket:[')}
+    result = subprocess.run(['ss', '-xnpH'], capture_output=True, text=True, timeout=2, check=True)
+    peers = set()
+    for row in result.stdout.splitlines():
+        fields = row.split()
+        if len(fields) >= 9 and fields[7] in sockets and '/codex-daemon-' in fields[4]:
+            peers.update(re.findall(r'pid=(\d+)', row))
+    held = set()
+    for pid in peers:
+        peer = proc / pid
+        if (peer / 'comm').read_text().strip() == 'codex':
+            held.update(writer_thread_ids(peer, home))
+    if not held:
+        return None
+    metadata = thread_metadata(home, held)
+    matches = {thread for thread, row in metadata.items() if row.get('name') and
+               (title == row['name'] or title.startswith(row['name'] + ' | '))}
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def process_identity(pid, proc=Path('/proc'), title='', codex_home=None):
     try:
         stat = (proc / str(pid) / 'stat').read_text()
@@ -86,6 +113,13 @@ def process_identity(pid, proc=Path('/proc'), title='', codex_home=None):
         except OSError:
             continue
         if not held:
+            home = codex_home or Path(os.environ.get('CODEX_HOME', '~/.codex')).expanduser()
+            try:
+                thread = daemon_conversation(process, title, home, proc)
+                if thread:
+                    return {**result, 'thread_id': thread, 'tracking': 'daemon_title'}
+            except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+                pass
             continue
         metadata = None
         if len(held) > 1 and not TITLE_ID.fullmatch(title):

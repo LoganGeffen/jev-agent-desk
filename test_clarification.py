@@ -83,7 +83,7 @@ class ClarificationTests(unittest.TestCase):
     def test_new_request_discards_pending_and_routes_normally(self):
         pending = self.proposal()
         with patch.object(self.app, 'evaluate', side_effect=[
-            {'answers': {'resolution': {'choice': 'new_request'}}}, answer('select_tab', '@1', '%1')
+            {'answers': {'resolution': {'choice': 'new_request'}}}, answer('select_tab', '@1', '%1'), answer('select_tab', '@1', '%1')
         ]):
             event = self.app.submit('Go to Beta')
         self.assertEqual(event['outcome'], 'ok', event['error'])

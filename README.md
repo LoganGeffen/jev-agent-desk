@@ -28,6 +28,9 @@ python -m pip install -r requirements.txt
 python launch.py start
 ```
 
+Attaching to daemon-backed Codex terminals also uses `ss` (the `iproute2` package)
+to identify the connected conversation without changing Codex settings.
+
 Open the loopback URL printed by the launcher. This starts a dedicated tmux server
 with four clock fixtures. Without credentials you can browse the interface and use
 manual controls; natural-language routing and voice are unavailable. It does not
@@ -124,9 +127,11 @@ Pending requests and selection are not restored across restarts.
 ## Voice and mobile use
 
 Mobile opens with the terminal filling the available space. **Tabs** opens or
-collapses the left sidebar. Type and dictate into the same composer; Send uses
-Jev. Options contains **Paste to terminal** for inserting that same draft literally,
-plus Enter and Escape. History and secondary controls stay collapsed until needed.
+collapses the left sidebar. Type and dictate into the same composer. **Send**
+delivers ordinary messages to the selected agent and presses Enter automatically.
+Jev routes explicit workspace commands separately. Drafts stay with their panes
+when switching tabs. Options contains Enter and Escape for terminal interaction;
+History and secondary controls stay collapsed until needed.
 
 Allow microphone access and wait for Listening. Speech and typing share a draft
 bound to the conversation where composition began. Speech sends after roughly

@@ -72,7 +72,7 @@ class MobileTests(unittest.TestCase):
         self.assertEqual(json.loads(self.app.log.read_text())['provider_error'], details)
 
     def test_request_id_is_returned_in_polling_state(self):
-        self.app.evaluate = lambda payload: {'answers': {'action': {'choice': 'no_action'}}}
+        self.app.evaluate = lambda payload: {'answers': {'intent': {'choice': 'no_action'}}}
         server = make_server(self.app)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -122,3 +122,21 @@ class MobileTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SubmitKeyTests(unittest.TestCase):
+    setUp = MobileTests.setUp
+    def test_message_delivery_pastes_literal_text_and_submits_with_one_call(self):
+        import codex_actions
+        import time
+        agent = {'socket': self.socket, 'window_id': self.window, 'pane_id': self.other,
+                 'preserve_focus': True}
+        with patch.object(codex_actions, 'check_target'):
+            codex_actions.send_message(self.socket, agent, 'ONE_SEND_TEST')
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            screen = tmux(self.socket, 'capture-pane', '-p', '-t', self.other)
+            if screen.count('ONE_SEND_TEST') == 2:
+                break
+            time.sleep(.03)
+        self.assertEqual(screen.count('ONE_SEND_TEST'), 2, 'cat must receive the completed line after Enter')

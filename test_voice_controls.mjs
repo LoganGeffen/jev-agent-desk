@@ -367,7 +367,7 @@ test('recognition resumes after speaker playback ends and provider errors stay v
   assert.equal(s.elements.get('voice-status').textContent, 'Provider disconnected');
 });
 
-test('identity resolution holds a draft until explicit retarget and send', async () => {
+test('identity resolution holds automatic delivery; manual Send accepts the reviewed current session', async () => {
   const s = setup();
   let target = {tab: '@6', pane: '%6', identity: 'process:codex:'};
   s.voice.target = () => target;
@@ -376,15 +376,10 @@ test('identity resolution holds a draft until explicit retarget and send', async
   target = {tab: '@6', pane: '%6', identity: 'process:codex:new-conversation'};
   s.voice.committed('Please check my standup tasks.');
   assert.equal(s.voice.draft.held, true);
-  assert.equal(s.elements.get('speech-retarget').hidden, false);
-  assert.match(s.elements.get('speech-draft-status').textContent, /conversation changed/);
+  assert.match(s.elements.get('speech-draft-status').textContent, /Session changed/);
   await s.voice.finishDraft();
   assert.deepEqual(s.submitted, []);
-  s.elements.get('speech-retarget').onclick();
-  assert.deepEqual(s.submitted, []);
-  assert.equal(s.voice.draft.held, true);
-  assert.equal(s.voice.draft.target.identity, 'process:codex:new-conversation');
-  await s.voice.finishDraft();
+  await s.voice.finishDraft(true);
   assert.deepEqual(s.submitted, ['Please check my standup tasks.']);
   s.voice.stop();
 });

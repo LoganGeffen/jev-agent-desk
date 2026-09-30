@@ -17,6 +17,7 @@ from server import Playground, activity_state, make_server, tmux
 
 def answer(action, target="unused", pane=None):
     return {"model": "test-stub-not-jev", "answers": {
+        "intent": {"choice": "routed_message" if action == "send_message" else "no_action" if action == "no_action" else "controller"},
         "action": {"type": "choice", "choice": action, "probabilities": {action: 0.4}},
         f"pane:{target}": {"type": "choice", "choice": pane or target.replace('@', '%')},
         "target": {"type": "choice", "choice": target, "probabilities": {target: 0.4}}}}
@@ -45,7 +46,7 @@ class PlaygroundTests(unittest.TestCase):
         event = self.app.submit("Alpha—actually, Beta")
         self.assertEqual(event["outcome"], "ok")
         self.assertEqual(event["after"]["selected"], self.tabs[1]["id"])
-        self.assertEqual(len(self.payloads), 1)
+        self.assertEqual(len(self.payloads), 2)
         self.assertIn("questions", event["input"])
         self.assertEqual(event["input"]["state"]["request"], "Alpha—actually, Beta")
         self.assertEqual(event["response"]["model"], "test-stub-not-jev")
@@ -137,10 +138,10 @@ class PlaygroundTests(unittest.TestCase):
         self.app.submit("first request")
         self.response = answer("no_action")
         self.app.submit("second request")
-        state = self.payloads[1]["state"]
+        state = self.payloads[2]["state"]
         self.assertEqual(state["selected_tab"], self.tabs[1]["id"])
         self.assertEqual(set(state), {"request", "tabs", "selected_tab"})
-        self.assertNotIn("first request", json.dumps(self.payloads[1]))
+        self.assertNotIn("first request", json.dumps(self.payloads[2]))
 
     def test_latest_decision_survives_private_server_restart(self):
         event = self.app.submit("do nothing")
@@ -219,13 +220,14 @@ class PlaygroundTests(unittest.TestCase):
     def test_missing_target_at_execution_is_logged_without_retry(self):
         def disappear(payload):
             self.payloads.append(payload)
-            tmux(self.socket, "kill-window", "-t", self.tabs[1]["id"])
+            if len(self.payloads) == 1:
+                tmux(self.socket, "kill-window", "-t", self.tabs[1]["id"])
             return answer("select_tab", self.tabs[1]["id"])
         self.app.evaluate = disappear
         event = self.app.submit("Go to Beta")
         self.assertEqual(event["outcome"], "error")
         self.assertEqual(event["action"], "select_tab")
-        self.assertEqual(len(self.payloads), 1)
+        self.assertEqual(len(self.payloads), 2)
 
     def test_malformed_provider_result_is_logged(self):
         self.response = {"model": "test-stub-not-jev"}
@@ -265,12 +267,12 @@ class PlaygroundTests(unittest.TestCase):
                            headers={"Content-Type": "application/json"})
         with urlopen(terminal) as response:
             self.assertEqual(json.load(response)["selected"], self.tabs[0]["id"])
-        self.assertEqual(len(self.payloads), 1)
+        self.assertEqual(len(self.payloads), 2)
         request.add_header("Origin", "https://unrelated.example")
         with self.assertRaises(HTTPError) as error:
             urlopen(request)
         self.assertEqual(error.exception.code, 403)
-        self.assertEqual(len(self.payloads), 1)
+        self.assertEqual(len(self.payloads), 2)
 
 
 class ActivityStateTests(unittest.TestCase):
