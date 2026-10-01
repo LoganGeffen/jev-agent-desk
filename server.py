@@ -525,11 +525,11 @@ class Playground:
             elif action == 'recommend_next':
                 first = items[0]
                 reason = 'it needs your input' if first['needs_input'] else 'it has the oldest unread reply'
-                event['output'] = f"{len(items)} chat{'s' if len(items) != 1 else ''} ready. Start with {first['label']}; {reason}."
+                event['output'] = f"You have {len(items)} chat{'s' if len(items) != 1 else ''} ready. Start with {first['label']}. {reason.capitalize()}."
             else:
-                event['output'] = 'Ready chats: ' + '; '.join(
-                    item['label'] + (' needs your input' if item['needs_input'] else ' has an unread reply')
-                    for item in items) + '.'
+                event['output'] = f"You have {len(items)} chat{'s' if len(items) != 1 else ''} ready. " + ' '.join(
+                    item['label'] + (' needs your input.' if item['needs_input'] else ' has an unread reply.')
+                    for item in items)
             return
         if not isinstance(reference, dict):
             raise ValueError('Ask what is next first so I know which chat you mean.')

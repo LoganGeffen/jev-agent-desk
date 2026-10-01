@@ -61,11 +61,14 @@ class AttentionQueue:
                     entry = self.entries.get(key)
                     state = pane.get('state') or (tab['state'] if len(tab['panes']) == 1 else None)
                     needs_input = state == 'needs_you'
+                    label = tab['name']
+                    if len(tab['panes']) > 1:
+                        label += f", pane {pane['number']}"
                     if not entry or not entry['available']:
                         if needs_input:
                             result.append({'id': 'attention:' + pane['identity'], 'tab': tab['id'],
                                 'pane': pane['id'], 'identity': pane['identity'],
-                                'label': f"{tab['name']} · pane {pane['number']}",
+                                'label': label,
                                 'needs_input': True, 'text': '', 'arrived': 0, 'decision': 'input'})
                         continue
                     current = entry['current'] and state != 'working'
@@ -74,7 +77,7 @@ class AttentionQueue:
                     if not needs_input and not (current and (unread or include_heard)):
                         continue
                     result.append({'id': entry['id'], 'tab': tab['id'], 'pane': pane['id'],
-                        'identity': pane['identity'], 'label': f"{tab['name']} · pane {pane['number']}",
+                        'identity': pane['identity'], 'label': label,
                         'needs_input': needs_input, 'text': entry['reply'][1] if current else '',
                         'turn_id': entry['reply'][0] if current else None,
                         'arrived': entry['arrived'], 'decision': entry['decision']})
