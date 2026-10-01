@@ -16,8 +16,11 @@ def run():
             'group': 'Workspace', 'group_id': 'workspace', 'state': 'ready', 'agent': True,
             'panes': [{'id': '%' + letter, 'number': 1, 'active': True, 'identity': letter + ':original',
                        'command': 'codex', 'agent': True, 'codex': True, 'thread_id': letter,
-                       'left': 0, 'top': 0, 'width': 80, 'height': 24, 'terminal_ansi': '', 'handoff': {}}]})
-    requests, raw, errors = [], [], []
+                       'left': 0, 'top': 0, 'width': 120, 'height': 24,
+                       'terminal_ansi': '\x1b[32m' + ('|' + '1234567890' * 11 + '       |\n') * 60 + '\x1b[0m', 'handoff': {}}]})
+    requests, raw, errors, heard = [], [], [], []
+    recommendation = {'id': 'attention-b', 'tab': '@b', 'pane': '%b',
+                      'identity': 'b:original', 'label': 'B · pane 1'}
     def route(r):
         path = r.request.url.split('fixture.test')[-1]
         body = r.request.post_data_json if r.request.method == 'POST' else None
@@ -25,6 +28,20 @@ def run():
             return r.fulfill(json=state)
         if path == '/api/request':
             requests.append(body)
+            commands = {"What's next?": 'recommend_next', 'Read it': 'read_recommended',
+                        'Go there': 'select_recommended', 'What else is ready?': 'list_ready'}
+            if body['request'] in commands:
+                action = commands[body['request']]
+                event = {'timestamp': str(len(requests)), 'request_id': body['request_id'],
+                         'outcome': 'ok', 'action': action, 'delivery': 'not_attempted',
+                         'recommendation': recommendation,
+                         'output': 'Two chats ready. Start with B; it needs your input.'}
+                if action in ('read_recommended', 'select_recommended'):
+                    assert body['attention_target'] == recommendation
+                    state.update(selected='@b', selected_pane='%b')
+                if action == 'read_recommended':
+                    event.update(output='The complete B reply.', heard_reply=recommendation)
+                return r.fulfill(json=event)
             target = '@b' if 'Tell B:' in body['request'] else body['capture_target']['tab']
             event = {'timestamp': str(len(requests)), 'request_id': body['request_id'],
                      'outcome': 'ok', 'action': 'send_message', 'delivery': 'submitted',
@@ -39,6 +56,9 @@ def run():
             raw.append(body)
             return r.fulfill(json=state)
         if path == '/api/voice-event':
+            return r.fulfill(json={'ok': True})
+        if path == '/api/replies/heard':
+            heard.append(body)
             return r.fulfill(json={'ok': True})
         file = ROOT / ('index.html' if path == '/' else path.lstrip('/'))
         if file.name in ('index.html', 'voice.js', 'readback.js', 'terminal.js'):
@@ -62,6 +82,10 @@ def run():
         page.route_web_socket(lambda url: True, speech_socket)
         page.goto('https://fixture.test/')
         page.wait_for_function('currentState !== null')
+        def terminal_fits():
+            page.wait_for_function("""[...document.querySelectorAll('.terminal')].every(el =>
+              el.clientWidth > 0 && el.scrollWidth <= el.clientWidth + 1)""")
+        terminal_fits()
         assert not page.locator('#session-rail').is_visible()
         assert page.locator('textarea:visible').count() == 1
         assert page.locator('#panes').bounding_box()['height'] > 550
@@ -73,10 +97,12 @@ def run():
         assert rail['x'] == 0 and rail['x'] + rail['width'] <= workspace['x']
         assert tabs[1].bounding_box()['y'] >= tabs[0].bounding_box()['y'] + tabs[0].bounding_box()['height']
         assert page.locator('#panes').is_visible()
+        terminal_fits()
         page.locator('#tabs-toggle').click()
         assert page.locator('#panes').bounding_box()['width'] == full_width
+        terminal_fits()
         assert page.locator('#phone-text').is_visible()
-        assert page.locator('#speech-style').input_value() == 'auto'
+        assert page.locator('#speech-style').input_value() == 'spoken'
         page.locator('#phone-text').fill('Please inspect B without changing my recipient.')
         page.evaluate("voice.committed('Then report back.'); voice.holdDraft()")
         mixed = 'Please inspect B without changing my recipient. Then report back.'
@@ -131,7 +157,18 @@ def run():
         page.locator('#more-controls').evaluate('(el) => el.open = false')
         for width in (320, 390, 700, 1280):
             page.set_viewport_size({'width': width, 'height': 844})
+            terminal_fits()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+        assert page.locator('.terminal').evaluate('el => parseFloat(getComputedStyle(el).fontSize)') > 10
+        first = state['tabs'][0]['panes'][0]
+        first['width'] = 60
+        state['tabs'][0]['panes'].append({**first, 'id': '%split', 'number': 2, 'active': False, 'left': 61})
+        page.wait_for_function("document.querySelectorAll('.terminal').length === 2")
+        terminal_fits()
+        assert page.locator('.terminal').first.text_content().count('1234567890') == 660
+        state['tabs'][0]['panes'].pop()
+        first['width'] = 120
+        page.wait_for_function("document.querySelectorAll('.terminal').length === 1")
         page.set_viewport_size({'width': 390, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.locator('#phone-text').fill('')
@@ -143,6 +180,41 @@ def run():
         output = ROOT / '.run/conversation-flow'
         output.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(output / 'mobile.png'), full_page=True)
+        state['voice'] = {'configured': True, 'websocket_url': 'wss://fixture.test/voice'}
+        page.evaluate("""() => {
+          voice.config = {websocket_url: 'wss://fixture.test/voice'};
+          voice.draft = null;
+          voice.drafts.clear();
+          voice.capture = {ready: true, playback: new AudioContext()};
+          window.announcements = [];
+          window.originalSpeak = voice.speak;
+          voice.speak = async text => announcements.push(text);
+          document.getElementById('speech-style').value = 'original';
+        }""")
+        state['reply_notices'].append({'id': 'quiet-arrival', 'target': 'A', 'text': 'Quiet reply.'})
+        page.wait_for_function("announcedReplies.has('quiet-arrival')")
+        assert page.evaluate('announcements') == []
+        selected = page.evaluate('currentState.selected')
+        page.evaluate('submitRequest("What\'s next?")')
+        assert page.evaluate('currentState.selected') == selected
+        assert 'needs your input' in page.evaluate('announcements.at(-1)')
+        assert not heard
+        page.evaluate("submitRequest('Read it')")
+        page.wait_for_function('voice.playing?.started')
+        assert not heard
+        page.locator('#stop-readback').click()
+        assert not heard
+        page.evaluate("submitRequest('Read it')")
+        page.wait_for_function("document.getElementById('playback-status').textContent === 'Readback finished'")
+        page.wait_for_timeout(100)
+        assert heard == [recommendation]
+        assert page.locator('#reply-original').text_content() == 'The complete B reply.'
+        page.evaluate("submitRequest('Go there')")
+        page.wait_for_function("currentState.selected === '@b'")
+        page.evaluate("submitRequest('What else is ready?')")
+        assert requests[-1]['request'] == 'What else is ready?'
+        page.evaluate('voice.speak = originalSpeak; voice.capture.playback.close(); voice.capture = null')
+        audio_text.clear()
         page.evaluate("""() => {
           voice.config = {websocket_url: 'wss://fixture.test/voice'};
           voice.draft = null;
@@ -183,6 +255,9 @@ def run():
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow',
+                             '120-column terminal fits after viewport, sidebar and split-pane resize',
+                             'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
+                             'completed audio acknowledges exact reply', 'interrupted reply stays unread',
                              'streamed observer audio before answer completion', 'stop prevents late streamed playback'],
                   'scope': 'Intercepted Chromium endpoints; no model routing or physical phone proof'}
         (output / 'browser.json').write_text(json.dumps(report, indent=2) + '\n')

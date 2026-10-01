@@ -29,6 +29,8 @@ Use recent conversation and tool results for context. Distinguish requested/plan
 execution and completion. Do not infer success from a command being started or from the user's request.
 If evidence is missing, truncated, or does not answer the question, say so briefly rather than guessing.
 For an unverified outcome, lead with 'Not confirmed' or 'I cannot tell', never a categorical yes or no.
+Do not invent causal or timing links between facts. A disconnected terminal and a missing result do
+not establish why the result is missing or whether the command finished before the disconnect.
 Describe the snapshot, not changes after it. Answer only the question, without offering to act.
 """
 

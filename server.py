@@ -13,6 +13,7 @@ import time
 import uuid
 
 import jev
+from attention import AttentionQueue
 from codex_actions import focus, tmux
 from session_actions import interrupt_turn, read_reply, send_message
 from claude_runtime import read_binding
@@ -20,7 +21,7 @@ from claude_actions import working_indicator as claude_working_indicator
 from session_questions import ask_session
 from message_delivery import prepare_message
 from spoken_reply import ReadbackCache
-from reply_watch import ReplyWatch, history as reply_history
+from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
 
@@ -209,7 +210,9 @@ class Playground:
         self.latest = latest_event(self.log)
         self.recent_requests = {}
         self.readbacks = ReadbackCache()
-        self.reply_watch = ReplyWatch(lambda text: self.readbacks.prepare(text) if self.voice.config()['configured'] else None)
+        self.reply_watch = ReplyWatch()
+        self.attention = AttentionQueue()
+        self.readback_preparation = ReadbackPreparation(self.readbacks, self.attention)
         self.read_output = None
         self.pending_close = None
         self.pending_clarification = None
@@ -224,6 +227,13 @@ class Playground:
         if name != session:
             raise ValueError(f"Tmux session {session!r} is not available")
         return group or name
+
+    def readback_agents(self):
+        windows = tmux(self.socket, 'list-windows', '-t', f'={self.source_session}', '-F', '#{window_id}')
+        return [{'socket': self.socket, 'window_id': window, 'pane_id': pane['id'],
+                 'provider': pane['provider'], 'thread_id': pane['thread_id'],
+                 'process': pane['process'], 'run_dir': str(self.log.parent)}
+                for window in windows.splitlines() for pane in self.panes(window) if pane['agent']]
 
     def observe(self):
         rows = tmux(self.socket, "list-windows", "-t", f"={self.view_session}", "-F",
@@ -333,7 +343,8 @@ class Playground:
                 "voice": self.voice.config(),
                 "api_configured": bool(os.environ.get("TYPESAFE_API_KEY"))}
 
-    def submit(self, request, source="typed", request_id=None, capture_target=None, on_text=None):
+    def submit(self, request, source="typed", request_id=None, capture_target=None, on_text=None,
+               attention_target=None):
         with self.lock:
             self.pending_close = None
             started = time.monotonic()
@@ -368,6 +379,8 @@ class Playground:
                     for tab in before["tabs"]
                 ]
                 event["input"] = jev.question(request, routing_tabs, before["selected"])
+                if attention_target is not None:
+                    event['input']['state']['attention_target'] = attention_target
                 event["routing_steps"] = []
                 response = jev.interpret(event["input"], self.evaluate, event["routing_steps"])
                 event["response"] = response
@@ -473,8 +486,15 @@ class Playground:
                     else:
                         event["output"] = read_reply(self.socket, agent)
                         self.read_output = {"target": event['target_label'], "text": event["output"]}
+                        item = next((item for item in self.attention.view(self.observe()['tabs'], include_heard=True)
+                                     if item['tab'] == target and item['pane'] == pane['id']
+                                     and item['text'] == event['output']), None)
+                        if item:
+                            event['heard_reply'] = self.attention.reference(item)
 
-                {"select_tab": select, "list_tabs": lambda: None,
+                {**{name: lambda: self.attention_action(action, attention_target, event)
+                    for name in jev.ATTENTION_ACTIONS},
+                 "select_tab": select, "list_tabs": lambda: None,
                  "create_tab": lambda: self.create_tab('Terminal', next(tab['group_id'] for tab in before['tabs'] if tab['id'] == before['selected'])),
                  "close_tab": close, "close_pane": close, 'clarify_close': close,
                  "send_message": agent_action, "read_reply": agent_action,
@@ -493,6 +513,61 @@ class Playground:
             self.record_event(event)
             return event
 
+    def attention_action(self, action, reference, event):
+        snapshot = self.observe()
+        if action in ('recommend_next', 'list_ready'):
+            items = self.attention.view(snapshot['tabs'], include_heard=True)
+            self.attention.classify(items, self.evaluate)
+            items = self.attention.view(self.observe()['tabs'])
+            event['recommendation'] = self.attention.reference(items[0]) if items else None
+            if not items:
+                event['output'] = 'No chats are waiting for your input or have unread replies right now.'
+            elif action == 'recommend_next':
+                first = items[0]
+                reason = 'it needs your input' if first['needs_input'] else 'it has the oldest unread reply'
+                event['output'] = f"{len(items)} chat{'s' if len(items) != 1 else ''} ready. Start with {first['label']}; {reason}."
+            else:
+                event['output'] = 'Ready chats: ' + '; '.join(
+                    item['label'] + (' needs your input' if item['needs_input'] else ' has an unread reply')
+                    for item in items) + '.'
+            return
+        if not isinstance(reference, dict):
+            raise ValueError('Ask what is next first so I know which chat you mean.')
+        item = next((item for item in self.attention.view(snapshot['tabs'], include_heard=True)
+                     if self.attention.reference(item) == reference), None)
+        if item is None:
+            raise ValueError('That recommendation changed or is no longer available. Ask what is next again.')
+        self.validate_pane(item['tab'], item['pane'], item['identity'])
+        event.update(target=item['tab'], pane=item['pane'], target_label=item['label'])
+        if action == 'select_recommended':
+            self.focus(item['tab'], item['pane'])
+            event['output'] = 'Switched to ' + item['label'] + '.'
+        else:
+            if not item['text']:
+                raise ValueError('That agent needs your input but has no completed reply to read. Say go there to inspect it.')
+            event['output'] = item['text']
+            event['heard_reply'] = self.attention.reference(item)
+            self.read_output = {'target': item['label'], 'text': item['text']}
+            self.focus(item['tab'], item['pane'])
+        event['recommendation'] = reference
+
+    def heard_reply(self, reference):
+        if 'notice_id' in reference:
+            notice = next((item for item in self.reply_watch.view() if item['id'] == reference['notice_id']), None)
+            if not notice:
+                return
+            self.validate_pane(notice['tab'], notice['pane'], notice['identity'])
+            item = next((item for item in self.attention.view(self.observe()['tabs'], include_heard=True)
+                         if all(item.get(key) == notice.get(key) for key in ('tab', 'pane', 'identity', 'turn_id', 'text'))), None)
+            if item:
+                self.attention.heard(item['id'])
+            return
+        self.validate_pane(reference['tab'], reference['pane'], reference['identity'])
+        item = next((item for item in self.attention.view(self.observe()['tabs'], include_heard=True)
+                     if all(item[key] == reference[key] for key in ('id', 'tab', 'pane', 'identity'))), None)
+        if item:
+            self.attention.heard(item['id'])
+
     def deliver(self, agent, text, event):
         baseline = None
         if event.get('source') in ('typed', 'voice', 'manual_clarification'):
@@ -503,6 +578,7 @@ class Playground:
         event['delivery'] = 'uncertain'
         send_message(self.socket, agent, text)
         event['delivery'] = 'submitted'
+        self.attention.answered(agent)
         if baseline is not None:
             self.reply_watch.start(agent, baseline, text, event['target_label'], event.get('request_id'))
 
@@ -514,7 +590,8 @@ class Playground:
         if event.get('request_id'):
             self.recent_requests[event['request_id']] = {
                 key: event[key] for key in ('request_id', 'timestamp', 'outcome', 'action',
-                                          'target', 'target_label', 'delivery', 'error', 'output', 'reply_watch_error') if key in event}
+                                          'target', 'target_label', 'delivery', 'error', 'output', 'reply_watch_error',
+                                          'recommendation', 'heard_reply') if key in event}
             self.recent_requests[event['request_id']]['delivered_text'] = event.get('execution', {}).get('text')
             while len(self.recent_requests) > 50:
                 self.recent_requests.pop(next(iter(self.recent_requests)))
@@ -808,7 +885,7 @@ def make_server(playground, port=0, public_origin=None):
             if not self.local_request():
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
                 return
-            if self.path not in ("/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version",
+            if self.path not in ("/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move",
                                  "/api/tabs/close", "/api/panes/close",
@@ -856,6 +933,10 @@ def make_server(playground, port=0, public_origin=None):
                     if not isinstance(window_id, str):
                         raise ValueError("A tab id is required")
                     self.send(200, playground.select_tab(window_id, body.get('pane')))
+                    return
+                if self.path == '/api/replies/heard':
+                    playground.heard_reply(body)
+                    self.send(200, {'ok': True})
                     return
                 if self.path == "/api/input":
                     self.send(200, playground.terminal_input(
@@ -906,6 +987,7 @@ def make_server(playground, port=0, public_origin=None):
                 self.start_stream()
             event = playground.submit(request, "voice" if body.get("source") == "voice" else "typed",
                                       request_id=body.get("request_id"), capture_target=body.get('capture_target'),
+                                      attention_target=body.get('attention_target'),
                                       on_text=(lambda text: self.stream_event('text', text=text)) if streaming else None)
             if streaming:
                 try:
@@ -945,4 +1027,9 @@ if __name__ == "__main__":
     app.voice.start(url, port=args.voice_port, public_origin=args.public_origin)
     (args.run_dir / "url").write_text(url)
     print(url, flush=True)
-    server.serve_forever()
+    app.readback_preparation.start(app.readback_agents)
+    try:
+        server.serve_forever()
+    finally:
+        app.readback_preparation.stop()
+        app.readbacks.pool.shutdown(wait=True, cancel_futures=True)

@@ -45,8 +45,23 @@ your own Claude settings and use the same run directory as the web process.
 `claude_actions.py` reads only the transcript selected by the validated binding
 under `~/.claude/projects`. Alternate Claude config roots are not supported.
 
-`reply_watch.py` associates new completed replies with their original request and
-recipient. `session_questions.py` captures history plus live terminal evidence and
+`reply_watch.py` keeps delivery reply notices separate from readback preparation.
+A single background watcher discovers every identified agent pane and reads its
+validated history, preparing the latest completed reply regardless of how the
+request arrived. It runs without browser polling or voice activation and never
+starts playback. Incomplete/interrupted turns and commentary are not prepared.
+The same validated history scan feeds `attention.py`. Its queue tracks the latest
+completed reply per pane/process/conversation and separates heard replies from
+replies awaiting user input. Jev classifies the latter on demand; code orders
+input requests before unread replies by first observation. Newer turns supersede
+old input requests. Failed identity/history reads cannot recommend stale output.
+The attention routing branch can recommend, list, select or read, but cannot send
+or interrupt. Browser follow-ups carry the exact recommendation reference and
+server-side pane validation runs before switching/readback. Only successful audio
+completion acknowledges that reply through `/api/replies/heard`; cancellation,
+errors and late completion cannot acknowledge a newer reply. Reply notices stay
+silent. Queue state is in memory and shared by clients of the web process.
+`session_questions.py` captures history plus live terminal evidence and
 asks an isolated Codex app-server for an observer answer. `model_stream.py` reuses
 up to two connections, creating a new ephemeral, read-only thread per request with
 shell, web search, apps and plugins disabled. It streams answer deltas; it never
@@ -60,10 +75,11 @@ An identity change stops automatic sending; pressing Send explicitly accepts the
 reviewed draft for the current conversation in that same pane. Backend validation
 still rejects any identity change after that click. Delivery pastes and presses
 Enter in one operation; uncertain delivery is never automatically retried.
-`spoken_reply.py` first asks Jev whether original wording or a faithful rendition
-is appropriate; an explicit mode bypasses that judgment. A rendition is generated
-incrementally over NDJSON. A small in-memory cache shares background preparation
-and readback of the same exact reply and mode. `readback.js` sends completed
+`spoken_reply.py` generates faithful renditions directly, without a Jev presentation
+decision. Original mode returns exact text without generation. The legacy auto mode
+and spoken mode share one cache entry. Renditions are generated incrementally over
+NDJSON. The in-memory cache shares preparation and readback by exact reply text,
+retaining each attached session's latest reply plus a small recent-history allowance. `readback.js` sends completed
 sentences to the speech WebSocket and schedules incoming PCM audio immediately.
 Observer answers already use spoken prose and bypass the rendition step.
 

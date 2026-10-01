@@ -6,6 +6,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
+ATTENTION_ACTIONS = {
+    'recommend_next': "Recommend which chat to visit next: what's next, who needs me, where should I go next? Do not switch yet.",
+    'list_ready': "Give a short rundown of all chats ready or needing input: what's ready, what else is ready?",
+    'select_recommended': "Go to the previously recommended chat: go there, switch to that agent. Do not read or send.",
+    'read_recommended': "Read the previously recommended chat's reply: read it, read that reply. Do not send.",
+}
+
+
 def question(request, tabs, selected):
     tokens = list(re.finditer(r'["“”]|[^\s"“”]+', request))
     aliases = {"JEV controller": ["Jev", "Jeff", "Jiv", "J-E-V", "Jeff controller", "Jiv controller"],
@@ -32,6 +40,7 @@ def question(request, tabs, selected):
                     "Stop followed by an existing agent name means interrupt_turn. Bare stop or stop reading means no_action."
                 ),
                 "criteria": {
+                    **ATTENTION_ACTIONS,
                     "create_tab": "Create or open one new terminal tab in the workspace. Creating files, pages, browser tabs in a project, or application features is agent message content, not this action.",
                     "list_tabs": "The user wants to know which tabs are available, without switching.",
                     "close_tab": "An outer SHUT DOWN / SHUTDOWN command for one whole tab, including all its panes: 'shut down tab Luna' or 'shutdown Luna'. Never commands inside a message, ordinary close/kill wording, or cancelled/negated requests.",
@@ -227,6 +236,12 @@ def interpret(payload, evaluate, trace):
             'Do not consider whether conversation identity is ready; execution checks that separately.'
         ),
         'criteria': {
+            'attention': {
+                'meaning': 'Ask Jev to recommend the next chat, list ready chats, or follow its last recommendation.',
+                'examples': ["What's next?", 'Who needs my input?', 'What else is ready?', 'Go there', 'Switch to that agent'],
+                'readback': 'Read it / read that reply follows attention_target when present; without a recommendation use inspect. Go there without a recommendation still uses attention so code can explain it is missing.',
+                'exclude': 'Instructions inside Tell/Ask/Message wrappers are messages. Questions about next steps within a project or a named agent are messages or inspect, not workspace attention. Explicitly named readback/navigation uses inspect/controller.',
+            },
             'direct_message': 'Speak directly to the selected agent, without a routing wrapper. Preserve EVERY word. Examples: Okay we need to fix all of this; Why did you choose that?; Please inspect the SSC logs; Create a new HTML page. A question about what another session has already done uses inspect instead.',
             'routed_message': 'Deliver content TO AN AGENT with an outer tell/ask/send wrapper or an explicit recipient address. Examples: can you tell it that...; ask Nova why...; send this message...; Nova, please fix it; go to Luna and ask it.... Tell ME about a session asks Jev for observation and uses inspect. Requires actual content, not an unfinished prefix.',
             'inspect': {
@@ -264,6 +279,13 @@ def interpret(payload, evaluate, trace):
             answers['message_form'] = {'choice': 'verbatim'}
         return {**first, 'answers': answers}
     context = {**state, 'intent': branch}
+    if branch == 'attention':
+        response = ask({'action': {'type': 'choice',
+            'instructions': 'Choose the requested attention operation. Use the supplied attention_target only for unnamed follow-ups. Never send, interrupt, or execute a sequence of actions.',
+            'criteria': {**ATTENTION_ACTIONS, 'no_action': 'Cancelled, ambiguous or unsupported combined request.'}}}, context)
+        if response['answers']['action']['choice'] not in (*ATTENTION_ACTIONS, 'no_action'):
+            raise ValueError('Jev selected an action outside the attention branch')
+        return response
     if branch == 'routed_message':
         names = {'target', 'message_start', 'message_end', 'message_form'}
     elif branch == 'inspect':
@@ -307,7 +329,7 @@ def interpret(payload, evaluate, trace):
     elif branch == 'controller':
         questions['action'] = {**questions['action'], 'criteria': {
             k: v for k, v in questions['action']['criteria'].items()
-            if k not in ('send_message', 'read_reply', 'ask_session')}}
+            if k not in ('send_message', 'read_reply', 'ask_session', *ATTENTION_ACTIONS)}}
         questions['action']['instructions'] = 'Select the workspace operation requested in `request`. Stopping an agent means interrupt its current work; it does not close the tab. Bare stop and stop reading concern audio only. Closing requires clarification unless the user explicitly says shut down. Do not execute cancelled or conditional requests.'
         questions['action']['criteria']['interrupt_turn'] = {
             'operation': 'Stop an existing agent’s work.',

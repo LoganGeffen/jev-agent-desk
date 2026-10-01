@@ -16,7 +16,7 @@ function setup(fetch, refresh = () => new Promise(() => {})) {
     retainSpeech(record) { records.set(record.id, {...records.get(record.id), ...record}); }, requestOutcome: result => result.error || result.action,
  crypto: {randomUUID: () => Math.random().toString()},
     voice: {stopReadback() { return 1; }, speak() {}, restoreDraft(...args) { restored.push(args); return true; }},
-    currentState: null,
+    currentState: null, attentionTarget: null,
     retainOutcome(id, result) { context.retainSpeech({id, status: result.error || result.action, delivery: result.delivery}); },
     targetName: () => 'fixture',
   });
@@ -129,4 +129,16 @@ test('typing and speech submit identical words and captured context through requ
     assert.ok(payload.request_id);
   }
   assert.notEqual(payloads[0].request_id, payloads[1].request_id);
+});
+
+test('stale attention references speak the recovery instruction without opening a blocking draft', async () => {
+  const event = {timestamp: 'fixture', outcome: 'error', action: 'read_recommended',
+    delivery: 'not_attempted', error: 'That recommendation changed. Ask what is next again.'};
+  const s = setup(async () => ({ok: false, json: async () => event}));
+  const spoken = [];
+  s.context.voice.speak = text => spoken.push(text);
+  await s.context.submit('Read it');
+  assert.deepEqual(s.restored, []);
+  assert.equal(spoken[0], event.error);
+  assert.equal(s.context.busy(), false);
 });

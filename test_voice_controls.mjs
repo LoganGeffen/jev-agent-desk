@@ -484,50 +484,32 @@ test('outcome speech cannot mute an existing draft', async () => {
   s.voice.stop();
 });
 
-test('automatic original readback preserves exact speech and explicit rendition bypasses its cache', async () => {
+test('prepared rendition and exact original remain independently available', async () => {
   const s = setup();
   await listening(s);
-  s.document.getElementById('speech-style').value = 'auto';
+  s.document.getElementById('speech-style').value = 'spoken';
   const calls = [];
   const originalFetch = s.context.fetch;
   s.context.fetch = async (url, options) => {
     const body = JSON.parse(options.body);
     if (url !== '/api/voice-event') calls.push({url, body});
     if (url === '/api/spoken-version') return {ok: true, json: async () =>
-      body.mode === 'auto' ? {mode: 'original', text: body.text} : {mode: 'rendition', text: 'Converted.'}};
+      ({mode: 'rendition', text: 'Converted.'})};
     return originalFetch(url, options);
   };
   await s.voice.speakReply('Exact original.', s.voice.generation);
-  assert.equal(calls[0].body.mode, 'auto');
-  assert.equal(s.sockets.at(-1).messages[0].text.trim(), 'Exact original.');
-  assert.equal(s.elements.get('reply-spoken').textContent, 'Reading original wording.');
-  s.document.getElementById('speech-style').value = 'spoken';
-  await s.voice.speakReply('Exact original.', s.voice.stopReadback('style'));
-  assert.equal(calls[1].body.mode, 'spoken');
+  assert.equal(calls[0].body.mode, 'spoken');
   assert.equal(s.sockets.at(-1).messages[0].text.trim(), 'Converted.');
+  assert.equal(s.elements.get('reply-original').textContent, 'Exact original.');
+  s.document.getElementById('speech-style').value = 'original';
+  await s.voice.speakReply('Exact original.', s.voice.stopReadback('style'));
+  assert.equal(calls.length, 1);
+  assert.equal(s.sockets.at(-1).messages[0].text.trim(), 'Exact original.');
   assert.deepEqual(s.submitted, []);
   s.voice.stop();
 });
 
-test('uncertain automatic readback keeps original visible and releases listening without speech', async () => {
-  const s = setup();
-  await listening(s);
-  const calls = [];
-  s.context.fetch = async url => {
-    if (url !== '/api/voice-event') calls.push(url);
-    return {ok: true, json: async () => ({mode: 'uncertain', text: null})};
-  };
-  await s.voice.speakReply('Original retained.', s.voice.generation);
-  assert.deepEqual(calls, ['/api/spoken-version']);
-  assert.equal(s.elements.get('reply-original').textContent, 'Original retained.');
-  assert.equal(s.elements.get('reply-presentation').open, true);
-  assert.equal(s.voice.pending, null);
-  assert.equal(s.voice.recognitionPaused(), false);
-  assert.equal(s.sources.length, 0);
-  s.voice.stop();
-});
-
-test('cancelled Jev decision cannot start audio or populate the readback cache', async () => {
+test('cancelled text preparation cannot start audio or populate the readback cache', async () => {
   const s = setup();
   await listening(s);
   let finish;
@@ -545,5 +527,32 @@ test('cancelled Jev decision cannot start audio or populate the readback cache',
   assert.equal(s.voice.lastRendition, null);
   assert.equal(s.sources.length, 0);
   assert.equal(s.voice.pending, null);
+  s.voice.stop();
+});
+
+test('reply is heard only after all audio finishes, never on cancel, failure or empty speech', async () => {
+  const s = setup();
+  await listening(s);
+  s.document.getElementById('speech-style').value = 'original';
+  let heard = 0;
+  const play = () => s.voice.speakReply('The completed reply.', s.voice.stopReadback('next'), false, () => heard++);
+  await play();
+  let socket = s.sockets.at(-1);
+  socket.onmessage({data: JSON.stringify({audio: btoa('\0\0\0\0'), isFinal: true})});
+  assert.equal(heard, 0);
+  s.sources.at(-1).onended();
+  assert.equal(heard, 1);
+  await play();
+  socket = s.sockets.at(-1);
+  socket.onmessage({data: JSON.stringify({audio: btoa('\0\0\0\0')})});
+  s.voice.stopReadback('stop');
+  socket.onmessage({data: JSON.stringify({isFinal: true})});
+  assert.equal(heard, 1);
+  await play();
+  s.sockets.at(-1).onerror();
+  assert.equal(heard, 1);
+  await play();
+  s.sockets.at(-1).onmessage({data: JSON.stringify({isFinal: true})});
+  assert.equal(heard, 1);
   s.voice.stop();
 });

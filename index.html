@@ -215,6 +215,7 @@
       margin: 0;
       overflow: auto;
       padding: 12px 14px 20px;
+      scrollbar-gutter: stable;
       border: 0;
       background: var(--terminal-background);
       color: var(--terminal-foreground);
@@ -453,7 +454,7 @@
         <button id="terminal-toggle" type="button" aria-pressed="true">Terminal</button>
         <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
         <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
-        <label id="speech-style-label">Read replies as <select id="speech-style"><option value="auto">Automatic · Jev chooses</option><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
+        <label id="speech-style-label">Read replies as <select id="speech-style"><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
         <label id="manage-tabs-label"><input id="manage-tabs" type="checkbox"> Manage tabs</label>
         </details>
         </div>
@@ -511,14 +512,17 @@
     try { notifiedReplies = JSON.parse(sessionStorage.getItem('jev-reply-notices') || '[]'); } catch {}
     const announcedReplies = new Set(notifiedReplies);
     let readyReply = null;
-    let pendingNotices = [];
+    let attentionTarget = null;
+    function heardCallback(reply) {
+      const reference = reply.heard_reply || (reply.thread_id ? {notice_id: reply.id} : null);
+      return reference ? () => post('/api/replies/heard', reference).catch(showError) : null;
+    }
     function observeReplies(state) {
       for (const notice of state.reply_notices || []) {
         const record = speechRecords.find(item => item.id === notice.request_id);
         if (record && record.reply?.id !== notice.id) retainSpeech({id: record.id, reply: notice});
         if (announcedReplies.has(notice.id)) continue;
         announcedReplies.add(notice.id);
-        if (voice.capture?.ready) pendingNotices.push(notice);
         $('reply-notice').textContent = notice.error ? notice.target + ': ' + notice.error : notice.target + ' has replied.';
         if (notice.text) {
           readyReply = notice;
@@ -527,11 +531,7 @@
         notifiedReplies.push(notice.id);
         try { sessionStorage.setItem('jev-reply-notices', JSON.stringify(notifiedReplies.slice(-100))); } catch {}
       }
-      if (!voice.capture?.ready) pendingNotices = [];
-      if (!voice.capture?.ready || voice.playing || voice.pending || voice.draft || Date.now() - (voice.lastSpeechAt || 0) < 1500 || submitting || !pendingNotices.length) return;
-      const notice = pendingNotices.shift();
-      const text = notice.error ? notice.target + ': ' + notice.error : notice.target + ' has replied.';
-      voice.speak(text, voice.generation);
+
     }
     let speechRecords = [];
     try { speechRecords = JSON.parse(sessionStorage.getItem('jev-speech-records') || '[]'); } catch {}
@@ -556,7 +556,7 @@
           if (item.reply.text) {
             const read = document.createElement('button');
             read.textContent = 'Read this reply';
-            read.onclick = () => voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'));
+            read.onclick = () => voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'), false, heardCallback(item.reply));
             line.append(read);
           }
         }
@@ -576,8 +576,8 @@
       retainSpeech({id, status: requestOutcome(result), delivery: result.delivery,
         recipient: result.target_label, deliveredText: result.execution?.text || result.delivered_text,
         recoverable: result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action')});
-      if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok' && result.output) {
-        retainSpeech({id, reply: {id, target: targetName(result), text: result.output}});
+      if (['read_reply', 'read_recommended', 'ask_session'].includes(result.action) && result.outcome === 'ok' && result.output) {
+        retainSpeech({id, reply: {id, target: targetName(result), text: result.output, heard_reply: result.heard_reply}});
       }
     }
     function requestOutcome(result) {
@@ -832,12 +832,19 @@
       return document.querySelector('.pane.active .terminal');
     }
 
+    const terminalResize = new ResizeObserver(entries => {
+      for (const entry of entries) fitTerminal(entry.target);
+    });
+
     function renderPanes(state) {
       const tab = state.tabs.find(tab => tab.id === state.selected);
       const container = $('panes');
       const ids = tab.panes.map(pane => pane.id);
       for (const element of [...container.children]) {
-        if (!ids.includes(element.dataset.pane)) element.remove();
+        if (!ids.includes(element.dataset.pane)) {
+          terminalResize.unobserve(element.querySelector('.terminal'));
+          element.remove();
+        }
       }
       const width = Math.max(...tab.panes.map(pane => pane.left + pane.width));
       const height = Math.max(...tab.panes.map(pane => pane.top + pane.height));
@@ -850,6 +857,7 @@
           element.querySelector('.pane-label').addEventListener('click', () => element.querySelector('.terminal').focus());
           element.querySelector('.pane-close').addEventListener('click', () => closePane(tab.id, pane.id));
           container.append(element);
+          terminalResize.observe(element.querySelector('.terminal'));
         }
         element.className = 'pane' + (pane.active ? ' active' : '');
         Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
@@ -870,7 +878,7 @@
         terminal.dataset.identity = pane.identity;
         terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
         const nearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 36;
-        renderTerminal(terminal, pane.terminal_ansi || '');
+        if (renderTerminal(terminal, pane.terminal_ansi || '')) fitTerminal(terminal);
         if (activeTab !== state.selected || nearBottom) terminal.scrollTop = terminal.scrollHeight;
       }
     }
@@ -979,6 +987,7 @@
       renderTabs(currentState);
       try {
         const state = await post('/api/select', {tab: tabId});
+        attentionTarget = null;
         render(state);
         selectedTerminal()?.focus({preventScroll: true});
       } catch (error) {
@@ -1079,7 +1088,7 @@
       try {
         const delivered = fetch('/api/request', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget, stream: !!voice.capture?.ready}),
+          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget, attention_target: attentionTarget, stream: !!voice.capture?.ready}),
           signal: controller.signal
         }).then(async response => {
           const result = await readJSONStream(response, delta => {
@@ -1100,13 +1109,19 @@
         setSubmitting(false);
         controller.abort();
         const outcome = requestOutcome(result);
-        const recoverable = result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action');
+        const attentionAction = ['recommend_next', 'list_ready', 'select_recommended', 'read_recommended'].includes(result.action);
+        const recoverable = !attentionAction && result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action');
         retainOutcome(id, result);
+        if (result.outcome === 'ok') {
+          if ('recommendation' in result) attentionTarget = result.recommendation;
+          else if (['select_tab', 'read_reply', 'send_message', 'create_tab'].includes(result.action)) attentionTarget = null;
+        }
         if (recoverable) voice.restoreDraft(text, captureTarget, outcome);
         $('result').className = result.outcome === 'error' ? 'error' : '';
         $('result').textContent = outcome;
         refresh().catch(showError);
-        const spoken = ['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
+        const spoken = ['read_reply', 'read_recommended', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
+          : attentionAction && result.outcome === 'error' ? outcome
           : result.outcome === 'error' && result.delivery === 'not_attempted'
           ? 'I could not complete that request. Nothing was sent. Your words and the error are on screen.' : outcome;
         if (observerPlayback) {
@@ -1118,7 +1133,8 @@
             observerPlayback.end();
           }
           else { observerPlayback.stop(); if (voice.playing === observerPlayback) voice.playing = null; }
-        } else if (['read_reply', 'ask_session'].includes(result.action) && result.outcome === 'ok') voice.speakReply(spoken, generation, result.action === 'ask_session');
+        } else if (['read_reply', 'read_recommended', 'ask_session'].includes(result.action) && result.outcome === 'ok') voice.speakReply(spoken, generation, result.action === 'ask_session', result.heard_reply
+          ? () => post('/api/replies/heard', result.heard_reply).catch(showError) : null);
         else voice.speak(spoken, generation);
       } catch (error) {
         observerPlayback?.stop();
@@ -1151,10 +1167,10 @@
     $('read-ready-reply').onclick = () => {
       if (readyReply) {
         $('result').textContent = '';
-        voice.speakReply(readyReply.text, voice.stopReadback('read ready reply'));
+        voice.speakReply(readyReply.text, voice.stopReadback('read ready reply'), false, heardCallback(readyReply));
       }
     };
-    $('read-original').onclick = () => voice.speak($('reply-original').textContent, voice.stopReadback('read original'));
+    $('read-original').onclick = () => voice.speak($('reply-original').textContent, voice.stopReadback('read original'), voice.replyHeard);
     $('voice-toggle').addEventListener('click', () => {
       if (voice.capture && !submitting) {
         $('result').className = '';
@@ -1223,7 +1239,11 @@
       const {tab, pane} = event.target.dataset;
       if (pane === currentState?.selected_pane) return;
       flushTerminalText();
-      terminalQueue = terminalQueue.then(async () => render(await post('/api/select', {tab, pane}))).catch(showError);
+      terminalQueue = terminalQueue.then(async () => {
+        const state = await post('/api/select', {tab, pane});
+        attentionTarget = null;
+        render(state);
+      }).catch(showError);
     });
     $('panes').addEventListener('keydown', event => {
       if (!event.target.matches('.terminal')) return;

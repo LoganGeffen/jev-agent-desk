@@ -38,8 +38,7 @@ def matching_reply(thread, baseline, text):
 
 
 class ReplyWatch:
-    def __init__(self, on_reply=None):
-        self.on_reply = on_reply
+    def __init__(self):
         self.notices = []
         self.lock = threading.Lock()
 
@@ -64,8 +63,72 @@ class ReplyWatch:
                 notice = {'error': 'Reply observation expired without a confirmed completed reply.'}
             with self.lock:
                 self.notices.append({'id': uuid.uuid4().hex, 'request_id': request_id,
+                                     'tab': agent['window_id'], 'pane': agent['pane_id'],
+                                     'identity': f"{agent['process']}:{agent.get('provider', 'codex')}:{agent['thread_id']}",
                                      'thread_id': agent['thread_id'], 'target': label, **notice})
                 self.notices = self.notices[-50:]
-            if notice.get('text') and self.on_reply:
-                self.on_reply(notice['text'])
         threading.Thread(target=observe, daemon=True).start()
+
+
+class ReadbackPreparation:
+    def __init__(self, cache, attention=None):
+        self.cache = cache
+        self.attention = attention
+        self.latest = {}
+        self.stopped = threading.Event()
+        self.worker = None
+
+    def poll(self, agents):
+        if self.attention:
+            self.attention.retain(agents)
+        current = {}
+        changed = []
+        for agent in agents:
+            if self.stopped.is_set():
+                return
+            key = (agent['provider'], agent['thread_id'], agent['process'])
+            if key in self.latest:
+                current[key] = self.latest[key]
+            try:
+                thread = history(agent)
+            except (RuntimeError, OSError, ValueError):
+                if self.attention:
+                    self.attention.unavailable(agent)
+                continue
+            if self.attention:
+                self.attention.observe(agent, thread)
+            for turn in reversed(thread['turns']):
+                if turn['status'] != 'completed':
+                    continue
+                replies = [item['text'] for item in turn['items']
+                           if item['type'] == 'agentMessage' and item.get('phase') in (None, 'final_answer')]
+                if not replies:
+                    continue
+                text = replies[-1]
+                if text.strip() and len(text) <= 20000:
+                    current[key] = (turn['id'], text)
+                    if current[key] != self.latest.get(key):
+                        changed.append(text)
+                else:
+                    current.pop(key, None)
+                break
+        self.cache.retain(value[1] for value in current.values())
+        for text in dict.fromkeys(changed):
+            self.cache.prepare(text)
+        self.latest = current
+
+    def start(self, get_agents):
+        def observe():
+            while not self.stopped.is_set():
+                try:
+                    self.poll(get_agents())
+                except (RuntimeError, OSError, ValueError):
+                    pass
+                self.stopped.wait(3)
+        self.worker = threading.Thread(target=observe, daemon=True, name='readback-preparation')
+        self.worker.start()
+
+    def stop(self):
+        self.stopped.set()
+        if self.worker:
+            self.worker.join(timeout=5)

@@ -59,7 +59,7 @@ function terminalRuns(screen) {
 }
 
 function renderTerminal(element, screen) {
-  if (element.terminalScreen === screen) return;
+  if (element.terminalScreen === screen) return false;
   element.terminalScreen = screen;
   const fragment = document.createDocumentFragment();
   for (const run of terminalRuns(screen)) {
@@ -77,4 +77,22 @@ function renderTerminal(element, screen) {
     fragment.append(span);
   }
   element.replaceChildren(fragment);
+  return true;
+}
+
+function fitTerminal(element) {
+  if (!element.clientWidth) return;
+  const previousSize = parseFloat(getComputedStyle(element).fontSize);
+  const scrollLine = element.scrollTop / previousSize;
+  const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+  element.style.fontSize = '';
+  const style = getComputedStyle(element);
+  const baseSize = parseFloat(style.fontSize);
+  const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const available = element.clientWidth - padding;
+  const width = element.scrollWidth - padding;
+  const size = width > available ? Math.floor(baseSize * (available - 1) / width * 100) / 100 : baseSize;
+  if (size > 0) element.style.fontSize = size + 'px';
+  element.scrollLeft = 0;
+  element.scrollTop = nearBottom ? element.scrollHeight : scrollLine * size;
 }

@@ -24,7 +24,7 @@ class VoiceControls {
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
     document.getElementById('replay-reply').onclick = () => {
       const text = document.getElementById('reply-original').textContent;
-      if (text) this.speakReply(text, this.stopReadback('replay reply'));
+      if (text) this.speakReply(text, this.stopReadback('replay reply'), false, this.replyHeard);
     };
     try {
       this.drafts = new Map(JSON.parse(sessionStorage.getItem('jev-pane-drafts') || '[]'));
@@ -192,7 +192,7 @@ class VoiceControls {
     }
     return this.generation;
   }
-  async speak(text, generation) {
+  async speak(text, generation, onHeard = null) {
     const capture = this.capture;
     if (!text || !capture?.ready || generation !== this.generation || this.draft) return;
     const controller = new AbortController();
@@ -228,6 +228,7 @@ class VoiceControls {
         document.getElementById('stop-readback').hidden = true;
         this.playbackStatus('Readback finished');
         this.log('playback_ended');
+        onHeard?.();
       };
       this.playing = source;
       source.start();
@@ -245,7 +246,7 @@ class VoiceControls {
       this.onChange?.();
     }
   }
-  beginReadback(generation) {
+  beginReadback(generation, onHeard = null) {
     const capture = this.capture;
     if (!capture?.ready || this.draft || generation !== this.generation) return null;
     const profile = document.getElementById('voice-profile').value || 'current';
@@ -258,6 +259,7 @@ class VoiceControls {
       document.getElementById('stop-readback').hidden = true;
       this.playbackStatus(error ? 'Speech failed: ' + error.message : 'Readback finished');
       this.log(error ? 'voice_error' : 'playback_ended', error?.message || '');
+      if (!error && player.started && generation === this.generation && capture === this.capture) onHeard?.();
     };
     const player = new ReadbackPlayer(url, capture.playback, {
       onStart: () => {
@@ -273,21 +275,24 @@ class VoiceControls {
     return player;
   }
   presentReply(text) {
+    this.replyHeard = null;
     document.getElementById('reply-original').textContent = text;
     document.getElementById('reply-spoken').textContent = '';
     document.getElementById('reply-presentation').hidden = false;
     document.getElementById('replay-reply').hidden = false;
   }
-  async speakReply(text, generation, spokenReady = false) {
+  async speakReply(text, generation, spokenReady = false, onHeard = null) {
+    if (generation !== this.generation) return;
     this.presentReply(text);
+    this.replyHeard = onHeard;
     if (this.draft || !this.capture?.ready) {
       document.getElementById('reply-presentation').open = true;
       this.status(this.draft ? 'Original reply shown · finish your draft before listening.' : 'Reply shown. Turn on voice to listen.');
       return;
     }
-    const mode = spokenReady ? 'original' : document.getElementById('speech-style').value || 'auto';
+    const mode = spokenReady ? 'original' : document.getElementById('speech-style').value || 'spoken';
     if (mode === 'original') {
-      const player = this.beginReadback(generation);
+      const player = this.beginReadback(generation, onHeard);
       player?.write(text); player?.end();
       return;
     }
@@ -306,22 +311,16 @@ class VoiceControls {
         });
         result = await readJSONStream(response, delta => {
           if (generation !== this.generation) return;
-          player ||= this.beginReadback(generation);
+          player ||= this.beginReadback(generation, onHeard);
           player?.write(delta);
         });
         if (!response.ok) throw new Error(result.error);
       }
       if (generation !== this.generation) return;
       this.lastRendition = {...result, original: text, requestedMode: mode};
-      if (result.mode === 'uncertain') {
-        document.getElementById('reply-spoken').textContent = 'Jev could not choose a readback style. Choose Original wording or Conversational rendition to listen.';
-        document.getElementById('reply-presentation').open = true;
-        this.playbackStatus('Readback paused · choose a style');
-        return;
-      }
       document.getElementById('reply-spoken').textContent = result.mode === 'original'
         ? 'Reading original wording.' : result.text;
-      if (!player) { player = this.beginReadback(generation); player?.write(result.text); }
+      if (!player) { player = this.beginReadback(generation, onHeard); player?.write(result.text); }
       player?.end();
     } catch (error) {
       if (error.name !== 'AbortError' && generation === this.generation) {

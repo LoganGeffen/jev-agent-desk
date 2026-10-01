@@ -5,10 +5,10 @@ tmux. Type or dictate into one message box, navigate conversations, read replies
 ask about a session, and interrupt a running turn. Jev (TypeSafe) interprets the
 request; Python validates the selected conversation and performs the action.
 
-Automatic readback lets Jev choose between the exact original reply and a complete
-spoken rendition. Original wording and conversational rendition are also explicit
-choices. The original remains visible. Stop & listen cancels readback independently
-of the agent's work; uncertain delivery never triggers an automatic resend.
+Completed agent replies are automatically prepared as complete spoken renditions.
+Readback offers the prepared rendition or exact original wording. The original
+remains visible. Stop & listen cancels readback independently of the agent's work;
+uncertain delivery never triggers an automatic resend.
 
 This is a developer prototype for **Linux or WSL2**, using Linux `/proc` and tmux.
 It is a local control service, not a hosted multi-user application. Anyone with
@@ -50,7 +50,7 @@ Set configuration in the environment **before starting** the app:
 
 | Variable | Used for |
 | --- | --- |
-| `TYPESAFE_API_KEY` | TypeSafe Jev request interpretation and automatic readback choice |
+| `TYPESAFE_API_KEY` | TypeSafe Jev request interpretation |
 | `ELEVENLABS_API_KEY` | ElevenLabs realtime recognition and speech synthesis |
 | `ELEVENLABS_VOICE_ID` | A voice accessible to that ElevenLabs account |
 | `JEV_ASK_MODEL` | Codex model for session questions, indirect-question grammar, and spoken renditions; default `gpt-6-luna` |
@@ -61,6 +61,10 @@ Set configuration in the environment **before starting** the app:
 An optional settings file accepts `NAME=value` or `export NAME=value` for the three
 TypeSafe/ElevenLabs variables only; existing environment values win. Keep that file
 outside the checkout with owner-only permissions. Do not commit credentials.
+
+Background preparation uses the configured Codex model and its existing account
+allowance, even while voice is off. Replies over 20,000 characters are not prepared.
+Fresh or unfinished replies wait for completion; unidentified panes are skipped.
 
 Native Codex sessions and text generation require an installed, authenticated
 Codex CLI and access to the selected model. Claude sessions require an installed,
@@ -133,19 +137,42 @@ delivers ordinary messages to the selected agent and presses Enter automatically
 Jev routes explicit workspace commands separately. Drafts stay with their panes
 when switching tabs. Options contains Enter and Escape for terminal interaction;
 History and secondary controls stay collapsed until needed.
+Terminal text scales down to fit each pane's available width, including after
+resizing or opening the sidebar. Line breaks and column alignment stay intact;
+scroll vertically for history. This does not resize the underlying tmux workspace.
+
+Replies wait quietly. Ask **“What's next?”** for one recommended chat and its
+reason, or **“What else is ready?”** for a rundown. Agents explicitly needing
+your input come first, followed by unread completed replies in arrival order.
+**“Go there”** selects the recommended pane; **“Read it”** selects it and reads
+that reply, so your next answer goes to the conversation you just heard.
+The recommendation retains its exact conversation and reply identity. If either
+changes, ask again; it never silently substitutes another chat.
+
+Only finished audio marks a reply heard. Stopping, failed audio, viewing the
+original, and switching tabs leave it unread. A reply asking for a decision
+stays pending after listening until you answer or the agent resumes. Jev judges
+those requests when you ask for the queue; readiness is not proof a whole task
+is complete. This works for replies originating in Jev or the terminal. Queue
+and heard state live in server memory: restarting discovers the latest completed
+reply in each attached conversation as unread. There are no closed-app alerts.
 
 Allow microphone access and wait for Listening. Speech and typing share a draft
 bound to the conversation where composition began. Speech sends after roughly
 four seconds of silence; Hold and Send now control that behavior. Switching panes
 or changing identity holds the draft until you return or explicitly retarget it.
 
-Replies appear with their originating request. Automatic readback preserves prose
-when Jev chooses original, and rewrites visual structure when it chooses rendition.
-This choice is probabilistic. Uncertainty or provider failure leaves the original
-visible without substitute speech or retries. Generated text streams into speech
-sentence by sentence, and audio plays as it arrives. Completed replies tracked by
-the app start preparing their readback in the background. Original wording remains
-available. Fresh explanations still wait for the model's first sentence; streaming
+Replies to Jev-sent messages appear with their originating request. Readback uses
+the prepared rendition by default; Original wording bypasses rewriting. Rendering
+preserves already-readable prose and converts visual structure into spoken sentences.
+Provider failure leaves the original visible. Generated text streams into speech
+sentence by sentence, and audio plays as it arrives. A background watcher checks
+all identified agent panes, pausing three seconds between scans, independently of
+the browser and voice toggle. It prepares the latest completed reply on attachment and each new
+completed reply, including terminal-originated conversations. Jev is not involved
+in preparation. The latest rendition for each attached session stays in memory;
+preparation never starts playback. Original wording remains available.
+Fresh explanations still wait for the model's first sentence; streaming
 does not make that initial inference instant. Stop cancels queued audio and ignores
 late results; server preparation already in progress may finish.
 
