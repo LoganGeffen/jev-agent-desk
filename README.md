@@ -222,6 +222,9 @@ use disposable tmux sockets, synthetic identities, mocked providers, and an
 intercepted browser page; they do not send to existing agent conversations or make
 paid inference calls. Browser artifacts are generated under `.run/`.
 
+Codex history retrieval also supports the paginated history contract verified with
+CLI `0.159.3`, retaining complete turn items for readback and reply tracking.
+
 For an optional live Jev routing evaluation with synthetic tabs, run
 `python eval_routing.py` with `TYPESAFE_API_KEY` configured. It makes paid inference
 calls but does not access terminals. Its cases exercise routing judgments;

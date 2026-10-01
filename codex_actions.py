@@ -29,9 +29,11 @@ def thread_read(thread_id):
         env={key: value for key, value in os.environ.items() if key not in ("TYPESAFE_API_KEY", "ELEVENLABS_API_KEY")},
     )
     pending = b""
+    number = 0
 
-    def call(number, method, params):
-        nonlocal pending
+    def call(method, params):
+        nonlocal pending, number
+        number += 1
         message = {"id": number, "method": method, "params": params}
         process.stdin.write((json.dumps(message) + "\n").encode())
         process.stdin.flush()
@@ -54,11 +56,28 @@ def thread_read(thread_id):
         raise TimeoutError(f"Codex {method} timed out")
 
     try:
-        call(1, "initialize", {"clientInfo": {"name": "jev_playground", "version": "0.1"}})
+        call("initialize", {"clientInfo": {"name": "jev_playground", "version": "0.1"}})
         process.stdin.write(b'{"method":"initialized"}\n')
         process.stdin.flush()
         try:
-            return call(2, "thread/read", {"threadId": thread_id, "includeTurns": True})["thread"]
+            thread = call("thread/read", {"threadId": thread_id, "includeTurns": False})['thread']
+            if thread.get('historyMode', 'legacy') != 'paginated':
+                return call("thread/read", {"threadId": thread_id, "includeTurns": True})['thread']
+            turns, cursors = [], set()
+            cursor = None
+            while True:
+                page = call('thread/turns/list', {'threadId': thread_id, 'cursor': cursor,
+                            'limit': 100, 'sortDirection': 'asc', 'itemsView': 'full'})
+                if any(turn.get('itemsView', 'full') != 'full' for turn in page['data']):
+                    raise RuntimeError('Codex returned incomplete turn items; full history is unavailable')
+                turns.extend(page['data'])
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    break
+                if cursor in cursors:
+                    raise RuntimeError('Codex history pagination did not advance')
+                cursors.add(cursor)
+            return {**thread, 'turns': turns}
         except RuntimeError as error:
             # Fresh interactive threads have no persisted history until their first prompt.
             if str(error) == f"thread not loaded: {thread_id}":

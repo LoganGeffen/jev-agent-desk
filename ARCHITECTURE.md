@@ -22,6 +22,9 @@ conversion. Literal messages retain their wording. Jev probabilities are model
 judgments, not measured guarantees.
 
 `codex_actions.py` reads history through Codex app-server and sends via tmux.
+It reads thread metadata first: legacy histories use `thread/read`, while paginated
+histories use `thread/turns/list` with full items and ascending cursor traversal.
+Page failures never return a partial history as a complete result.
 `pane_identity.py` reads `/proc`, writer locks and, when needed, the local Codex
 metadata database in read-only mode. For daemon-backed Codex terminals, Linux `ss`
 identifies the connected daemon; its live writer locks and a unique exact session
