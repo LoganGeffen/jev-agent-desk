@@ -104,6 +104,7 @@ def stream_answer(question, evidence, instructions, model, on_text=None):
     started = time.monotonic()
     first_text_ms = None
     text = ''
+    provider_error = None
     with connection() as client:
         client.deadline = started + 60
         thread = client.call('thread/start', {'model': model, 'cwd': client.directory.name, 'ephemeral': True,
@@ -128,9 +129,12 @@ def stream_answer(question, evidence, instructions, model, on_text=None):
                 text += delta
                 if on_text:
                     on_text(delta)
+            elif event.get('method') == 'error':
+                provider_error = params.get('error', {}).get('message')
             elif event.get('method') == 'turn/completed':
                 if params['turn']['status'] != 'completed':
-                    raise RuntimeError('Spoken answer did not complete')
+                    reason = (params['turn'].get('error') or {}).get('message') or provider_error
+                    raise RuntimeError('Spoken answer did not complete' + (': ' + reason if reason else ''))
                 break
         if not text.strip():
             raise RuntimeError('Spoken answer returned no text')
