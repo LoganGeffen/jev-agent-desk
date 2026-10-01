@@ -78,6 +78,12 @@ app-server history and CLI flags, terminal title/writer-lock identity, and Claud
 lifecycle hooks; other CLI versions need validation. Provider/model access is
 account-dependent. Automated tests use synthetic provider responses.
 
+For a systemd deployment, ensure the service's `PATH` resolves the same Codex
+installation you tested in the terminal. An older npm-installed CLI can shadow
+the standalone CLI in `~/.local/bin`. With the default model, CLI `0.145.0`
+returned a ChatGPT model-support error; the same request succeeded on `0.159.3`.
+Restart the service after correcting its `PATH`.
+
 With the sandbox running, optional disposable agent windows can be added:
 
 ```sh
