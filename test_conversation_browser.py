@@ -432,9 +432,11 @@ class ControllerShim:
                     return self.send(receipt)
                 if self.path == '/api/jarvis/cancel':
                     shim.cancels.append(body)
+                    if ('turn_id' in body) == ('request_id' in body):
+                        return self.send({'error': 'cancel requires exactly one of request_id or turn_id'}, 400)
                     turn_id = body.get('turn_id') or shim.controller.snapshot()['requests'].get(body.get('request_id'))
                     if not turn_id:
-                        return self.send({'error': 'cancel requires a known request_id or turn_id'}, 400)
+                        return self.send({'status': 'not_attempted'})
                     return self.send(shim.controller.cancel(turn_id) or {})
                 if self.path == '/api/select':
                     shim.state.update(selected=body['tab'], selected_pane=body['tab'].replace('@', '%'))
