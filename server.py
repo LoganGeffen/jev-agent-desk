@@ -245,6 +245,7 @@ class Playground:
     def classify_continuity(self, candidates, active):
         remembered = {record['source_turn_id']: record['user_text'][:1000] for record in active[-16:]}
         questions = {}
+        earlier = {}
         for turn in candidates:
             identifier = turn['turn_id']
             questions['remember:' + identifier] = {'type': 'choice',
@@ -253,7 +254,8 @@ class Playground:
                              'correction': 'Explicit user revision of a prior preference or decision.', 'other': 'Transient request, ordinary conversation, or observed evidence.'}}
             questions['replaces:' + identifier] = {'type': 'choice',
                 'instructions': 'Select an existing remembered source only if this USER source explicitly replaces that same preference/decision. Unrelated facts never replace each other.',
-                'criteria': {'none': 'No explicit replacement', **remembered}}
+                'criteria': {'none': 'No explicit replacement', **remembered, **earlier}}
+            earlier[identifier] = turn['user_text'][:1000]
         payload = {'model': 'jev-latest', 'state': {
             'user_sources': {turn['turn_id']: turn['user_text'] for turn in candidates},
             'remembered_user_sources': remembered}, 'questions': questions}
@@ -381,6 +383,7 @@ class Playground:
                 'pending_clarification': self.pending_clarification,
                 'request_results': list(self.recent_requests.values()),
                 'reply_notices': self.reply_watch.view(),
+                'job_notices': [notice for notice in self.jarvis.state.snapshot()['notices'].values() if not notice.get('consumed')],
                 'target': {'source_session': self.source_session,
                            'view_session': self.view_session},
                 "voice": self.voice.config(),

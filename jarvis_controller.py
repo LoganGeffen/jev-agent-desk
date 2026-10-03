@@ -11,6 +11,9 @@ TARGET_SCHEMA = {'type': 'object', 'properties': {key: {'type': 'string'} for ke
                  ('tab', 'pane', 'identity', 'provider', 'thread_id', 'process', 'label')},
                  'required': ['tab', 'pane', 'identity'], 'additionalProperties': False}
 CORE_TOOLS = [
+    {'name': 'read_user_source', 'description': 'Read a bounded exact page of an archived immutable user source. Never prepares or sends a message.',
+     'inputSchema': {'type': 'object', 'properties': {'source_turn_id': {'type': 'string'}, 'offset': {'type': 'integer'}},
+                     'required': ['source_turn_id'], 'additionalProperties': False}},
     {'name': 'set_subject', 'description': 'Remember a resolved conversation independently of visible selection.',
      'inputSchema': {'type': 'object', 'properties': {'target': TARGET_SCHEMA}, 'required': ['target'], 'additionalProperties': False}},
     {'name': 'prepare_literal', 'description': 'Capture an exact span from the current user input as a draft; never send.',
@@ -122,6 +125,8 @@ class JarvisController:
                 guard()
                 app_turn = {key: copy.deepcopy(turn[key]) for key in ('turn_id', 'request_id', 'user_text', 'capture_target')}
                 app_turn.update(session_id=self.state.session_id, subject=self.state.snapshot()['subject'])
+                if name == 'read_user_source':
+                    return self.state.read_user_source(**arguments)
                 if name == 'prepare_literal':
                     span = arguments
                     if self.literal_boundaries:
