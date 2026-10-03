@@ -17,9 +17,12 @@ identity and continuity probes passed in nonauthor rechecks; independent
 `OPUS-FINAL-DELTA.json` closed those blockers (`M4-GATE.json`).
 The later prepared-message repair is integrated at `8cd019c` (runtime tree
 `058f3c3d`). Its exact-runtime natural Haiku/Jev composition passed; see Measured.
-The final suite on this later runtime passed: 344 Python tests, 153 Node tests and
-Chromium checks (`final-prepared-check.log`, exit 0). Independent delta review
-applies to `653c4dd`, not to the later prepared-result repair.
+The suite on that backend runtime passed: 344 Python tests, 153 Node tests and
+Chromium checks (`final-prepared-check.log`, exit 0). The final client `0430421`
+(tree `0b7fc72d`) exposes incidental originals as read-only text. Its final release
+suite passed 345 Python tests, 156 Node tests and both Chromium checks, exit 0
+(`final-release-check.log`). Independent M4 delta review applies to `653c4dd`,
+not to the later prepared-result or client changes.
 
 Run artifacts live in a private, uncommitted run directory
 (`.run/jarvis-build-20261003` of the original checkout). They are referenced by name
@@ -31,7 +34,7 @@ credential sources are recorded by path and configured variable names only.
 - **Speech compatibility is partial.** One synthetic phrase round-tripped through
   the real relay, but recognition changed capitalization, so the exact transcription
   check is false (see Measured: speech). Physical-device behavior remains unverified.
-- **Evidence scope.** The final `8cd019c` suite and two-turn real composition passed.
+- **Evidence scope.** The backend `8cd019c` suite and two-turn real composition passed.
   Independent M4 delta closure applies to `653c4dd`; synthetic tests and bounded
   provider cases do not establish general model accuracy or physical-device behavior.
 
@@ -51,6 +54,16 @@ case are listed separately.
   added. Fifty-nine controller/tools tests passed (`SOL-PREPARED-RESULT.json`).
   The unchanged natural two-turn real composition then passed at the repaired
   runtime (`SOL-FINAL-PROVIDER-REPAIRED.json`); its recorder limitation is below.
+- **Incidental original in the client.** Final client `0430421` (tree `0b7fc72d`)
+  preserves `available_readback` through immediate presentation and reload/polling,
+  separately from the canonical response. It is exact read-only text, including
+  newlines, Unicode and literal HTML; it has no playback control. Primary reads keep
+  their existing controls, and automatic/manual playback of a canonical status uses
+  that status's ledger source. `SOL-AVAILABLE-READBACK-CLIENT.json`: 59 Node tests
+  and one actual HTTP/Chromium test with prepared-unsent and submitted subcases pass.
+  Both retain the original after reload with no new audio; exact canonical manual
+  playback is observed through the actual HTTP ledger. Root independently reviewed
+  the runtime/browser diff. No backend or provider calls changed.
 - **Pane resolution.** Repair `04ea6f0` makes the default pane identity explicit
   while preserving explicit number/role overrides. `SOL-M5-PANE-RECHECK.json`
   passed four cases on probe `315b1bf`, runtime tree `9eae6f9a`: the unchanged
@@ -68,7 +81,7 @@ case are listed separately.
   prior preference after a 34 KB readback; model context is 20,866 bytes. A later
   20 KB readback gives 27,795 bytes. Exact originals remain available.
 - **M3 F1, cross-client audio revocation (`OPUS-M3.json`).** Client A kept playing
-  after client B took over. Fix: commit `71cd555` in this branch (run
+  after client B took over. Fix: integrated commit `dbfc6d8` (source `71cd555`; run
   `SONNET-M3-REVOKE.json`, tested commit `abcd6dc`, tree `975a9e5e`). Thirteen
   playback-flow tests passed, four new; the two revocation tests fail on the base
   `jarvis.js`/`voice.js` and pass with the fix. The **unchanged original Opus
@@ -79,7 +92,7 @@ case are listed separately.
   completion marked the reply heard. Controlled WebSocket and AudioContext; no
   physical audio.
 - **M3 F2, filler after dispatch (`OPUS-M3.json`).** A later filler invalidated an
-  already dispatched request. Fix: commit `73e8d59` in this branch (`SOL-M3-F2.json`,
+  already dispatched request. Fix: integrated commit `9c47b27` (source `73e8d59`; `SOL-M3-F2.json`,
   original commit `1e4421b`, tested tree `3b3c6fc2`). 27 turns and API tests passed.
   The unchanged original probe now shows the original request completed, exactly one
   terminal payload and the filler draft retained, and a non-author reran it
@@ -173,7 +186,7 @@ Acknowledgments of actions stay deterministic and are derived from receipts.
 ### Authorization repair recheck (M5)
 
 `SONNET-M5-AUTH.json` describes the repair, commit `ae4f1ad` (present in this
-branch's history as `8ff41d4`): the legacy filtered Jev question is replaced by a
+branch's history as `b2ed6e5`): the legacy filtered Jev question is replaced by a
 compact authorization question owned by Jarvis, shrinking the Dog Data fixture
 payload from 16,534 to 8,785 JSON characters, with 26 added tools tests (141 focused
 tests).
@@ -227,8 +240,10 @@ receipts and tool counts were preserved; no provider calls were repeated. The
 post-run full state snapshot, raw delivery callback list and selected-pane
 observation are unavailable and are not reconstructed. Both inputs captured Notes,
 and the fixture observe function remained fixed to Notes with no focus tool call;
-this is not a separate final selection measurement. This two-turn composition and
-the earlier four authority cases are bounded evidence, not general routing accuracy.
+this is not a separate final selection measurement. The final client `0430421` leaves the provider/controller/tools/state source hashes
+unchanged from measured `8cd019c` (`FINAL-HYGIENE-DELTA.json`); no new provider
+call was made for the client or docs. This two-turn composition and the earlier four authority cases are bounded
+evidence, not general routing accuracy.
 All these runs used synthetic workspace/delivery callbacks without existing
 terminals, microphone, speaker or phone.
 
@@ -282,6 +297,9 @@ endpoints, or fake transports. It establishes control flow, not model quality.
 ## Tests
 
 Counts are what each stage recorded for its own tree. Nothing here repeats them.
+Fixture runs emit unclosed SQLite connection ResourceWarnings during garbage
+collection. This is a pre-existing test-harness limitation; these logs do not
+establish a persistent-service leak or a verified cleanup mechanism.
 
 - M4 full `python check.py`: 302 Python, 149 Node, Chromium (`sol-m4-full-check.log`)
   on tree `814885a2`. The M4 final tree `52f8d1f` was verified only by 45 focused
@@ -305,6 +323,9 @@ Counts are what each stage recorded for its own tree. Nothing here repeats them.
   (178.813 s), 153 Node tests and both Chromium checks passed, `check_exit=0`
   (`final-prepared-check.log`). The real composition passed separately; independent
   M4 delta review applies to the preceding `653c4dd` tree.
+- Final text-only client `0430421`, tree `0b7fc72d`: 345 Python tests (191.113 s),
+  156 Node tests and both Chromium checks passed, `check_exit=0`
+  (`final-release-check.log`). Scoped client checks are recorded above.
 - This documentation commit changes no code. It was checked only with
   `git diff --check` and local Markdown link checks. The recorded runtime code is
   unchanged by this documentation commit. Run the suite with the dependencies in `requirements-dev.txt`.
@@ -319,6 +340,12 @@ launcher receipt was invalid because of a future `not_run` check; this file
 preserves the smoke evidence and that receipt does not count as acceptance. The smoke
 was **not rerun** after later commits. It is a startup smoke test, not feature
 verification, and it used no existing conversation.
+
+`FINAL-HYGIENE-DELTA.json` verifies the final client checkout was clean, the four
+measured backend source hashes match `8cd019c`, the original checkout's nine
+pre-existing changed/untracked files retain their baseline hashes, dependencies
+are unchanged, and no runtime/credential paths were committed. No service cutover
+or existing conversation interaction occurred.
 
 ## Unverified
 
@@ -353,6 +380,7 @@ All names are in the private run directory unless noted.
   documentation run: `SONNET-M5.json`
 - Final story/review: `SOL-M5.json`, `OPUS-M5.json`, `OPUS-FINAL-DELTA.json`,
   `M4-GATE.json`, `final-candidate-check.log`, `final-fixed-check.log`,
-  `final-prepared-check.log`
+  `final-prepared-check.log`, `final-release-check.log`,
+  `SOL-AVAILABLE-READBACK-CLIENT.json`, `FINAL-HYGIENE-DELTA.json`
 - Repository: `README.md`, `ARCHITECTURE.md`, `test_jarvis_browser.py`,
   `test_jarvis_restart_browser.py`

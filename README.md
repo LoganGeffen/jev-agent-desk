@@ -196,12 +196,15 @@ explanation of a chat's output. Things to know:
   safety judgment, not deterministic proof that the sentence is true.
 - **Preparation is not delivery.** If a turn prepares exact words but does not send,
   Jarvis says no message was submitted and offers the retained draft for explicit
-  confirmation. Earlier readback stays available alongside that status.
+  confirmation. An incidental earlier original stays separately inspectable as
+  text alongside that status, including after reload.
 - **One delivery attempt per user turn.** A changed draft, recipient or retry in the
   same turn is rejected. After an unconfirmed delivery you must decide again.
-- **Originals stay available.** The exact original reply is always shown and can be
-  read back; a spoken rendition is optional and bound to the exact app-confirmed
-  reply text.
+- **Originals stay available.** A primary read response keeps the exact original
+  and its original/spoken playback controls. An incidental original read during a
+  send or prepared-unsent turn is shown separately as read-only text; it has no
+  playback control. Automatic and manual playback for that turn use the canonical
+  status, not the incidental original.
 - **Stopping audio is not interrupting the agent.** Stop & listen cancels
   preparation and playback. Interrupting a chat is a separate action that needs
   its own authorization. A result that arrives after you stopped cannot restart
