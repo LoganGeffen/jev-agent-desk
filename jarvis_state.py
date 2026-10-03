@@ -22,6 +22,12 @@ def captured_target(value):
             if key in value}
 
 
+class DuplicateAction(ValueError):
+    def __init__(self, action):
+        super().__init__('This user turn already attempted message delivery')
+        self.action = copy.deepcopy(action)
+
+
 class JarvisState:
     def __init__(self, session_id=None):
         self.lock = threading.RLock()
@@ -164,8 +170,14 @@ class JarvisState:
                     raise ValueError('Draft requires explicit current-turn confirmation')
                 if draft['status'] != 'prepared':
                     raise ValueError('Draft has already been dispatched or replaced')
-                draft['status'] = 'attempting'
                 target, payload = draft['target'], draft['text']
+                for previous in self.actions.values():
+                    if (previous['turn_id'] == turn_id and previous.get('draft_id')
+                            and previous['status'] in ('attempting', 'submitted', 'uncertain')):
+                        draft.update(status='duplicate', duplicate_of=previous['action_id'])
+                        self.changed()
+                        raise DuplicateAction(previous)
+                draft['status'] = 'attempting'
             else:
                 target, payload = arguments.get('target'), copy.deepcopy(arguments)
             action = {'action_id': opaque_id(), 'turn_id': turn_id, 'tool': tool,

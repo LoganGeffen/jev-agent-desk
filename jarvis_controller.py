@@ -4,7 +4,7 @@ import json
 import threading
 import time
 
-from jarvis_state import JarvisState
+from jarvis_state import DuplicateAction, JarvisState
 
 
 TARGET_SCHEMA = {'type': 'object', 'properties': {key: {'type': 'string'} for key in
@@ -150,7 +150,14 @@ class JarvisController:
                     if not self.authorize(name, authorization_arguments, copy.deepcopy(app_turn)):
                         return {'ok': False, 'status': 'not_attempted', 'error': 'The user has not authorized this action'}
                     guard()
-                    action = self.state.begin_action(turn['turn_id'], name, arguments, draft_id)
+                    try:
+                        action = self.state.begin_action(turn['turn_id'], name, arguments, draft_id)
+                    except DuplicateAction as duplicate:
+                        previous = duplicate.action
+                        result = previous.get('result', {'ok': False, 'status': 'uncertain',
+                                 'error': 'The same operation is already attempting; its outcome is unknown'})
+                        return dict(result, action_id=previous['action_id'], target=previous['target'],
+                                    draft_id=previous['draft_id'], replayed=True)
                     if draft_id:
                         handler_arguments = {'draft_id': draft_id, 'target': action['target'], 'text': action['payload']}
                     handler_arguments['action_id'] = action['action_id']

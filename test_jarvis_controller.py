@@ -180,6 +180,63 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(app.submit('Hello dog', 'one')['turn_id'], receipt['turn_id'])
         self.assertEqual(len(delivered), 1)
 
+    def test_new_draft_id_cannot_repeat_same_operation_after_uncertain_exception_or_submission(self):
+        for outcome in ('uncertain', 'exception', 'submitted'):
+            deliveries, receipts = [], []
+            def application(name, arguments, turn):
+                if name == 'set_subject':
+                    return {'ok': True, 'status': 'completed', 'subject': DOG}
+                deliveries.append(arguments)
+                if outcome == 'exception':
+                    raise TimeoutError('Unknown terminal write state')
+                return {'ok': outcome == 'submitted', 'status': outcome}
+            def provider(context, specs, execute, **kwargs):
+                execute('set_subject', {'target': DOG})
+                for _ in range(2):
+                    draft = execute('prepare_literal', {'start': 0, 'end': 5})
+                    try:
+                        receipts.append(execute('send_draft', {'draft_id': draft['draft_id']}))
+                    except TimeoutError:
+                        pass
+                return final()
+            app = JarvisController(provider, application, authorize=lambda *args: True)
+            receipt = app.submit('Hello dog', 'one')
+            self.assertEqual(receipt['status'], 'completed')
+            self.assertEqual(len(deliveries), 1, outcome)
+            self.assertEqual(len(receipt['actions']), 1)
+            self.assertEqual(receipts[-1]['action_id'], receipt['actions'][0]['action_id'])
+            self.assertTrue(receipts[-1]['replayed'])
+            self.assertEqual(receipts[-1]['status'], 'submitted' if outcome == 'submitted' else 'uncertain')
+            later = app.submit('Hello dog', 'new-explicit-request')
+            self.assertEqual(later['status'], 'completed')
+            self.assertEqual(len(deliveries), 2, 'A new explicit user request must remain distinct')
+
+    def test_same_turn_cannot_bypass_uncertainty_by_changing_payload_and_recipient(self):
+        deliveries = []
+        def application(name, arguments, turn):
+            if name == 'set_subject':
+                return {'ok': True, 'status': 'completed', 'subject': arguments['target']}
+            deliveries.append(arguments)
+            return {'ok': False, 'status': 'uncertain', 'error': 'Delivery acknowledgment unavailable'}
+        def provider(context, specs, execute, **kwargs):
+            execute('set_subject', {'target': DOG})
+            first = execute('prepare_literal', {'start': 0, 'end': 5})
+            initial = execute('send_draft', {'draft_id': first['draft_id']})
+            execute('set_subject', {'target': CONTROLLER})
+            changed = execute('prepare_literal', {'start': 0, 'end': 6})
+            repeated = execute('send_draft', {'draft_id': changed['draft_id']})
+            self.assertEqual(repeated['action_id'], initial['action_id'])
+            self.assertEqual(repeated['target'], DOG)
+            self.assertTrue(repeated['replayed'])
+            return final()
+        app = JarvisController(provider, application, authorize=lambda *args: True)
+        receipt = app.submit('Hello dog', 'one')
+        self.assertEqual(receipt['status'], 'completed')
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]['target'], DOG)
+        self.assertEqual(deliveries[0]['text'], 'Hello')
+        self.assertEqual(len(receipt['actions']), 1)
+
     def test_new_turn_remains_responsive_and_denies_old_effects_and_streams(self):
         entered, release = threading.Event(), threading.Event()
         results, stream, application_calls = [], [], []

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from jarvis_state import JarvisState, encoded_size
+from jarvis_state import DuplicateAction, JarvisState, encoded_size
 
 
 DOG = {'tab': '@dog', 'pane': '%dog', 'identity': 'dog:original', 'label': 'Dog Data'}
@@ -51,6 +51,20 @@ class StateTests(unittest.TestCase):
         self.state.finish_action(action['action_id'], {'ok': False, 'status': 'uncertain'})
         with self.assertRaises(ValueError):
             self.state.begin_action(self.id, 'send_draft', {}, draft['draft_id'])
+
+    def test_duplicate_operation_is_blocked_even_while_first_action_is_attempting(self):
+        first = self.state.prepare_literal(self.id, 10, 14)
+        action = self.state.begin_action(self.id, 'send_draft', {}, first['draft_id'])
+        second = self.state.prepare_literal(self.id, 10, 14)
+        with self.assertRaises(DuplicateAction) as duplicate:
+            self.state.begin_action(self.id, 'send_draft', {}, second['draft_id'])
+        self.assertEqual(duplicate.exception.action['action_id'], action['action_id'])
+        self.assertEqual(len(self.state.snapshot()['actions']), 1)
+        self.assertEqual(self.state.snapshot()['drafts'][second['draft_id']]['duplicate_of'], action['action_id'])
+        different = self.state.prepare_literal(self.id, 15, 20)
+        with self.assertRaises(DuplicateAction):
+            self.state.begin_action(self.id, 'send_draft', {}, different['draft_id'])
+        self.assertEqual(len(self.state.snapshot()['actions']), 1)
 
     def test_compaction_pins_subject_pending_work_and_exact_records(self):
         draft = self.state.prepare_literal(self.id, 10, 14)
