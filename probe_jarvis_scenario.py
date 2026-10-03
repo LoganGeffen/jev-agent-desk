@@ -38,7 +38,7 @@ def synthetic_provider(context, tool_specs, execute, **kwargs):
             'first_text_ms': 0, 'elapsed_ms': 0}
 
 
-def run(provider):
+def run(provider, trace_path=None):
     callbacks, deliveries, contexts, results = [], [], [], []
     app = None
     def application(name, arguments, turn):
@@ -75,6 +75,9 @@ def run(provider):
     for number, text in enumerate(scenario):
         result = app.submit(text, 'synthetic-scenario-' + str(number), capture_target=NOTES)
         results.append(result)
+        if trace_path:
+            trace_path.write_text(json.dumps({'passed': False, 'turns': results, 'callbacks': callbacks,
+                                             'contexts': contexts, 'state': app.snapshot()}, indent=2) + '\n')
         if result['status'] != 'completed':
             raise AssertionError('Controller scenario failed: ' + json.dumps(result))
         if number == 1 and app.snapshot()['subject'] != DOG:
@@ -118,7 +121,13 @@ def main():
     else:
         from jarvis_haiku import run_turn
         provider = run_turn
-    report = run(provider)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    trace_path = args.output.with_suffix('.trace.json')
+    try:
+        report = run(provider, trace_path)
+    except Exception as error:
+        args.output.write_text(json.dumps({'passed': False, 'error': str(error), 'trace': str(trace_path)}, indent=2) + '\n')
+        raise
     report['provider'] = 'synthetic' if args.synthetic else 'subscription-backed Haiku adapter'
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + '\n')
