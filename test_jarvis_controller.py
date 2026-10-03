@@ -155,6 +155,40 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(stream, [])
         self.assertEqual(application_calls, [])
 
+    def test_blocked_output_consumer_does_not_hold_up_new_turn_or_admit_later_stale_text(self):
+        entered, release, fast_done = threading.Event(), threading.Event(), threading.Event()
+        consumed, slow_results, fast_results = [], [], []
+        def consumer(delta):
+            consumed.append(delta)
+            entered.set()
+            release.wait(2)
+        def provider(context, specs, execute, on_text=None, **kwargs):
+            if context['current_turn']['user_text'] == 'Slow stream':
+                on_text('Accepted before supersession.')
+                with self.assertRaises(InterruptedError):
+                    on_text('Stale after supersession.')
+            return final('Current response')
+        app = JarvisController(provider, lambda *args: None)
+        slow_worker = threading.Thread(target=lambda: slow_results.append(
+            app.submit('Slow stream', 'slow', on_text=consumer)))
+        slow_worker.start()
+        self.assertTrue(entered.wait(2))
+        def submit_fast():
+            fast_results.append(app.submit('Fast follow-up', 'fast'))
+            fast_done.set()
+        fast_worker = threading.Thread(target=submit_fast)
+        fast_worker.start()
+        try:
+            self.assertTrue(fast_done.wait(0.5), 'New turn blocked behind external output consumer')
+            self.assertEqual(fast_results[0]['status'], 'completed')
+            self.assertTrue(slow_worker.is_alive())
+        finally:
+            release.set()
+            slow_worker.join(2)
+            fast_worker.join(2)
+        self.assertEqual(consumed, ['Accepted before supersession.'])
+        self.assertEqual(slow_results[0]['status'], 'cancelled')
+
     def test_inflight_duplicate_does_not_start_second_provider(self):
         entered, release = threading.Event(), threading.Event()
         calls = []

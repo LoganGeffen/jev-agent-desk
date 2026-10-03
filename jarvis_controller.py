@@ -170,8 +170,8 @@ class JarvisController:
                 guard()
                 if not isinstance(delta, str):
                     raise ValueError('Controller text delta must be text')
-                if on_text:
-                    on_text(delta)
+            if on_text:
+                on_text(delta)
 
         try:
             result = self.provider(self.state.context(turn['turn_id']), self.tool_specs, dispatch,
