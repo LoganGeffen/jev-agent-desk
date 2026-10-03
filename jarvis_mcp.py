@@ -1,23 +1,29 @@
+import copy
 import hmac
 import json
 import re
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 SERVER = 'jarvis'
 MAX_BODY = 1 << 20
 MAX_CALLS = 8
+POLL = 0.05
+CLOSE_GRACE = 0.5
 NAME = re.compile(r'[A-Za-z0-9_]{1,40}\Z')
-KEYWORDS = {'type', 'description', 'enum', 'properties', 'required', 'items', 'maxLength'}
+KEYWORDS = {'type', 'description', 'enum', 'properties', 'required', 'items', 'maxLength', 'additionalProperties'}
 TYPES = {'string': str, 'boolean': bool, 'object': dict, 'array': list, 'integer': int, 'number': (int, float)}
 
 
-def check_schema(schema, path='input_schema'):
+def check_schema(schema, path='inputSchema'):
     unsupported = set(schema) - KEYWORDS
     if unsupported or schema.get('type') not in TYPES:
         raise ValueError(f'{path} uses unsupported schema: {sorted(unsupported) or schema.get("type")}')
+    if not isinstance(schema.get('additionalProperties', True), bool):
+        raise ValueError(f'{path} additionalProperties must be a boolean')
     for name, child in schema.get('properties', {}).items():
         check_schema(child, f'{path}.{name}')
     if 'items' in schema:
@@ -38,13 +44,22 @@ def validate(schema, value, path='arguments'):
     if kind == 'object':
         properties = schema.get('properties', {})
         extra = set(value) - set(properties)
-        if extra:
+        if extra and schema.get('additionalProperties', True) is False:
             raise ValueError(f'{path} has unexpected properties: {sorted(extra)}')
         missing = set(schema.get('required', ())) - set(value)
         if missing:
             raise ValueError(f'{path} is missing: {sorted(missing)}')
         for name, item in value.items():
-            validate(properties[name], item, f'{path}.{name}')
+            if name in properties:
+                validate(properties[name], item, f'{path}.{name}')
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+
+    def handle_error(self, request, client_address):
+        pass
 
 
 class ToolBridge:
@@ -53,14 +68,16 @@ class ToolBridge:
     def __init__(self, tool_specs, execute_tool, cancel=None, max_calls=MAX_CALLS):
         self.schemas = {}
         self.listing = []
-        for spec in tool_specs:
+        for spec in copy.deepcopy(list(tool_specs)):
             name = spec['name']
-            if not NAME.match(name) or name in self.schemas or spec['input_schema'].get('type') != 'object':
+            schema = spec.get('inputSchema')
+            if (not isinstance(name, str) or not NAME.match(name) or name in self.schemas
+                    or not isinstance(schema, dict) or schema.get('type') != 'object'
+                    or not isinstance(spec.get('description'), str)):
                 raise ValueError(f'Invalid or duplicate tool {name!r}')
-            check_schema(spec['input_schema'], name)
-            self.schemas[name] = spec['input_schema']
-            self.listing.append({'name': name, 'description': spec['description'],
-                                 'inputSchema': spec['input_schema']})
+            check_schema(schema, name)
+            self.schemas[name] = schema
+            self.listing.append({'name': name, 'description': spec['description'], 'inputSchema': schema})
         if not self.schemas:
             raise ValueError('At least one tool is required')
         self.tool_names = [f'mcp__{SERVER}__{name}' for name in self.schemas]
@@ -68,10 +85,13 @@ class ToolBridge:
         self._execute = execute_tool
         self._cancel = cancel
         self._max_calls = max_calls
-        self._lock = threading.Lock()
+        self._state = threading.Lock()
+        self._dispatch = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
         self._closed = False
         self._token = secrets.token_urlsafe(32)
-        self._server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
+        self._server = Server(('127.0.0.1', 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
 
     def config(self):
@@ -86,36 +106,69 @@ class ToolBridge:
     def __exit__(self, *exc):
         self.close()
 
-    def close(self):
-        with self._lock:
+    def close(self, grace=CLOSE_GRACE):
+        """Refuse all later calls and return within `grace` seconds even if a callback is still running;
+        that callback finishes in the background and still completes its own call record."""
+        with self._state:
             self._closed = True
+        self._idle.wait(grace)
         self._server.shutdown()
         self._server.server_close()
 
+    def _stopped(self):
+        return self._closed or bool(self._cancel and self._cancel.is_set())
+
     def call_tool(self, name, arguments):
-        with self._lock:
-            record = {'tool': name, 'arguments': arguments}
+        record = {'tool': name, 'arguments': arguments}
+        with self._state:
             self.calls.append(record)
-            if self._closed or (self._cancel and self._cancel.is_set()):
-                record['error'] = 'cancelled before dispatch'
-            elif len(self.calls) > self._max_calls:
-                record['error'] = 'tool call limit reached'
-            else:
-                try:
-                    if not isinstance(name, str) or name not in self.schemas:
-                        raise ValueError(f'unknown tool {name!r}')
-                    validate(self.schemas[name], arguments)
-                except ValueError as error:
-                    record['error'] = f'invalid call: {error}'
-                else:
-                    try:
-                        record['result'] = self._execute(name, arguments)
-                        json.dumps(record['result'])
-                    except Exception as error:
-                        record['error'] = f'{type(error).__name__}: {error}'
-            if 'error' in record:
-                return f'Tool did not complete ({record["error"]}). Do not claim it happened.', True
-            return json.dumps(record['result']), False
+            over_limit = len(self.calls) > self._max_calls
+        error = None
+        if self._stopped():
+            error = 'cancelled before dispatch'
+        elif over_limit:
+            error = 'tool call limit reached'
+        else:
+            try:
+                if not isinstance(name, str) or name not in self.schemas:
+                    raise ValueError(f'unknown tool {name!r}')
+                validate(self.schemas[name], arguments)
+            except ValueError as invalid:
+                error = f'invalid call: {invalid}'
+        if error is None:
+            error = self._dispatch_call(record)
+        if error:
+            record['error'] = error
+        if 'error' in record:
+            return f'Tool did not complete ({record["error"]}). Do not claim it happened.', True
+        return json.dumps(record['result']), False
+
+    def _dispatch_call(self, record):
+        while not self._dispatch.acquire(timeout=POLL):
+            if self._stopped():
+                return 'cancelled before dispatch'
+        try:
+            with self._state:
+                if self._stopped():
+                    return 'cancelled before dispatch'
+                record['in_flight'] = True
+                self._idle.clear()
+            started = time.monotonic()
+            outcome = {}
+            try:
+                outcome['result'] = self._execute(record['tool'], record['arguments'])
+                json.dumps(outcome['result'])
+            except Exception as error:
+                outcome = {'error': f'{type(error).__name__}: {error}'}
+            finally:
+                with self._state:
+                    record.pop('in_flight', None)
+                    record['duration_ms'] = round((time.monotonic() - started) * 1000)
+                    record.update(outcome)
+                    self._idle.set()
+            return outcome.get('error')
+        finally:
+            self._dispatch.release()
 
     def _handler(self):
         bridge = self

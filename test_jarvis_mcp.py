@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -9,11 +10,18 @@ from jarvis_mcp import ToolBridge
 
 
 SEND = {'name': 'send_draft', 'description': 'Send a draft.',
-        'input_schema': {'type': 'object', 'required': ['draft_id', 'confirm'], 'properties': {
-            'draft_id': {'type': 'string', 'maxLength': 8},
-            'confirm': {'type': 'boolean'},
-            'mode': {'type': 'string', 'enum': ['now', 'later']},
-            'tags': {'type': 'array', 'items': {'type': 'integer'}}}}}
+        'inputSchema': {'type': 'object', 'required': ['draft_id', 'confirm'], 'additionalProperties': False,
+                        'properties': {
+                            'draft_id': {'type': 'string', 'maxLength': 8},
+                            'confirm': {'type': 'boolean'},
+                            'mode': {'type': 'string', 'enum': ['now', 'later']},
+                            'tags': {'type': 'array', 'items': {'type': 'integer'}}}}}
+CORE_TARGET = {'type': 'object', 'required': ['target'], 'additionalProperties': False, 'properties': {
+    'target': {'type': 'object', 'required': ['tab', 'pane', 'identity'], 'additionalProperties': False,
+               'properties': {key: {'type': 'string'} for key in ('tab', 'pane', 'identity', 'label')}}}}
+FIXTURE = {'name': 'fixture_lookup', 'description': 'Read a synthetic value by key.',
+           'inputSchema': {'type': 'object', 'properties': {'key': {'type': 'string'}}, 'required': ['key'],
+                           'additionalProperties': False}}
 GOOD = {'draft_id': 'd-1', 'confirm': True}
 
 
@@ -69,7 +77,7 @@ class ToolBridgeTests(unittest.TestCase):
         status, body = client.rpc('initialize', {'protocolVersion': '2025-06-18'})
         self.assertEqual(body['result']['protocolVersion'], '2025-06-18')
         self.assertEqual(client.rpc('tools/list')[1]['result']['tools'],
-                         [{'name': 'send_draft', 'description': 'Send a draft.', 'inputSchema': SEND['input_schema']}])
+                         [{'name': 'send_draft', 'description': 'Send a draft.', 'inputSchema': SEND['inputSchema']}])
         self.assertEqual(client.post({'jsonrpc': '2.0', 'method': 'notifications/initialized'}), (202, None))
         self.assertEqual(client.rpc('resources/list')[1]['error']['code'], -32601)
         for token in ('', 'Bearer wrong'):
@@ -86,8 +94,11 @@ class ToolBridgeTests(unittest.TestCase):
         result = Client(bridge).call('send_draft', {**GOOD, 'mode': 'now', 'tags': [1, 2]})
         self.assertEqual(result, {'content': [{'type': 'text', 'text': '{"sent": "d-1"}'}], 'isError': False})
         self.assertEqual(self.executed, [('send_draft', {**GOOD, 'mode': 'now', 'tags': [1, 2]})])
-        self.assertEqual(bridge.calls, [{'tool': 'send_draft', 'arguments': {**GOOD, 'mode': 'now', 'tags': [1, 2]},
-                                         'result': {'sent': 'd-1'}}])
+        self.assertEqual([{key: value for key, value in call.items() if key != 'duration_ms'}
+                          for call in bridge.calls],
+                         [{'tool': 'send_draft', 'arguments': {**GOOD, 'mode': 'now', 'tags': [1, 2]},
+                           'result': {'sent': 'd-1'}}])
+        self.assertIsInstance(bridge.calls[0]['duration_ms'], int)
 
     def test_invalid_arguments_and_unknown_tools_never_reach_the_application(self):
         bridge = self.bridge(max_calls=20)
@@ -134,43 +145,96 @@ class ToolBridgeTests(unittest.TestCase):
         self.assertEqual(len(self.executed), 2)
         self.assertEqual(bridge.calls[2]['error'], 'tool call limit reached')
 
-    def test_close_waits_for_inflight_action_and_refuses_later_calls(self):
+    def test_contract_example_and_core_shaped_schemas_are_honored(self):
+        seen = []
+        bridge = ToolBridge([FIXTURE, {'name': 'set_subject', 'description': 'd', 'inputSchema': CORE_TARGET}],
+                            lambda name, arguments: seen.append(name) or {'ok': True, 'status': 'completed'})
+        bridge.__enter__()
+        self.addCleanup(bridge.close)
+        client = Client(bridge)
+        target = {'tab': 't', 'pane': 'p', 'identity': 'i'}
+        self.assertEqual(client.rpc('tools/list')[1]['result']['tools'][0],
+                         {'name': 'fixture_lookup', 'description': 'Read a synthetic value by key.',
+                          'inputSchema': FIXTURE['inputSchema']})
+        self.assertFalse(client.call('fixture_lookup', {'key': 'a'})['isError'])
+        self.assertFalse(client.call('set_subject', {'target': target})['isError'])
+        for name, arguments in (('fixture_lookup', {'key': 'a', 'x': 1}), ('fixture_lookup', {}),
+                                ('set_subject', {'target': {**target, 'extra': 'x'}}),
+                                ('set_subject', {'target': {'tab': 't'}}), ('set_subject', {'target': target, 'x': 1})):
+            self.assertTrue(client.call(name, arguments)['isError'], (name, arguments))
+        self.assertEqual(seen, ['fixture_lookup', 'set_subject'])
+
+    def test_schema_without_additional_properties_false_permits_extras(self):
+        loose = {'name': 'loose', 'description': 'd', 'inputSchema': {'type': 'object', 'properties': {
+            'a': {'type': 'string'}}}}
+        bridge = ToolBridge([loose], lambda name, arguments: {'got': sorted(arguments)})
+        bridge.__enter__()
+        self.addCleanup(bridge.close)
+        self.assertFalse(Client(bridge).call('loose', {'a': 'x', 'b': 1})['isError'])
+        self.assertTrue(Client(bridge).call('loose', {'a': 3})['isError'])
+
+    def test_close_returns_promptly_behind_a_delayed_callback_and_keeps_its_receipt(self):
         entered, release = threading.Event(), threading.Event()
+        cancel = threading.Event()
+        order = []
 
         def slow(name, arguments):
+            order.append(arguments['draft_id'])
             entered.set()
-            release.wait(5)
-            return {'sent': True}
+            release.wait(10)
+            return {'sent': arguments['draft_id']}
 
-        bridge = ToolBridge([SEND], slow)
+        bridge = ToolBridge([SEND], slow, cancel)
         bridge.__enter__()
         client = Client(bridge)
-        responses = []
-        threading.Thread(target=lambda: responses.append(client.call('send_draft', GOOD))).start()
+        first, second = [], []
+        threading.Thread(target=lambda: first.append(client.call('send_draft', GOOD)), daemon=True).start()
         self.assertTrue(entered.wait(5))
-        closer = threading.Thread(target=bridge.close)
-        closer.start()
-        closer.join(.3)
-        self.assertTrue(closer.is_alive())
+        self.assertTrue(bridge.calls[0]['in_flight'])
+        threading.Thread(target=lambda: second.append(client.call('send_draft', {**GOOD, 'draft_id': 'd-2'})),
+                         daemon=True).start()
+        time.sleep(.2)
+        cancel.set()
+        started = time.monotonic()
+        bridge.close(grace=.2)
+        self.assertLess(time.monotonic() - started, 2)
         release.set()
-        closer.join(5)
-        self.assertFalse(closer.is_alive())
-        self.assertEqual(bridge.calls[0]['result'], {'sent': True})
+        deadline = time.monotonic() + 5
+        while not (first and second) and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(order, ['d-1'])
+        self.assertEqual(bridge.calls[0]['result'], {'sent': 'd-1'})
+        self.assertNotIn('in_flight', bridge.calls[0])
+        self.assertEqual(bridge.calls[1]['error'], 'cancelled before dispatch')
+        self.assertTrue(second[0]['isError'])
         self.assertTrue(bridge._closed)
+
+    def test_no_dispatch_after_close_even_without_cancel(self):
+        bridge = self.bridge()
+        client = Client(bridge)
+        bridge.close()
+        self.assertEqual(bridge.call_tool('send_draft', GOOD)[1], True)
+        self.assertEqual(self.executed, [])
+        self.assertEqual(bridge.calls[-1]['error'], 'cancelled before dispatch')
+        with self.assertRaises(OSError):
+            client.rpc('tools/list')
 
     def test_specs_are_validated_up_front(self):
         def spec(name='tool', schema=None):
-            return {'name': name, 'description': 'd', 'input_schema': schema or {'type': 'object'}}
+            return {'name': name, 'description': 'd', 'inputSchema': schema or {'type': 'object'}}
 
         for specs in ([], [spec('bad name')], [spec('a'), spec('a')], [spec('x' * 41)],
                       [spec(schema={'type': 'array'})],
                       [spec(schema={'type': 'object', 'properties': {'a': {'type': 'string', 'pattern': '.*'}}})],
                       [spec(schema={'type': 'object', 'properties': {'a': {'type': 'null'}}})],
-                      [spec(schema={'type': 'object', 'oneOf': []})]):
+                      [spec(schema={'type': 'object', 'oneOf': []})],
+                      [spec(schema={'type': 'object', 'additionalProperties': {'type': 'string'}})],
+                      [{'name': 'legacy', 'description': 'd', 'input_schema': {'type': 'object'}}],
+                      [{'name': 'nodescription', 'inputSchema': {'type': 'object'}}]):
             with self.assertRaises(ValueError, msg=specs):
                 ToolBridge(specs, lambda *args: {})
         with self.assertRaises(ValueError):
-            jarvis_mcp.check_schema({'type': 'object', 'additionalProperties': True})
+            jarvis_mcp.check_schema({'type': 'object', 'additionalProperties': {}})
 
 
 if __name__ == '__main__':
