@@ -70,6 +70,7 @@ function backend({session = 's1', turnId = 't1'} = {}) {
     if (body.status === 'completed' && record.rendition_pending) return bad('Spoken rendition is not yet app-confirmed');
     if ('heard_prefix' in body) {
       const prefix = body.heard_prefix;
+      if (s.rejectPrefix) return bad('Heard prefix is out of range or regresses');
       if (Object.keys(prefix).sort().join() !== 'alignment,chars,sha256' || prefix.alignment !== 'provider') return bad('Invalid provider-aligned prefix');
       const points = Array.from(source(record));
       if (!Number.isInteger(prefix.chars) || prefix.chars < (record.heard_prefix?.chars ?? 0) || prefix.chars > points.length) return bad('Heard prefix is out of range or regresses');
@@ -131,7 +132,8 @@ async function desk({style = 'original', server = backend()} = {}) {
   const fetch = async (url, options = {}) => {
     const body = options.body ? JSON.parse(options.body) : undefined;
     calls.push({url, body});
-    if (url === '/api/jarvis/state') return json({session_id: 's1', revision: 1, subject: null, turns: {}, requests: {}, drafts: {}, actions: {}, jobs: {}, playbacks: {}, clarifications: {}});
+    if (url === '/api/jarvis/state') return json({session_id: 's1', revision: 1 + server.updates.length + server.nextId, subject: null, turns: {}, requests: {}, drafts: {}, actions: {}, jobs: {},
+      playbacks: Object.fromEntries([...server.playbacks].map(([id, record]) => [id, {...record}])), clarifications: {}});
     if (url === '/api/jarvis/turn') return json({session_id: 's1', turn_id: 't1', request_id: body.request_id, revision: 2, status: 'completed', text: 'Reading B.', actions: [],
       readback: {original: ORIGINAL, target: REF, reply_ref: REF}});
     if (url === '/api/jarvis/playback') {
@@ -372,4 +374,102 @@ test('late first audio after a newer generation began cannot create or complete 
   assert.equal(d.calls.length, posts);
   assert.deepEqual(d.server.heard, []);
   assert.ok(d.server.playbacks.size <= 1);
+});
+
+const takeover = async (a, b) => {
+  await a.submit();
+  await wait(() => a.sockets.length === 2, 'A player');
+  a.readback().onmessage(frame(FIRST, 0, 200));
+  a.readback().onmessage(frame(SECOND, 200, 300));
+  a.sources[0].onended();
+  await wait(() => a.server.updates.some(update => update.chars === 8), 'A first prefix');
+  const player = a.voice.playing, socket = a.readback();
+  b.voice.speakReply(ORIGINAL, b.voice.stopReadback('read'), false, null, b.client.tracker('t1'));
+  await wait(() => b.sockets.length === 2, 'B player');
+  b.readback().onmessage(frame(FIRST, 0, 200));
+  await wait(() => a.statuses()[0][1] === 'cancelled', 'A record cancelled by B');
+  assert.equal(a.voice.playing, player);
+  assert.equal(player.closed, false);
+  return {player, socket};
+};
+
+test('two clients: another client taking the reply stops this client\'s exact audio and socket when the poll observes the revocation', async () => {
+  const server = backend();
+  const a = await desk({server}), b = await desk({server});
+  const {player, socket} = await takeover(a, b);
+  await a.client.refresh();
+  assert.equal(player.closed, true);
+  assert.equal(player.status, 'cancelled');
+  assert.equal(socket.closed, true);
+  assert.equal(a.voice.playing, null);
+  assert.equal(a.elements.get('stop-readback').hidden, true);
+  assert.equal(a.sources[1].stopped, true);
+  const scheduled = a.sources.length, posts = a.calls.length;
+  socket.onmessage(frame(SECOND, 500, 300));
+  socket.onmessage({data: '{"isFinal":true}'});
+  await settle();
+  assert.equal(a.sources.length, scheduled);
+  assert.equal(a.calls.length, posts);
+  b.readback().onmessage(frame(SECOND, 200, 300));
+  b.readback().onmessage({data: '{"isFinal":true}'});
+  assert.equal(b.voice.playing.closed, false);
+  b.sources.forEach(source => source.onended());
+  await wait(() => server.heard.length === 1, 'B ack');
+  assert.deepEqual([...server.playbacks.values()].map(record => [record.client_id === a.client.clientId, record.status]), [[true, 'cancelled'], [false, 'completed']]);
+  assert.deepEqual(a.direct, []);
+  assert.deepEqual(b.direct, []);
+});
+
+test('two clients: a rejected update alone reveals the revocation and stops only the captured player', async () => {
+  const server = backend();
+  const a = await desk({server}), b = await desk({server});
+  const {player, socket} = await takeover(a, b);
+  a.sources[1].onended();
+  await wait(() => player.closed, 'player stopped after rejection');
+  assert.equal(socket.closed, true);
+  assert.equal(a.voice.playing, null);
+  assert.equal(b.voice.playing.closed, false);
+  assert.equal(b.readback().closed, undefined);
+  assert.deepEqual(a.direct, []);
+});
+
+test('a late rejection for the old playback cannot stop a newer local playback', async () => {
+  const server = backend();
+  const a = await desk({server}), b = await desk({server});
+  const {player: first} = await takeover(a, b);
+  a.elements.get('replay-reply').onclick();
+  await wait(() => a.sockets.length === 3, 'A replay player');
+  const second = a.voice.playing, socket = a.readback();
+  assert.notEqual(second, first);
+  await a.client.refresh();
+  await settle();
+  assert.equal(first.closed, true);
+  assert.equal(second.closed, false);
+  assert.equal(a.voice.playing, second);
+  assert.equal(socket.closed, undefined);
+  socket.onmessage(frame(FIRST, 0, 200));
+  socket.onmessage(frame(SECOND, 200, 300));
+  socket.onmessage({data: '{"isFinal":true}'});
+  a.sources.slice(2).forEach(source => source.onended());
+  await wait(() => [...server.playbacks.values()].some(record => record.client_id === a.client.clientId && record.status === 'completed'), 'replay ack');
+  assert.deepEqual(a.direct, []);
+});
+
+test('a rejected heard prefix falls back to the plain acknowledgement without stopping a valid owner', async () => {
+  const d = await desk();
+  d.server.rejectPrefix = true;
+  await d.submit();
+  await wait(() => d.sockets.length === 2, 'player');
+  d.readback().onmessage(frame(FIRST, 0, 200));
+  d.readback().onmessage(frame(SECOND, 200, 300));
+  d.sources[0].onended();
+  await wait(() => d.server.rejected.length > 0, 'prefix rejected');
+  await d.client.refresh();
+  await settle();
+  assert.equal(d.voice.playing.closed, false);
+  d.readback().onmessage({data: '{"isFinal":true}'});
+  d.sources.forEach(source => source.onended());
+  await wait(() => d.server.heard.length === 1, 'full ack');
+  assert.deepEqual(d.statuses(), [['pb1', 'completed']]);
+  assert.deepEqual(d.direct, []);
 });

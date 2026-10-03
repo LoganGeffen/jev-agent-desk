@@ -270,6 +270,15 @@ class VoiceControls {
     }
     return this.generation;
   }
+  playerRevoked(player) {
+    if (this.playing !== player) return;
+    this.playing = null;
+    if (!document.getElementById('talk-to-interrupt').checked) this.listenAfter = Date.now() + 300;
+    if (!this.pending) document.getElementById('stop-readback').hidden = true;
+    this.log('playback_cancelled', 'playback taken over');
+    this.playbackStatus('Readback stopped · playing on another device · agent unchanged');
+    this.onChange?.();
+  }
   async speak(text, generation, onHeard = null) {
     const capture = this.capture;
     if (!text || !capture?.ready || generation !== this.generation || this.draft) return;

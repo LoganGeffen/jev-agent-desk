@@ -18,6 +18,7 @@ class JarvisClient {
     this.pending = new Map();
     this.latestRequestId = null;
     this.rendered = new Map();
+    this.owned = new Map();
   }
   get target() { return JARVIS_TARGET; }
   get summary() {
@@ -44,18 +45,32 @@ class JarvisClient {
       this.sessionId = snapshot.session_id;
       this.revision = -1;
       this.rendered.clear();
+      this.owned.clear();
       if (previous) for (const entry of [...this.pending.values()]) {
         this.settle(entry, null, 'Jarvis restarted, so this request cannot be matched to a receipt.');
       }
     } else if (snapshot.revision < this.revision) return false;
     this.revision = snapshot.revision;
     this.snapshot = snapshot;
+    this.revokeObserved();
     for (const turn of Object.values(snapshot.turns || {})) {
       if (turn.mode === 'jarvis') this.show(this.receiptFromState(turn), turn.user_text, turn.source);
     }
     for (const entry of [...this.pending.values()]) this.reconcile(entry, startedAt);
     this.onChange();
     return true;
+  }
+  revokeObserved() {
+    for (const [id, ledger] of [...this.owned]) {
+      if (ledger.sessionId !== this.sessionId || ledger.player.closed) { this.owned.delete(id); continue; }
+      const record = this.snapshot?.playbacks?.[id];
+      if (!record || record.client_id !== this.clientId || record.epoch !== ledger.epoch) continue;
+      if (record.status !== 'cancelled' && record.status !== 'failed') continue;
+      this.owned.delete(id);
+      ledger.dead = true;
+      ledger.player.stop();
+      this.voice?.playerRevoked(ledger.player);
+    }
   }
   receiptFromState(turn) {
     const snapshot = this.snapshot;
@@ -228,13 +243,18 @@ class JarvisClient {
     const sessionId = this.sessionId;
     if (!sessionId || !turnId || !Number.isInteger(generation)) return null;
     const ledger = {id: null, boundary: null, dead: false, sent: null, prefixChars: 0, prefixOff: false, attached: false,
-      queue: Promise.resolve()};
+      queue: Promise.resolve(), player: null, sessionId, epoch: generation};
+    const watch = () => {
+      if (!ledger.id || !ledger.player || ledger.dead) return;
+      this.owned.set(ledger.id, ledger);
+      this.revokeObserved();
+    };
     const outdated = () => generation < (this.voice?.generation ?? generation);
     const post = async body => {
       const response = await this.fetch('/api/jarvis/playback', {method: 'POST', headers: {'Content-Type': 'application/json'},
         keepalive: true, body: JSON.stringify({session_id: sessionId, ...body})});
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Playback rejected');
+      if (!response.ok) throw Object.assign(new Error(result.error || 'Playback rejected'), {rejected: true});
       return result;
     };
     const ensure = async () => {
@@ -246,6 +266,7 @@ class JarvisClient {
           || typeof created.playback_id !== 'string') throw new Error('Playback record does not match');
         ledger.id = created.playback_id;
         ledger.boundary = created.full_boundary_id;
+        watch();
       } catch { ledger.dead = true; }
     };
     const report = async progress => {
@@ -269,8 +290,13 @@ class JarvisClient {
           if (attempt) ledger.prefixChars = attempt.chars;
           if (status !== 'playing') ledger.dead = true;
           return;
-        } catch {
-          if (attempt) ledger.prefixOff = true; else { ledger.dead = true; return; }
+        } catch (error) {
+          if (attempt) ledger.prefixOff = true;
+          else {
+            ledger.dead = true;
+            if (error.rejected) this.refresh().catch(() => {});
+            return;
+          }
         }
       }
     };
@@ -284,6 +310,8 @@ class JarvisClient {
       attach: player => {
         if (ledger.attached || typeof player?.track !== 'function') return;
         ledger.attached = true;
+        ledger.player = player;
+        watch();
         player.track(enqueue);
       },
       cancel: () => {
