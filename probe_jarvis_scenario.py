@@ -13,6 +13,7 @@ CONTROLLER = {'tab': '@controller', 'pane': '%controller', 'identity': 'controll
 NOTES = {'tab': '@notes', 'pane': '%notes', 'identity': 'notes:synthetic', 'label': 'Notes'}
 TARGETS = {'Dog Data': DOG, 'Controller': CONTROLLER}
 FOLLOW_UP = 'Ask it to explain those numbers with an example'
+MESSAGE_BODY = 'explain those numbers with an example'
 TOOLS = [
     {'name': 'list_ready', 'description': 'List synthetic completed replies quietly without changing subject.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -29,7 +30,7 @@ def synthetic_provider(context, tool_specs, execute, **kwargs):
     elif text == 'Read Dog Data':
         result = execute('read_reply', {'name': 'Dog Data'})
     elif text == FOLLOW_UP:
-        draft = execute('prepare_literal', {'start': 0, 'end': len(text)})
+        draft = execute('prepare_literal', {'start': text.index(MESSAGE_BODY), 'end': len(text)})
         result = execute('send_draft', {'draft_id': draft['draft_id']})
     else:
         result = execute('read_reply', {'name': 'Controller'})
@@ -57,7 +58,7 @@ def run(provider):
             return {'ok': True, 'status': 'completed', 'subject': target,
                     'reply_ref': {'id': 'synthetic-' + target['thread_id']}, 'output': output}
         if name == 'send_draft':
-            if arguments['target'] != DOG or arguments['text'] != FOLLOW_UP:
+            if arguments['target'] != DOG or arguments['text'] != MESSAGE_BODY:
                 return {'ok': False, 'status': 'blocked', 'error': 'Synthetic recipient or literal source changed'}
             deliveries.append(arguments)
             return {'ok': True, 'status': 'submitted', 'job_id': 'dog-explanation', 'job_status': 'running',
@@ -83,7 +84,7 @@ def run(provider):
         if number == 3 and app.snapshot()['subject'] != CONTROLLER:
             raise AssertionError('Explicit Controller discussion did not update subject')
     snapshot = app.snapshot()
-    if len(deliveries) != 1 or deliveries[0]['text'] != FOLLOW_UP or deliveries[0]['target'] != DOG:
+    if len(deliveries) != 1 or deliveries[0]['text'] != MESSAGE_BODY or deliveries[0]['target'] != DOG:
         raise AssertionError('Unexpected or changed synthetic delivery')
     if contexts[2]['subject'] != DOG or contexts[2]['current_turn']['capture_target'] != NOTES:
         raise AssertionError('Visible Notes selection replaced conversational Dog Data subject')
