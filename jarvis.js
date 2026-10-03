@@ -153,7 +153,10 @@ class JarvisClient {
       } else this.voice.speakReply(receipt.text, entry.generation, true);
     } else {
       entry.player?.stop();
-      if (receipt.status === 'failed' && current) this.voice.speak('Jarvis could not complete that request. The details are on screen.', entry.generation);
+      if (receipt.status === 'failed' && current) {
+        const canonical = receipt.actions.length && typeof receipt.text === 'string' ? receipt.text.trim() : '';
+        this.voice.speak(canonical || 'Jarvis could not complete that request. The details are on screen.', entry.generation);
+      }
     }
   }
   unconfirmed(entry, reason, rejected) {

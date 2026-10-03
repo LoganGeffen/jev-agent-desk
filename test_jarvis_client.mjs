@@ -301,6 +301,43 @@ test('a failed turn shows the error and keeps its receipts without fabricating c
   assert.equal(s.records.get('r1').reply, undefined);
 });
 
+test('a failed turn after a submitted or uncertain action speaks the canonical receipt text, not generic failure', async () => {
+  for (const [status, text] of [['submitted', 'Input submitted to Dog Data. Waiting for its reply; its task is not complete.'],
+      ['uncertain', 'Delivery to Dog Data is uncertain. It will not be retried automatically.']]) {
+    const failed = receipt('r1', text, {status: 'failed', error: 'provider exited mid-turn', raw_model_text: 'All done, sent and finished!',
+      actions: [{tool: 'send_draft', draft_id: 'd1', status, target: {label: 'Dog Data'}}]});
+    const s = setup({post: async () => json(failed)});
+    await s.client.submit('tell dog data hello', 'voice');
+    assert.deepEqual(s.spoken, [text]);
+    assert.equal(s.records.get('r1').reply, undefined);
+    assert.doesNotMatch(s.spoken.join(' '), /All done|could not complete/);
+    assert.equal(s.posts().length, 1);
+  }
+});
+
+test('a failed turn without actions, or with blank receipt text, keeps the generic failure speech', async () => {
+  for (const failed of [receipt('r1', 'Some text', {status: 'failed', error: 'down'}),
+      receipt('r1', '  ', {status: 'failed', error: 'down', actions: [{tool: 'send_draft', draft_id: 'd1', status: 'failed'}]})]) {
+    const s = setup({post: async () => json(failed)});
+    await s.client.submit('say hi', 'typed');
+    assert.deepEqual(s.spoken, ['Jarvis could not complete that request. The details are on screen.']);
+  }
+});
+
+test('a superseded failed turn with a submitted action never speaks its receipt but stays visible', async () => {
+  const failed = receipt('r1', 'Input submitted to Dog Data. Waiting for its reply; its task is not complete.', {status: 'failed', error: 'x',
+    actions: [{tool: 'send_draft', draft_id: 'd1', status: 'submitted', target: {label: 'Dog Data'}}]});
+  let resolve;
+  const s = setup({post: () => new Promise(done => { resolve = done; })});
+  const submitted = s.client.submit('tell dog data hello', 'voice');
+  await tick();
+  s.voice.stopReadback();
+  resolve(json(failed));
+  await submitted;
+  assert.deepEqual(s.spoken, []);
+  assert.match(s.records.get('r1').status, /Submitted to Dog Data/);
+});
+
 const REF = {id: 'att-1', tab: '@b', pane: '%b', identity: 'b:original', label: 'B · pane 1'};
 const READBACK = {original: 'Exact  original\nreply — with “quotes”.', target: {tab: '@b', pane: '%b', identity: 'b:original', label: 'B · pane 1'}, reply_ref: REF};
 const heardPosts = s => s.calls.filter(call => call.url === '/api/replies/heard');
