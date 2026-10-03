@@ -52,6 +52,27 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(app.snapshot()['subject'], CONTROLLER)
         self.assertEqual(app.snapshot()['jobs']['dog-explanation']['subject'], DOG)
 
+    def test_prepared_result_returns_exact_unicode_source_provenance(self):
+        request, body = 'Tell Dog: Café 🐕.  ', 'Café 🐕.  '
+        captured = []
+        def provider(context, specs, execute, **kwargs):
+            execute('set_subject', {'target': DOG})
+            draft = execute('prepare_literal', {'start': request.index(body), 'end': len(request)})
+            captured.append(dict(draft))
+            draft['text'] = 'model rewrite'
+            draft['source_span'][0] = 0
+            return final('What text should I send?')
+        app = JarvisController(provider, lambda name, arguments, turn: {'ok': True, 'status': 'completed', 'subject': DOG})
+        receipt = app.submit(request, 'prepare')
+        original = captured[0]
+        self.assertEqual(original['text'], body)
+        self.assertEqual(original['source_turn_id'], receipt['turn_id'])
+        self.assertEqual(original['form'], 'literal')
+        stored = app.snapshot()['drafts'][original['draft_id']]
+        self.assertEqual(stored['text'], body)
+        self.assertEqual(stored['source_span'], [request.index(body), len(request)])
+        self.assertEqual(receipt['actions'], [])
+
     def test_literal_send_has_exact_bound_text_and_deduplicates_request(self):
         delivered = []
         def provider(context, specs, execute, **kwargs):

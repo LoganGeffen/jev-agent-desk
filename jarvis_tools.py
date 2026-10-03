@@ -330,7 +330,7 @@ class JarvisTools:
         if not original:
             raise ValueError('Unknown retained draft')
         provenance = self.provenance(snapshot, original, turn)
-        if provenance is None:
+        if provenance is None or not provenance['prompt_was_immediately_previous_turn'] or original['status'] not in ('prepared', 'pending'):
             return {'ok': False, 'status': 'not_attempted',
                     'error': 'That retained message was not offered for confirmation. Review it first; a bare yes cannot revive it.'}
         resolution = original.get('operation') == 'resolve'
@@ -438,7 +438,7 @@ class JarvisTools:
         result = dict(model_result, raw_model_text=model_result.get('text', ''))
         readback = self.readbacks.get(turn['turn_id'])
         if readback:
-            result['readback'] = copy.deepcopy(readback)
+            result['available_readback'] = copy.deepcopy(readback)
         if actions:
             phrases = []
             for action in actions:
@@ -453,6 +453,15 @@ class JarvisTools:
                 else:
                     phrases.append('The requested action was not completed: ' + str(action.get('result', {}).get('error', status)))
             result['text'] = ' '.join(phrases)
+        elif prepared := [draft for draft in snapshot['drafts'].values()
+                          if draft['turn_id'] == turn['turn_id'] and draft['status'] == 'prepared']:
+            draft = prepared[-1]
+            label = (draft.get('target') or {}).get('label', 'the captured conversation')
+            failures = [item['result'] for item in receipts
+                        if item['result']['status'] in ('blocked', 'failed', 'not_attempted', 'clarification')]
+            reason = self.denials.get(turn['turn_id']) or (failures[-1].get('error') if failures else None)
+            result['text'] = 'No message was submitted. ' + (str(reason) + '. ' if reason else '') + f"Send this exact retained message to {label}? {draft['text']}"
+            self.state.offer_pending(turn['turn_id'], [draft['draft_id']], result['text'])
         elif offered := [p['clarification_id'] for p in snapshot['clarifications'].values()
                          if p['source_turn_id'] == turn['turn_id'] and p['status'] == 'pending']:
             sends = [identifier for identifier in offered if snapshot['clarifications'][identifier].get('operation', 'send') == 'send']
@@ -476,6 +485,7 @@ class JarvisTools:
                 error = 'The recipient could not be verified: ' + self.denials[turn['turn_id']] + '. The exact words are retained for review.'
             result['text'] = 'No message was submitted. ' + error
         elif readback:
+            result['readback'] = copy.deepcopy(readback)
             result['text'] = readback['original']
         else:
             outputs = [item['result'].get('output') for item in receipts if item['result'].get('output')]

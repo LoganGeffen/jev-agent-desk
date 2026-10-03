@@ -87,7 +87,7 @@ class JarvisController:
                 'request_id': turn['request_id'], 'revision': snapshot['revision'],
                 'status': turn['status'], 'text': turn.get('result', {}).get('text', ''),
                 'actions': [action for action in snapshot['actions'].values() if action['turn_id'] == turn['turn_id']],
-                **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'raw_model_text') if key in turn.get('result', {})}),
+                **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'available_readback', 'raw_model_text') if key in turn.get('result', {})}),
                 **({'error': turn['error']} if 'error' in turn else {})}
 
     def submit(self, text, request_id, capture_target=None, on_text=None, source='typed', mode='jarvis'):
@@ -144,7 +144,8 @@ class JarvisController:
                     draft = self.state.prepare_literal(turn['turn_id'], **span)
                     if self.literal_boundaries and options[0].get('form') == 'indirect_question':
                         draft = self.state.formulate_draft(turn['turn_id'], draft['draft_id'], options[0]['formulated_text'])
-                    return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target']}
+                    return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target'],
+                            **{key: copy.deepcopy(draft[key]) for key in ('text', 'source_turn_id', 'source_span', 'form')}}
                 action = None
                 handler_arguments = copy.deepcopy(arguments)
                 if name in self.effect_tools:

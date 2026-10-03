@@ -181,6 +181,40 @@ class ToolTests(DisposableDesk):
         self.provider = lambda context, specs, execute, **kwargs: drafts.append(execute('prepare_literal', {})['draft_id']) or final('Draft prepared.')
         return self.app.jarvis.submit(request, 'draft-' + body), drafts[0]
 
+    def test_read_then_prepare_without_send_offers_exact_draft_and_confirmation_sends_once(self):
+        request, body = 'Tell Dog Data: Café 🐕.  ', 'Café 🐕.  '
+        self.allow(request, body=body)
+        prepared = []
+        def provider(context, specs, execute, **kwargs):
+            execute('read_reply', {'name': 'Dog Data'})
+            prepared.append(execute('prepare_literal', {}))
+            return final('I need the exact message text. What should I tell it?')
+        self.provider = provider
+        receipt = self.app.jarvis.submit(request, 'prepared-only')
+        self.assertEqual(receipt['actions'], [])
+        self.assertEqual(receipt['text'], 'No message was submitted. Send this exact retained message to Dog Data? ' + body)
+        self.assertNotIn('readback', receipt)
+        self.assertEqual(receipt['available_readback']['original'], 'Five of six samples passed; one needs review.')
+        draft = prepared[0]
+        self.assertEqual(draft['text'], body)
+        self.assertEqual(draft['source_span'], [request.index(body), len(request)])
+        state = self.app.jarvis.snapshot()
+        self.assertEqual(state['turns'][receipt['turn_id']]['result']['text'], receipt['text'])
+        self.assertEqual(state['turns'][receipt['turn_id']]['pending_offer']['record_ids'], [draft['draft_id']])
+        self.assertEqual(self.received('Dog Data'), b'')
+        confirmation = 'Yes, send those exact words to Dog Data.'
+        self.allow(confirmation)
+        def confirmed(context, specs, execute, **kwargs):
+            rebound = execute('confirm_draft', {'draft_id': draft['draft_id']})
+            execute('send_draft', {'draft_id': rebound['draft_id']})
+            return final('Everything is done.')
+        self.provider = confirmed
+        sent = self.app.jarvis.submit(confirmation, 'confirmed-prepared')
+        self.assertEqual(sent['actions'][0]['status'], 'submitted')
+        self.assertEqual(sent['actions'][0]['payload'], body)
+        self.assertEqual(sent['text'], 'Input submitted to Dog Data. Waiting for its reply; its task is not complete.')
+        self.assertEqual(self.received('Dog Data').count(body.encode()), 1)
+
     def test_retained_draft_requires_explicit_review_then_confirmation_and_preserves_source(self):
         first, draft_id = self.retain_draft()
         source_turn = first['turn_id']
@@ -216,10 +250,12 @@ class ToolTests(DisposableDesk):
             calls.append(result)
             return final()
         self.intents['yes'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
+        self.provider = lambda *args, **kwargs: final('Unrelated.')
+        self.app.jarvis.submit('What is two plus two?', 'unrelated-before-yes')
         self.provider = attempt
         forgotten = self.app.jarvis.submit('yes', 'forgotten')
         self.assertEqual(calls[-1]['status'], 'not_attempted')
-        self.assertIn('not offered', forgotten['text'])
+        self.assertIn('not_attempted', calls[-1]['status'])
         self.provider = lambda context, specs, execute, **kwargs: execute('review_pending', {'record_id': draft_id}) and final()
         self.app.jarvis.submit('Show me that unsent message', 'offer')
         self.provider = lambda *args, **kwargs: final('Unrelated.')
