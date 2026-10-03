@@ -30,16 +30,22 @@ class JarvisTurns:
                       decision='wait', correction=False, generation=uuid.uuid4().hex)
         with self.lock:
             old = self.clients.get(body['client_id'])
+            accepted = [request for request in self.requests.values() if request['client_id'] == record['client_id']]
+            for request in accepted:
+                if request['transcript_id'] == record['transcript_id'] and revision >= request['transcript_revision'] and (
+                        revision > request['transcript_revision'] or record['text'] != request['text'] or body.get('invalidate')):
+                    request['invalidated'] = True
             if (record['client_id'], record['transcript_id']) in self.retired:
                 raise ValueError('Transcript was superseded')
             if old and old['transcript_id'] != record['transcript_id']:
                 self.retired.add((old['client_id'], old['transcript_id']))
             if old and old['transcript_id'] == record['transcript_id'] and revision < old['transcript_revision']:
                 raise ValueError('Transcript revision is stale')
+            prior_request = next((request for request in reversed(accepted) if not request.get('invalidated')), None)
             self.clients[body['client_id']] = record
         if not body.get('invalidate') and body['text'].strip():
             try:
-                answers = self.app.evaluate(jev.turn_decision_question(body['text'], subject))['answers']
+                answers = self.app.evaluate(jev.turn_decision_question(body['text'], subject, prior_request))['answers']
                 decision = answers['decision']['choice']
                 correction = answers['correction']['choice'] == 'yes'
                 if decision not in ('complete', 'wait', 'cancel'):
@@ -50,6 +56,10 @@ class JarvisTurns:
                 if self.clients[body['client_id']] is not record or self.app.jarvis.snapshot()['subject'] != subject:
                     return {**self.projection(record), 'decision': 'wait', 'reason': 'Transcript or subject changed'}
                 record.update(decision=decision, correction=correction)
+                if decision == 'cancel' or correction:
+                    for request in self.requests.values():
+                        if request['client_id'] == record['client_id']:
+                            request['invalidated'] = True
                 if decision == 'complete':
                     record['decision_id'] = uuid.uuid4().hex
         return self.projection(record)
@@ -84,7 +94,7 @@ class JarvisTurns:
             if record:
                 snapshot = self.app.jarvis.snapshot()
                 turn = snapshot['turns'].get(snapshot['requests'].get(request_id))
-                if self.clients.get(record['client_id']) is not record or turn and turn['subject'] != record['subject']:
+                if record.get('invalidated') or turn and turn['subject'] != record['subject']:
                     raise InterruptedError('Automatic voice authorization was invalidated')
 
     def create_playback(self, body):

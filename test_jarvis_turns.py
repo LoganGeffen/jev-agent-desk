@@ -104,6 +104,116 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(receipts[0]['status'], 'cancelled')
         self.assertEqual(self.app.jarvis.submit(body['text'], 'send', source='voice')['turn_id'], receipts[0]['turn_id'])
 
+
+    def pending_effect(self):
+        decision = self.turns.decide(self.body())
+        body = self.commit(decision)
+        entered, release = threading.Event(), threading.Event()
+        delivered, receipts = [], []
+        def provider(context, specs, execute, **kwargs):
+            if context['current_turn']['request_id'] == 'send':
+                entered.set()
+                release.wait(3)
+                execute('interrupt_agent', {})
+            return {'text': 'Application response'}
+        core = self.app.jarvis
+        core.provider = provider
+        core.specs['interrupt_agent'] = {'inputSchema': {'type': 'object'}}
+        core.authorize = lambda *args: True
+        core.execute_tool = lambda *args: delivered.append(args) or {'ok': True, 'status': 'completed'}
+        worker = threading.Thread(target=lambda: receipts.append(core.submit(body['text'], 'send', source='voice')))
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        return release, worker, delivered, receipts
+
+    def test_new_uncommitted_filler_draft_preserves_consumed_authorization(self):
+        release, worker, delivered, receipts = self.pending_effect()
+        try:
+            self.choice = 'wait'
+            filler = self.turns.decide(self.body('Hmm.', transcript_id='filler'))
+            self.assertEqual(filler['decision'], 'wait')
+            self.turns.guard('send')
+            self.assertEqual(self.app.jarvis.snapshot()['turns'][self.app.jarvis.state.requests['send']]['status'], 'running')
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertEqual(len(delivered), 1)
+        self.assertEqual(receipts[0]['status'], 'completed')
+
+    def assert_withdrawal(self, choice, correction, text):
+        release, worker, delivered, receipts = self.pending_effect()
+        try:
+            self.choice, self.correction = choice, correction
+            result = self.turns.decide(self.body(text, transcript_id='replacement'))
+            self.assertEqual(result['correction'], correction)
+            with self.assertRaises(InterruptedError):
+                self.turns.guard('send')
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertEqual(delivered, [])
+        self.assertEqual(receipts[0]['status'], 'cancelled')
+
+    def test_recognized_cancel_revokes_pending_effect(self):
+        self.assert_withdrawal('cancel', False, 'Cancel that request.')
+
+    def test_recognized_incomplete_correction_revokes_pending_effect(self):
+        self.assert_withdrawal('wait', True, 'Actually, tell Controller to')
+
+    def test_recognized_complete_correction_revokes_pending_effect(self):
+        self.assert_withdrawal('complete', True, 'Actually, tell Controller to pause the queue.')
+
+    def test_new_complete_decision_alone_is_not_dispatch_but_new_turn_supersedes(self):
+        release, worker, delivered, receipts = self.pending_effect()
+        try:
+            text = 'What is ready?'
+            decision = self.turns.decide(self.body(text, transcript_id='question'))
+            self.turns.guard('send')
+            body = self.body(text, transcript_id='question', source='voice', request_id='new',
+                             decision_id=decision['decision_id'])
+            self.turns.commit(body)
+            newer = self.app.jarvis.submit(text, 'new', source='voice')
+            self.assertEqual(newer['status'], 'completed')
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertEqual(delivered, [])
+        self.assertEqual(receipts[0]['status'], 'cancelled')
+
+    def test_another_client_correction_does_not_revoke_original_client(self):
+        self.commit(self.turns.decide(self.body()))
+        self.choice, self.correction = 'wait', True
+        self.turns.decide(self.body('Replace that with', client_id='desktop', transcript_id='other'))
+        self.turns.guard('send')
+
+    def test_same_transcript_revision_invalidates_but_identical_recheck_does_not(self):
+        self.commit(self.turns.decide(self.body()))
+        self.turns.decide(self.body())
+        self.turns.guard('send')
+        self.turns.decide(self.body(revision=2, invalidate=True))
+        with self.assertRaises(InterruptedError):
+            self.turns.guard('send')
+
+    def test_same_consumed_source_revision_revokes_even_after_a_different_filler_draft(self):
+        self.commit(self.turns.decide(self.body()))
+        self.choice = 'wait'
+        self.turns.decide(self.body('Hmm.', transcript_id='filler'))
+        self.turns.guard('send')
+        with self.assertRaises(ValueError):
+            self.turns.decide(self.body(revision=2, invalidate=True))
+        with self.assertRaises(InterruptedError):
+            self.turns.guard('send')
+
+    def test_semantic_question_preserves_previous_accepted_exact_user_source(self):
+        self.commit(self.turns.decide(self.body()))
+        payloads = []
+        self.app.evaluate = lambda payload: payloads.append(payload) or self.evaluate(payload)
+        self.turns.decide(self.body('Actually, tell Controller to', transcript_id='new'))
+        prior = payloads[0]['state']['previous_accepted_user_request']
+        self.assertEqual(prior['text'], 'Tell Dog Data: exact words')
+        self.assertEqual(prior['transcript_id'], 'speech')
+        self.assertEqual(prior['transcript_revision'], 1)
+
     def test_playback_owns_source_and_cancelled_or_old_epoch_cannot_acknowledge(self):
         receipt = self.app.jarvis.submit('Hello', 'hello')
         create = {'turn_id': receipt['turn_id'], 'client_id': 'phone', 'epoch': 1, 'style': 'original'}

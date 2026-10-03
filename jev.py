@@ -513,12 +513,16 @@ def evaluate(payload):
         raise RuntimeError('Jev could not connect while interpreting the request. No action was taken.') from None
 
 
-def turn_decision_question(text, subject):
-    return {'model': 'jev-latest', 'state': {'transcript': text, 'subject': subject}, 'questions': {
+def turn_decision_question(text, subject, accepted_request=None):
+    prior = {key: accepted_request[key] for key in ('text', 'transcript_id', 'transcript_revision')} if accepted_request else None
+    return {'model': 'jev-latest', 'state': {'transcript': text, 'subject': subject,
+            'previous_accepted_user_request': prior}, 'questions': {
         'decision': {'type': 'choice',
             'instructions': 'Judge only whether the exact current spoken transcript is a complete user turn. Silence is not authorization. Never rewrite words or dispatch. A complete conversation question, instruction, or clarification may finish. Hold an unfinished dependent clause, missing recipient/body, thinking pause, or ambiguous continuation. A correction may be complete or unfinished independently.',
             'criteria': {'complete': 'The speaker expressed a complete request or conversational response.',
                          'wait': 'Incomplete, ambiguous, thinking, or awaiting more words.',
                          'cancel': 'Explicitly cancel or discard this unsent request; never imply an earlier effect was undone.'}},
-        'correction': {'type': 'choice', 'instructions': 'Does this transcript revise an earlier recipient or message? Preserve its exact words; correction alone does not decide completeness.',
-                       'criteria': {'yes': 'Explicit revision or correction.', 'no': 'No revision.'}}}}
+        'correction': {'type': 'choice',
+            'instructions': 'Judge revision intent separately from grammatical completeness. Does the speaker explicitly replace, redirect, retract or correct an earlier request, recipient or message? A corrective transition announcing a changed instruction is revision intent even when the earlier words are absent or the replacement is unfinished. Compare the previous accepted user request when supplied. Ordinary new requests, hesitation or thinking aloud do not withdraw it. Preserve exact captured words; never rewrite or dispatch.',
+            'criteria': {'yes': 'Explicit replacement, redirection, retraction or correction of prior intent, including an unfinished replacement.',
+                         'no': 'Independent request or conversation, filler or hesitation, with no explicit revision intent.'}}}}
