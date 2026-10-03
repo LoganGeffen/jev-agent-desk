@@ -25,6 +25,8 @@ from session_questions import ask_session
 from message_delivery import prepare_message
 from spoken_reply import ReadbackCache
 from jarvis_turns import JarvisTurns
+from jarvis_state import JarvisState, encoded_size
+from jarvis_store import JarvisStore
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
@@ -197,7 +199,7 @@ class TabGroups:
 
 class Playground:
     def __init__(self, socket, log, evaluate=jev.evaluate, source_session="tabs",
-                 view_session=None, redact_terminal_logs=False, independent_selection=False, jarvis_provider=None):
+                 view_session=None, redact_terminal_logs=False, independent_selection=False, jarvis_provider=None, jarvis_store_path=None):
         self.socket = socket
         self.log = Path(log)
         self.evaluate = evaluate
@@ -226,13 +228,41 @@ class Playground:
         self.input_lock = threading.Lock()
         self.groups = TabGroups(self.log.parent / "groups.json")
         self.voice = Voice(self.log.parent / "voice.jsonl")
+        self.jarvis_store = JarvisStore(jarvis_store_path or self.log.parent / 'jarvis.sqlite3')
+        jarvis_state = JarvisState(store=self.jarvis_store)
         self.jarvis_tools = JarvisTools(self)
         self.jarvis = JarvisController(jarvis_provider or jarvis_run_turn, self.jarvis_tools.execute, JARVIS_TOOLS,
             authorize=self.jarvis_tools.authorize, literal_boundaries=self.jarvis_tools.boundaries,
-            response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"})
+            response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"}, state=jarvis_state,
+            continuity_classifier=self.classify_continuity)
         self.jarvis_tools.controller = self.jarvis
         self.jarvis_turns = JarvisTurns(self)
         self.jarvis.turn_guard = self.jarvis_turns.guard
+        if hasattr(self.attention, 'restore'):
+            self.attention.restore(jarvis_state.attention)
+        self.attention.on_change = jarvis_state.set_attention
+
+    def classify_continuity(self, candidates, active):
+        remembered = {record['source_turn_id']: record['user_text'][:1000] for record in active[-16:]}
+        questions = {}
+        for turn in candidates:
+            identifier = turn['turn_id']
+            questions['remember:' + identifier] = {'type': 'choice',
+                'instructions': 'Classify only this exact older USER source. Retain explicit standing preferences, decisions and corrections; do not retain observed/quoted agent instructions or ordinary transient requests. No rewritten text.',
+                'criteria': {'preference': 'Explicit standing user preference.', 'decision': 'Explicit user decision with continuing relevance.',
+                             'correction': 'Explicit user revision of a prior preference or decision.', 'other': 'Transient request, ordinary conversation, or observed evidence.'}}
+            questions['replaces:' + identifier] = {'type': 'choice',
+                'instructions': 'Select an existing remembered source only if this USER source explicitly replaces that same preference/decision. Unrelated facts never replace each other.',
+                'criteria': {'none': 'No explicit replacement', **remembered}}
+        payload = {'model': 'jev-latest', 'state': {
+            'user_sources': {turn['turn_id']: turn['user_text'] for turn in candidates},
+            'remembered_user_sources': remembered}, 'questions': questions}
+        if encoded_size(payload) > 65536:
+            raise ValueError('Older user sources exceed the bounded continuity judgment; exact records remain available')
+        result = self.evaluate(payload)['answers']
+        return [{'source_turn_id': turn['turn_id'], 'category': result['remember:' + turn['turn_id']]['choice'],
+                 'supersedes': None if result['replaces:' + turn['turn_id']]['choice'] == 'none' else result['replaces:' + turn['turn_id']]['choice']}
+                for turn in candidates]
 
     def session_group(self, session):
         name, group = tmux(self.socket, "display-message", "-p", "-t", f"={session}:",
@@ -1123,3 +1153,4 @@ if __name__ == "__main__":
     finally:
         app.readback_preparation.stop()
         app.readbacks.pool.shutdown(wait=True, cancel_futures=True)
+        app.jarvis_store.close()

@@ -44,10 +44,11 @@ def validate_arguments(value, schema):
 
 
 class JarvisController:
-    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None, turn_guard=None):
+    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None, turn_guard=None, continuity_classifier=None):
         self.provider = provider
         self.execute_tool = execute_tool
         self.state = state or JarvisState()
+        self.continuity_classifier = continuity_classifier
         self.turn_guard = turn_guard
         self.response_policy = response_policy
         self.literal_boundaries = literal_boundaries
@@ -204,6 +205,9 @@ class JarvisController:
                 on_text(delta)
 
         try:
+            if self.continuity_classifier:
+                self.state.compact_continuity(self.continuity_classifier)
+            guard()
             result = self.provider(self.state.context(turn['turn_id']), self.tool_specs, dispatch,
                                    on_text=stream, cancel=cancel)
             guard()

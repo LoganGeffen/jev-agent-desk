@@ -68,7 +68,7 @@ class StateTests(unittest.TestCase):
 
     def test_compaction_pins_subject_pending_work_and_exact_records(self):
         draft = self.state.prepare_literal(self.id, 10, 14)
-        self.state.clarifications['clarify'] = {'question': 'Which dataset?', 'draft_id': draft['draft_id']}
+        self.state.clarifications['clarify'] = {'clarification_id': 'clarify', 'status': 'pending', 'source_turn_id': self.id, 'text': 'Retained question', 'source_text': 'Retained question', 'question': 'Which dataset?', 'draft_id': draft['draft_id']}
         action = self.state.begin_action(self.id, 'send_draft', {}, draft['draft_id'])
         self.state.finish_action(action['action_id'], {'ok': False, 'status': 'uncertain'})
         self.state.record_job(self.id, {'ok': True, 'status': 'running', 'job_id': 'job-dog'})
@@ -81,7 +81,8 @@ class StateTests(unittest.TestCase):
         self.assertEqual(context['subject'], DOG)
         self.assertEqual(context['jobs'][0]['job_id'], 'job-dog')
         self.assertEqual(context['actions'][0]['status'], 'uncertain')
-        self.assertEqual(context['clarifications']['clarify']['draft_id'], draft['draft_id'])
+        self.assertEqual(self.state.snapshot()['clarifications']['clarify']['draft_id'], draft['draft_id'])
+        self.assertEqual(context['pending_more']['needs_review'], 1)
         self.assertLessEqual(len(context['recent_turns']), 24)
         self.assertLessEqual(encoded_size(context), 65536)
         self.assertLessEqual(encoded_size(context['recent_turns']), 32768)
@@ -90,7 +91,7 @@ class StateTests(unittest.TestCase):
 
     def test_oversized_pinned_input_fails_visibly_without_truncation(self):
         turn, _ = self.state.begin_turn('x' * 70000, 'big')
-        with self.assertRaisesRegex(ValueError, 'Pinned'):
+        with self.assertRaisesRegex(ValueError, 'context limit'):
             self.state.context(turn['turn_id'])
         self.assertEqual(len(self.state.snapshot()['turns'][turn['turn_id']]['user_text']), 70000)
 
