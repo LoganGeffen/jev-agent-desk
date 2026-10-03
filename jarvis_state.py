@@ -592,6 +592,9 @@ class JarvisState:
             pending_sources = [{'source_turn_id': turn['turn_id'], 'user_excerpt': turn['user_text'][:800],
                                 'excerpt_truncated': len(turn['user_text']) > 800, 'trust': 'explicit_user_source'}
                                for turn in unclassified[:8]]
+            while encoded_size(pending_sources) > 8192:
+                for item in pending_sources:
+                    item.update(user_excerpt=item['user_excerpt'][:len(item['user_excerpt']) // 2], excerpt_truncated=True)
             archived = sum(record['status'] == 'needs_review' for record in list(self.drafts.values()) + list(self.clarifications.values()))
             context = {'session_id': self.session_id, 'revision': self.revision, 'subject': copy.deepcopy(self.subject),
                 'current_turn': current, 'user_input_authority': 'current_turn.user_text',

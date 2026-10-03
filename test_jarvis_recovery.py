@@ -210,6 +210,21 @@ class ContinuityTests(unittest.TestCase):
             self.assertEqual(len(state.turns), 32)
             self.assertEqual(state.read_user_source(next(iter(state.turns)))['text'], 'Exact older preference 0')
 
+    def test_unclassified_unicode_sources_stay_in_the_explicit_byte_budget(self):
+        state = JarvisState()
+        sources = []
+        for number in range(31):
+            sources.append(self.append(state, '🐕' * 1200, number))
+        current, _ = state.begin_turn('Continue', 'now')
+        context = state.context(current['turn_id'])
+        pending = context['continuity']['pending_sources']
+        self.assertEqual(len(pending), 8)
+        self.assertLessEqual(encoded_size(pending), 8192)
+        self.assertLessEqual(encoded_size(context), 65536)
+        self.assertEqual(pending[0]['source_turn_id'], sources[0])
+        self.assertTrue(pending[0]['excerpt_truncated'])
+        self.assertEqual(state.read_user_source(sources[0])['total_chars'], 1200)
+
 
 from test_jarvis_tools import DisposableDesk
 
