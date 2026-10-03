@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
+import {createHash, webcrypto} from 'node:crypto';
 
 const read = name => readFileSync(new URL(name, import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -38,7 +39,7 @@ function turn(id, request, status, extra = {}) {
 }
 
 function setup({state = snapshot(), post, now = {t: 0}} = {}) {
-  const context = vm.createContext({TextDecoder, TextEncoder, AbortController, setTimeout, clearTimeout});
+  const context = vm.createContext({TextDecoder, TextEncoder, AbortController, setTimeout, clearTimeout, crypto: webcrypto});
   vm.runInContext(read('readback.js') + read('jarvis.js') + '\nglobalThis.JarvisClient = JarvisClient; globalThis.JARVIS_TARGET = JARVIS_TARGET;', context);
   const calls = [];
   const records = new Map();
@@ -351,7 +352,9 @@ test('an immediate readback receipt speaks the exact original through speakReply
   assert.equal(s.replyCalls.length, 1);
   assert.equal(s.replyCalls[0].text, READBACK.original);
   assert.equal(s.replyCalls[0].spokenReady, false);
-  assert.equal(typeof s.replyCalls[0].onHeard, 'function');
+  assert.equal(s.replyCalls[0].onHeard, null);
+  assert.equal(typeof s.replyCalls[0].track, 'function');
+  assert.equal(typeof s.replyCalls[0].track.prepare, 'function');
   assert.deepEqual(s.spoken, [READBACK.original]);
   assert.equal(s.players.length, 0);
   const record = s.records.get('r1');
@@ -363,15 +366,19 @@ test('an immediate readback receipt speaks the exact original through speakReply
   assert.equal(heardPosts(s).length, 0);
 });
 
-test('the heard acknowledgment posts the exact reference only when full audio completes', async () => {
+test('tracked Jarvis audio has no direct heard callback; only a valid completed playback can acknowledge it', async () => {
   const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: READBACK}))});
   await s.client.submit('read B', 'voice');
+  assert.equal(s.replyCalls[0].onHeard, null);
+  s.env.playback = fullPlayback();
+  const p = player();
+  s.replyCalls[0].track(p, {style: 'original'});
+  p.callback({status: 'playing'});
+  p.callback({status: 'completed'});
+  await tick(); await tick();
   assert.equal(heardPosts(s).length, 0);
-  s.replyCalls[0].onHeard();
-  await tick();
-  const [heard] = heardPosts(s);
-  assert.equal(heard.method, 'POST');
-  assert.deepEqual(heard.body, REF);
+  const updates = playbackPosts(s).filter(body => body.op === 'update');
+  assert.deepEqual(updates.map(body => [body.status, body.completed_phrases]), [['playing', []], ['completed', ['fb1']]]);
 });
 
 test('a readback without an exact reference is read but can never be marked heard', async () => {
@@ -428,9 +435,8 @@ test('a lost POST recovers canonical text and readback from state, speaks once, 
   assert.equal(s.replyCalls.length, 1);
   assert.equal(s.replyCalls[0].text, READBACK.original);
   assert.deepEqual(s.records.get('r1').reply.heard_reply, REF);
-  s.replyCalls[0].onHeard();
-  await tick();
-  assert.deepEqual(heardPosts(s).map(call => call.body), [REF]);
+  assert.equal(s.replyCalls[0].onHeard, null);
+  assert.equal(heardPosts(s).length, 0);
   await s.client.refresh();
   assert.equal(s.replyCalls.length, 1);
 });
@@ -447,14 +453,17 @@ test('replayed state with readback never speaks or marks heard', async () => {
   assert.deepEqual(s.records.get('r9').reply.heard_reply, REF);
 });
 
-test('a failed heard acknowledgment is reported and never retried', async () => {
+test('a rejected completed playback update is never retried and falls back to no direct heard claim', async () => {
   const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: READBACK}))});
-  s.env.heard = async () => json({error: 'identity changed'}, 409);
   await s.client.submit('read B', 'voice');
-  s.replyCalls[0].onHeard();
-  await tick(); await tick();
-  assert.equal(heardPosts(s).length, 1);
-  assert.match(s.changes.at(-1), /Could not record/);
+  s.env.playback = call => call.body.op === 'create' ? fullPlayback()(call) : json({error: 'stale owner'}, 409);
+  const p = player();
+  s.replyCalls[0].track(p, {style: 'original'});
+  p.callback({status: 'playing'});
+  p.callback({status: 'completed'});
+  await tick(); await tick(); await tick();
+  assert.deepEqual(playbackPosts(s).map(body => body.op + ':' + (body.status || '')), ['create:', 'update:playing']);
+  assert.equal(heardPosts(s).length, 0);
 });
 
 test('automatic cancellation names only the requests this client owns', async () => {
@@ -711,4 +720,162 @@ test('reconnect replay with completed turns and finished jobs posts no playback,
   assert.deepEqual(s.spoken, []);
   assert.equal(s.players.length, 0);
   assert.equal(s.calls.some(call => ['/api/jarvis/playback', '/api/replies/heard'].includes(call.url)), false);
+});
+
+const vectors = JSON.parse(read('test_prefix_vectors.json')).vectors;
+const prefixOf = (text, extra = {}) => ({status: 'playing', completed_phrases: [], heard_prefix: {chars: Array.from(text).length, text, alignment: 'provider'}, ...extra});
+const until = async check => { for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 1)); };
+const sha = text => createHash('sha256').update(text, 'utf8').digest('hex');
+
+test('a heard prefix is sent with explicit code point units and the exact UTF-8 hash, and never text', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  const p = player();
+  s.client.trackPlayback(p, {generation: 4, turnId: 't1', style: 'original'});
+  p.callback(prefixOf('Café 🐕. '));
+  await until(() => playbackPosts(s).some(body => body.op === 'update'));
+  const update = playbackPosts(s).find(body => body.op === 'update');
+  assert.deepEqual(update.heard_prefix, {chars: 8, sha256: sha('Café 🐕. '), alignment: 'provider'});
+  assert.deepEqual(update.completed_phrases, []);
+});
+
+test('the shared Unicode vectors hash identically to the Python backend', async () => {
+  for (const vector of vectors) {
+    const s = setup({post: async () => json({})});
+    await s.client.refresh();
+    s.env.playback = fullPlayback();
+    const p = player();
+    s.client.trackPlayback(p, {generation: 4, turnId: 't1', style: 'original'});
+    p.callback(prefixOf(vector.prefix));
+    await until(() => playbackPosts(s).some(body => body.op === 'update'));
+    const update = playbackPosts(s).find(body => body.op === 'update');
+    assert.deepEqual(update.heard_prefix, {chars: vector.chars, sha256: vector.sha256, alignment: 'provider'}, vector.name);
+  }
+});
+
+test('a prefix whose count disagrees with its text or that is not well formed is never sent', async () => {
+  for (const bad of [{chars: 9, text: 'Café 🐕. ', alignment: 'provider'}, {chars: 1, text: '\ud83d', alignment: 'provider'},
+    {chars: 0, text: '', alignment: 'provider'}, {chars: 3, alignment: 'provider'}]) {
+    const s = setup({post: async () => json({})});
+    await s.client.refresh();
+    s.env.playback = fullPlayback();
+    const p = player();
+    s.client.trackPlayback(p, {generation: 4, turnId: 't1', style: 'original'});
+    p.callback({status: 'playing', completed_phrases: [], heard_prefix: bad});
+    await tick(); await tick(); await tick();
+    assert.ok(playbackPosts(s).filter(body => body.op === 'update').every(body => !('heard_prefix' in body)), JSON.stringify(bad));
+  }
+});
+
+test('prefix updates are monotonic, never ride a completed update, and a cancel carries the last proven prefix', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  const p = player();
+  s.client.trackPlayback(p, {generation: 4, turnId: 't1', style: 'spoken'});
+  p.callback(prefixOf('One. '));
+  p.callback(prefixOf('One. '));
+  p.callback(prefixOf('One. Two. '));
+  p.callback(prefixOf('One. ', {status: 'cancelled'}));
+  await until(() => playbackPosts(s).some(body => body.status === 'cancelled'));
+  const updates = playbackPosts(s).filter(body => body.op === 'update');
+  assert.deepEqual(updates.map(body => [body.status, body.heard_prefix?.chars]), [['playing', 5], ['playing', 10], ['cancelled', undefined]]);
+  const done = setup({post: async () => json({})});
+  await done.client.refresh();
+  done.env.playback = fullPlayback();
+  const q = player();
+  done.client.trackPlayback(q, {generation: 4, turnId: 't1', style: 'spoken'});
+  q.callback(prefixOf('One. ', {status: 'completed'}));
+  await tick(); await tick(); await tick();
+  const completed = playbackPosts(done).find(body => body.op === 'update');
+  assert.equal(completed.status, 'completed');
+  assert.equal('heard_prefix' in completed, false);
+});
+
+test('a backend that rejects heard_prefix is retried once without it and the ledger still completes', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  const base = fullPlayback();
+  s.env.playback = call => 'heard_prefix' in call.body ? json({error: 'unknown field'}, 400) : base(call);
+  const p = player();
+  s.client.trackPlayback(p, {generation: 4, turnId: 't1', style: 'original'});
+  p.callback(prefixOf('One. '));
+  p.callback(prefixOf('One. Two. '));
+  p.callback({status: 'completed', completed_phrases: ['p1']});
+  await until(() => playbackPosts(s).some(body => body.status === 'completed'));
+  const updates = playbackPosts(s).filter(body => body.op === 'update');
+  assert.equal(updates.filter(body => 'heard_prefix' in body).length, 1);
+  assert.deepEqual(updates.filter(body => !('heard_prefix' in body)).map(body => body.status), ['playing', 'completed']);
+  assert.deepEqual(updates.at(-1).completed_phrases, ['fb1']);
+});
+
+test('a stale generation can neither create nor complete a record', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  const stale = player();
+  s.client.trackPlayback(stale, {generation: 4, turnId: 't1', style: 'original'});
+  s.voice.generation = 5;
+  stale.callback({status: 'playing'});
+  stale.callback({status: 'completed', completed_phrases: ['p1']});
+  await tick(); await tick(); await tick();
+  assert.deepEqual(playbackPosts(s), []);
+  const live = setup({post: async () => json({})});
+  await live.client.refresh();
+  live.env.playback = fullPlayback();
+  live.voice.generation = 4;
+  const q = player();
+  live.client.trackPlayback(q, {generation: 4, turnId: 't1', style: 'original'});
+  q.callback({status: 'playing'});
+  await tick(); await tick();
+  live.voice.generation = 5;
+  q.callback(prefixOf('One. '));
+  q.callback({status: 'completed', completed_phrases: ['p1']});
+  await tick(); await tick(); await tick();
+  const updates = playbackPosts(live).filter(body => body.op === 'update');
+  assert.deepEqual(updates.map(body => body.status), ['playing', 'cancelled']);
+  assert.ok(updates.every(body => body.completed_phrases.length === 0 && !('heard_prefix' in body && body.status === 'completed')));
+});
+
+test('prepare binds the app record before speech and an unattached binding is cancelled', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  s.voice.generation = 6;
+  const bound = await s.client.tracker('t1', 6).prepare({style: 'spoken'});
+  assert.deepEqual(plain(bound.fields), {playback_id: 'pb1', session_id: 's1', client_id: s.client.clientId, epoch: 6});
+  assert.deepEqual(playbackPosts(s).map(body => body.op), ['create']);
+  bound.cancel();
+  await tick(); await tick();
+  assert.deepEqual(playbackPosts(s).map(body => body.status ?? body.op), ['create', 'cancelled']);
+  bound.cancel();
+  await tick();
+  assert.equal(playbackPosts(s).length, 2);
+});
+
+test('prepare returns nothing for a stale generation or a rejected create, so the rendition is never bound', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  s.voice.generation = 7;
+  assert.equal(await s.client.tracker('t1', 6).prepare({style: 'spoken'}), null);
+  assert.deepEqual(playbackPosts(s), []);
+  s.env.playback = () => json({error: 'no'}, 409);
+  assert.equal(await s.client.tracker('t1', 7).prepare({style: 'spoken'}), null);
+});
+
+test('a bound player that attaches after prepare is the only owner; cancel after attach is a no-op', async () => {
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.env.playback = fullPlayback();
+  s.voice.generation = 6;
+  const bound = await s.client.tracker('t1', 6).prepare({style: 'spoken'});
+  const p = player();
+  bound.track(p);
+  bound.cancel();
+  p.callback({status: 'playing'});
+  p.callback({status: 'completed'});
+  await tick(); await tick(); await tick();
+  assert.deepEqual(playbackPosts(s).map(body => body.status ?? body.op), ['create', 'playing', 'completed']);
 });

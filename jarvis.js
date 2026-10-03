@@ -170,10 +170,10 @@ class JarvisClient {
     this.show(receipt, entry.text, entry.source);
     const current = this.isCurrent(entry);
     const readback = readbackOf(receipt);
-    const track = (player, {style}) => this.trackPlayback(player, {generation: entry.generation, turnId: receipt.turn_id, style});
+    const track = this.tracker(receipt.turn_id, entry.generation);
     if (receipt.status === 'completed' && readback) {
       entry.player?.stop();
-      if (current) this.voice.speakReply(readback.original, entry.generation, false, this.heardCallback(readback.reply_ref), track);
+      if (current) this.voice.speakReply(readback.original, entry.generation, false, null, track);
     } else if (receipt.status === 'completed' && receipt.text) {
       if (!current) return entry.player?.stop();
       if (entry.player) {
@@ -216,47 +216,96 @@ class JarvisClient {
     this.retain({id: receipt.request_id, text, source, recipient: 'Jarvis', status,
       deliveredText: delivered?.payload,
       ...(readback ? {reply: {id: receipt.request_id, target: readback.target?.label || readback.target?.tab || 'Agent',
-        text: readback.original, heard_reply: readback.reply_ref}}
-        : receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text}} : {})});
+        text: readback.original, heard_reply: readback.reply_ref, turn_id: receipt.turn_id}}
+        : receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text, turn_id: receipt.turn_id}} : {})});
   }
-  trackPlayback(player, {generation, turnId, style}) {
+  tracker(turnId, defaultGeneration) {
+    const track = (player, {style, generation = defaultGeneration} = {}) => this.trackPlayback(player, {generation, turnId, style});
+    track.prepare = ({style, generation = defaultGeneration}) => this.preparePlayback({generation, turnId, style});
+    return track;
+  }
+  openPlayback({generation, turnId, style}) {
     const sessionId = this.sessionId;
-    if (!sessionId || !turnId || typeof player?.track !== 'function') return;
-    const ledger = {id: null, boundary: null, dead: false, sent: null, queue: Promise.resolve()};
+    if (!sessionId || !turnId || !Number.isInteger(generation)) return null;
+    const ledger = {id: null, boundary: null, dead: false, sent: null, prefixChars: 0, prefixOff: false, attached: false,
+      queue: Promise.resolve()};
+    const outdated = () => generation < (this.voice?.generation ?? generation);
     const post = async body => {
       const response = await this.fetch('/api/jarvis/playback', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({session_id: sessionId, ...body})});
+        keepalive: true, body: JSON.stringify({session_id: sessionId, ...body})});
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Playback rejected');
       return result;
     };
-    const report = async progress => {
-      if (ledger.dead || sessionId !== this.sessionId) return;
-      const terminal = progress.status !== 'playing' && progress.status !== 'generated';
-      if (progress.status === 'generated' || ledger.sent === progress.status) return;
+    const ensure = async () => {
+      if (ledger.id || ledger.dead) return;
+      if (outdated() || sessionId !== this.sessionId) { ledger.dead = true; return; }
       try {
-        if (!ledger.id) {
-          const created = await post({op: 'create', turn_id: turnId, client_id: this.clientId, epoch: generation, style});
-          if (created.turn_id !== turnId || created.client_id !== this.clientId || created.epoch !== generation
-            || typeof created.playback_id !== 'string') throw new Error('Playback record does not match');
-          ledger.id = created.playback_id;
-          ledger.boundary = created.full_boundary_id;
-        }
-        const complete = progress.status === 'completed' && typeof ledger.boundary === 'string' && ledger.boundary;
-        await post({op: 'update', playback_id: ledger.id, client_id: this.clientId, epoch: generation,
-          status: progress.status === 'completed' && !complete ? 'failed' : progress.status,
-          completed_phrases: complete ? [ledger.boundary] : []});
-        ledger.sent = progress.status;
-        if (terminal) ledger.dead = true;
+        const created = await post({op: 'create', turn_id: turnId, client_id: this.clientId, epoch: generation, style});
+        if (created.turn_id !== turnId || created.client_id !== this.clientId || created.epoch !== generation
+          || typeof created.playback_id !== 'string') throw new Error('Playback record does not match');
+        ledger.id = created.playback_id;
+        ledger.boundary = created.full_boundary_id;
       } catch { ledger.dead = true; }
     };
-    player.track(progress => { ledger.queue = ledger.queue.then(() => report(progress)); });
+    const report = async progress => {
+      if (ledger.dead || sessionId !== this.sessionId || progress.status === 'generated') return;
+      let status = progress.status;
+      if (outdated()) {
+        if (!ledger.id || status === 'playing') return;
+        if (status === 'completed') status = 'cancelled';
+      }
+      await ensure();
+      if (!ledger.id || ledger.dead) return;
+      const prefix = status === 'completed' ? null : await this.heardPrefix(progress.heard_prefix, ledger);
+      if (ledger.sent === status && !prefix) return;
+      const complete = status === 'completed' && typeof ledger.boundary === 'string' && ledger.boundary;
+      const update = {op: 'update', playback_id: ledger.id, client_id: this.clientId, epoch: generation,
+        status: status === 'completed' && !complete ? 'failed' : status, completed_phrases: complete ? [ledger.boundary] : []};
+      for (const attempt of prefix ? [prefix, null] : [null]) {
+        try {
+          await post({...update, ...(attempt ? {heard_prefix: attempt} : {})});
+          ledger.sent = status;
+          if (attempt) ledger.prefixChars = attempt.chars;
+          if (status !== 'playing') ledger.dead = true;
+          return;
+        } catch {
+          if (attempt) ledger.prefixOff = true; else { ledger.dead = true; return; }
+        }
+      }
+    };
+    const enqueue = progress => { ledger.queue = ledger.queue.then(() => report(progress)); };
+    return {
+      ready: async () => {
+        ledger.queue = ledger.queue.then(ensure);
+        await ledger.queue;
+        return !ledger.dead && ledger.id ? {playback_id: ledger.id, session_id: sessionId, client_id: this.clientId, epoch: generation} : null;
+      },
+      attach: player => {
+        if (ledger.attached || typeof player?.track !== 'function') return;
+        ledger.attached = true;
+        player.track(enqueue);
+      },
+      cancel: () => {
+        if (ledger.attached) return;
+        ledger.attached = true;
+        if (ledger.id) enqueue({status: 'cancelled'});
+      },
+    };
   }
-  heardCallback(reference) {
-    if (!reference) return null;
-    return () => this.fetch('/api/replies/heard', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(reference)}).then(response => { if (!response.ok) throw new Error('rejected'); })
-      .catch(() => this.onChange('Could not record that the reply was heard.'));
+  trackPlayback(player, options) {
+    this.openPlayback(options)?.attach(player);
+  }
+  async preparePlayback(options) {
+    const ledger = this.openPlayback(options);
+    const fields = await ledger?.ready();
+    return fields ? {fields, track: player => ledger.attach(player), cancel: () => ledger.cancel()} : null;
+  }
+  async heardPrefix(prefix, ledger) {
+    if (ledger.prefixOff || !prefix || !(prefix.chars > ledger.prefixChars) || typeof prefix.text !== 'string') return null;
+    if (!isWellFormed(prefix.text) || Array.from(prefix.text).length !== prefix.chars) return null;
+    const sha256 = await sha256Hex(prefix.text);
+    return sha256 ? {chars: prefix.chars, sha256, alignment: 'provider'} : null;
   }
   async supersedeForDirect() {
     const owned = [...this.pending.values()].filter(entry => !entry.settled);
@@ -264,6 +313,19 @@ class JarvisClient {
     await Promise.all(owned.map(entry => this.fetch('/api/jarvis/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({session_id: entry.sessionId, request_id: entry.id})}).catch(() => {})));
   }
+}
+
+function isWellFormed(text) {
+  return !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text);
+}
+
+async function sha256Hex(text) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  } catch { return null; }
 }
 
 function readbackOf(receipt) {

@@ -262,3 +262,139 @@ test('alignment that diverges from the sent text or goes backwards is ignored an
   assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
   s.player.stop();
 });
+
+const vectors = JSON.parse(readFileSync(new URL('./test_prefix_vectors.json', import.meta.url), 'utf8')).vectors;
+const pcmMs = ms => Buffer.alloc(ms * 48).toString('base64');
+const timed = (elements, start, per, ms) => JSON.stringify({audio: pcmMs(ms), alignment: {chars: elements,
+  starts: elements.map((_, i) => start + i * per), durations: elements.map(() => per)}});
+
+function playsPhrases(text, elements = [...text]) {
+  const s = tracked();
+  s.player.write(text);
+  s.player.end();
+  s.socket.onmessage({data: timed(elements, 0, 10, elements.length * 10)});
+  return s;
+}
+
+test('the heard prefix is the exact source through the last phrase whose audio ended, counted in code points', () => {
+  const s = playsPhrases('Café 🐕. Next one. ');
+  assert.deepEqual([...s.player.phrases], ['Café 🐕. ', 'Next one. ']);
+  assert.equal(s.player.progress().heard_prefix, null);
+  s.sources[0].onended();
+  const prefix = s.player.progress().heard_prefix;
+  assert.equal(prefix.text, 'Café 🐕. ');
+  assert.equal(prefix.chars, 8);
+  assert.equal(prefix.text.length, 9);
+  assert.equal(prefix.alignment, 'provider');
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], ['p1']);
+  assert.deepEqual([...s.player.progress().completed_phrases], []);
+  assert.equal(s.progress.at(-1).heard_prefix.chars, 8);
+  s.player.stop();
+});
+
+test('provider elements may split an astral character; phrase ends still map by UTF-16 offset', () => {
+  const s = playsPhrases('Café 🐕. Next one. ', 'Café 🐕. '.split('').concat(...['Next one. '].map(t => [...t])));
+  s.sources[0].onended();
+  assert.equal(s.player.progress().heard_prefix.chars, 8);
+  s.player.stop();
+});
+
+test('a provider element that straddles a phrase boundary proves nothing', () => {
+  const s = playsPhrases('Café 🐕. Next one. ', ['Café 🐕. N', ...[...'ext one. ']]);
+  s.sources[0].onended();
+  assert.equal(s.player.progress().heard_prefix, null);
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
+  s.player.stop();
+});
+
+test('scheduled audio, an unfinished source and the stop moment never extend the prefix', () => {
+  const s = tracked();
+  s.player.write('Alpha beta. Gamma delta. ');
+  s.player.end();
+  s.socket.onmessage({data: timed([...'Alpha beta. '], 0, 10, 200)});
+  s.socket.onmessage({data: timed([...'Gamma delta. '], 200, 10, 200)});
+  assert.equal(s.player.progress().audio_scheduled_ms, 400);
+  assert.equal(s.player.progress().heard_prefix, null);
+  s.sources[0].onended();
+  assert.equal(s.player.progress().heard_prefix.text, 'Alpha beta. ');
+  s.player.stop();
+  assert.equal(s.sources[1].stopped, true);
+  const last = s.progress.at(-1);
+  assert.equal(last.status, 'cancelled');
+  assert.equal(last.heard_prefix.text, 'Alpha beta. ');
+  assert.deepEqual([...last.completed_phrases], []);
+  s.sources[1].onended?.();
+  assert.equal(s.player.progress().heard_prefix.text, 'Alpha beta. ');
+});
+
+test('the prefix never includes the tail space the player appends and stays within the app source', () => {
+  const s = tracked();
+  s.player.write('One two');
+  s.player.end();
+  s.socket.onmessage({data: timed([...'One two '], 0, 10, 200)});
+  s.sources[0].onended();
+  assert.equal(s.player.progress().heard_prefix.text, 'One two');
+  s.player.stop();
+});
+
+test('chunk-relative or backwards timing makes every later phrase unknown', () => {
+  const s = tracked();
+  s.player.write('Alpha beta. Gamma delta. ');
+  s.player.end();
+  s.socket.onmessage({data: timed([...'Alpha beta. '], 0, 10, 120)});
+  s.socket.onmessage({data: timed([...'Gamma delta. '], 0, 10, 130)});
+  s.sources[0].onended();
+  s.sources[1].onended();
+  assert.equal(s.player.progress().alignment_valid, false);
+  assert.equal(s.player.progress().heard_prefix, null);
+  s.player.stop();
+});
+
+test('alignment text that is not the exact sent text, or a missing element, is never mapped', () => {
+  for (const elements of [[...'Alpha beta! '], [...'Alpha bet']]) {
+    const s = tracked();
+    s.player.write('Alpha beta. Gamma delta. ');
+    s.socket.onmessage({data: timed(elements, 0, 5, 120)});
+    s.sources[0].onended();
+    assert.equal(s.player.progress().heard_prefix, null, elements.join(''));
+    s.player.stop();
+  }
+});
+
+test('the conservative margin grows with elapsed time so drift cannot count an unfinished phrase as heard', () => {
+  const s = tracked();
+  s.player.write('Alpha beta. Gamma delta. ');
+  s.player.end();
+  s.socket.onmessage({data: timed([...'Alpha beta. '], 0, 1000, 12000)});
+  s.player.endedMs = 12000 + 50;
+  assert.equal(s.player.progress().heard_prefix, null);
+  s.player.endedMs = 12000 + 50 + 120;
+  assert.equal(s.player.progress().heard_prefix.text, 'Alpha beta. ');
+  s.player.stop();
+});
+
+test('prefix progress reports only when it advances and never after the stop', () => {
+  const s = tracked();
+  s.player.write('Alpha beta. Gamma delta. ');
+  s.player.end();
+  s.socket.onmessage({data: timed([...'Alpha beta. '], 0, 10, 200)});
+  s.socket.onmessage({data: timed([...'Gamma delta. '], 200, 10, 200)});
+  const before = s.progress.length;
+  s.sources[0].onended();
+  assert.equal(s.progress.length, before + 1);
+  assert.equal(s.progress.at(-1).heard_prefix.chars, 12);
+  s.player.stop();
+  const stopped = s.progress.length;
+  s.socket.onmessage({data: timed([...'Gamma delta. '], 200, 10, 200)});
+  assert.equal(s.progress.length, stopped);
+});
+
+test('the shared Unicode vectors are exact code point prefixes of their sources', () => {
+  for (const vector of vectors) {
+    const points = Array.from(vector.source);
+    assert.equal(points.slice(0, vector.chars).join(''), vector.prefix, vector.name);
+    assert.equal(Array.from(vector.prefix).length, vector.chars, vector.name);
+  }
+  const astral = vectors.find(vector => vector.name === 'astral ends the prefix');
+  assert.notEqual(astral.source.slice(0, astral.chars), astral.prefix);
+});

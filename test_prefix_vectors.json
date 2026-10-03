@@ -1,0 +1,39 @@
+{
+ "vectors": [
+  {
+   "name": "ascii phrase",
+   "source": "Alpha beta. Gamma delta. ",
+   "chars": 12,
+   "prefix": "Alpha beta. ",
+   "sha256": "a17161cdc9597cc83e810d44b80f7d2940665a4849dc69a5e0172c3a969a5f16"
+  },
+  {
+   "name": "accent and astral",
+   "source": "Café 🐕. Next one. ",
+   "chars": 8,
+   "prefix": "Café 🐕. ",
+   "sha256": "2ed9e8107957d43dee4c19db86f302d19b80fb698a4109cce4495a3d1325f385"
+  },
+  {
+   "name": "astral ends the prefix",
+   "source": "Café 🐕. Next one. ",
+   "chars": 6,
+   "prefix": "Café 🐕",
+   "sha256": "7cc92f30a405bb8dbfd176ccd32a513a2f1b7ee5d559126efd94313d22470cdf"
+  },
+  {
+   "name": "decomposed accent is not normalized",
+   "source": "Café 🐕. Next one. ",
+   "chars": 9,
+   "prefix": "Café 🐕. ",
+   "sha256": "383467485b83b8b9533399f1121d5da336608c882f08c58ad2bd2afed93e4c50"
+  },
+  {
+   "name": "astral pair then newline",
+   "source": "Dog 🐕‍🦺 data.\nNext. ",
+   "chars": 13,
+   "prefix": "Dog 🐕‍🦺 data.",
+   "sha256": "00b7c7e000e63d6c3b24724e6f6914ab4eafaf87611e85e346f3f507b7acb6f3"
+  }
+ ]
+}

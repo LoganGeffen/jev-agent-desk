@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -160,6 +161,21 @@ class VoiceTests(unittest.TestCase):
                 connect(self.voice.url, origin="https://unrelated.example")
             self.assertEqual(caught.exception.response.status_code, 403)
             provider.assert_not_called()
+
+
+class PrefixVectorTests(unittest.TestCase):
+    def test_shared_vectors_are_python_code_point_prefixes_with_exact_utf8_hashes(self):
+        vectors = json.loads((Path(__file__).parent / "test_prefix_vectors.json").read_text())["vectors"]
+        for vector in vectors:
+            with self.subTest(vector["name"]):
+                self.assertEqual(vector["source"][:vector["chars"]], vector["prefix"])
+                self.assertEqual(len(vector["prefix"]), vector["chars"])
+                self.assertEqual(hashlib.sha256(vector["prefix"].encode("utf-8")).hexdigest(), vector["sha256"])
+        by_name = {vector["name"]: vector for vector in vectors}
+        astral = by_name["astral ends the prefix"]
+        self.assertNotEqual(len(astral["prefix"].encode("utf-16-le")) // 2, astral["chars"])
+        composed, decomposed = by_name["accent and astral"], by_name["decomposed accent is not normalized"]
+        self.assertNotEqual(composed["sha256"], decomposed["sha256"])
 
 
 class VoiceHTTPTests(unittest.TestCase):

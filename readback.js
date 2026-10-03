@@ -13,9 +13,11 @@ class ReadbackPlayer {
     this.phrases = [];
     this.scheduledMs = 0;
     this.endedMs = 0;
-    this.charEnds = [];
+    this.sourceText = '';
+    this.ends = [];
     this.alignedText = '';
     this.alignmentValid = true;
+    this.reportedChars = 0;
     this.onProgress = onProgress;
     this.socket = new WebSocket(url);
     this.socket.onopen = () => {
@@ -42,6 +44,7 @@ class ReadbackPlayer {
             this.endedMs += buffer.duration * 1000;
             source.disconnect();
             this.finishPlayback();
+            this.reportHeard();
           };
           this.sources.add(source);
           this.nextTime = Math.max(context.currentTime + .03, this.nextTime);
@@ -73,6 +76,7 @@ class ReadbackPlayer {
   }
   write(delta) {
     if (this.closed) return;
+    this.sourceText += delta;
     this.text += delta;
     while (this.text) {
       const boundaries = [this.text.match(/^[\s\S]*?[,;:.!?]["')\]]*\s+/),
@@ -94,31 +98,61 @@ class ReadbackPlayer {
     const valid = Array.isArray(chars) && chars.length && chars.length === starts?.length && chars.length === durations?.length
       && chars.every(char => typeof char === 'string') && [...starts, ...durations].every(value => Number.isFinite(value) && value >= 0);
     if (!valid || !this.alignmentValid) { this.alignmentValid = false; return; }
-    const last = this.charEnds.at(-1) ?? 0;
-    if (starts[0] < last - 1) { this.alignmentValid = false; return; }
-    chars.forEach((char, index) => { this.alignedText += char; this.charEnds.push(starts[index] + durations[index]); });
-    if (!this.phrases.join('').startsWith(this.alignedText)) this.alignmentValid = false;
-  }
-  alignedPhraseIds() {
-    if (!this.alignmentValid) return [];
-    const ids = [];
-    let offset = 0;
-    for (const [index, phrase] of this.phrases.entries()) {
-      offset += phrase.length;
-      if (offset > this.charEnds.length || this.charEnds[offset - 1] + ReadbackPlayer.ALIGNMENT_MARGIN_MS > this.endedMs) break;
-      ids.push('p' + (index + 1));
+    let previousStart = this.ends.at(-1)?.start ?? 0, ceiling = this.ends.at(-1)?.ms ?? 0, text = this.alignedText;
+    const added = [];
+    for (const [index, char] of chars.entries()) {
+      if (starts[index] < previousStart - 1) { this.alignmentValid = false; return; }
+      previousStart = starts[index];
+      ceiling = Math.max(ceiling, starts[index] + durations[index]);
+      text += char;
+      added.push({offset: text.length, start: previousStart, ms: ceiling});
     }
-    return ids;
+    if (!this.phrases.join('').startsWith(text)) { this.alignmentValid = false; return; }
+    this.alignedText = text;
+    this.ends.push(...added);
+  }
+  provenEnd(offset) {
+    let low = 0, high = this.ends.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >> 1, entry = this.ends[middle];
+      if (entry.offset === offset) return entry.ms;
+      if (entry.offset < offset) low = middle + 1; else high = middle - 1;
+    }
+    return null;
+  }
+  heardPhrases() {
+    if (!this.alignmentValid || !this.ends.length) return {count: 0, offset: 0};
+    let offset = 0, count = 0;
+    for (const phrase of this.phrases) {
+      const end = this.provenEnd(offset + phrase.length);
+      if (end === null || end + ReadbackPlayer.ALIGNMENT_MARGIN_MS + end * ReadbackPlayer.ALIGNMENT_DRIFT > this.endedMs) break;
+      offset += phrase.length;
+      count++;
+    }
+    return {count, offset};
+  }
+  heardPrefix() {
+    const {offset} = this.heardPhrases();
+    const text = this.sourceText.slice(0, Math.min(offset, this.sourceText.length));
+    return text ? {chars: Array.from(text).length, text, alignment: 'provider'} : null;
   }
   progress() {
     const ids = this.phrases.map((_, index) => 'p' + (index + 1));
     return {status: this.status, text: this.phrases.join(''), phrase_ids: ids,
-      aligned_phrase_ids: this.alignedPhraseIds(), alignment_valid: this.alignmentValid && this.charEnds.length > 0,
+      aligned_phrase_ids: ids.slice(0, this.heardPhrases().count), heard_prefix: this.heardPrefix(),
+      alignment_valid: this.alignmentValid && this.ends.length > 0,
       completed_phrases: this.status === 'completed' ? ids : [], text_complete: this.sentAll,
       audio_scheduled_ms: Math.round(this.scheduledMs), audio_ended_ms: Math.round(this.endedMs)};
   }
+  reportHeard() {
+    if (this.closed) return;
+    const chars = this.heardPrefix()?.chars ?? 0;
+    if (chars > this.reportedChars) this.report();
+  }
   report() {
-    try { this.onProgress?.(this.progress()); } catch {}
+    const progress = this.progress();
+    this.reportedChars = progress.heard_prefix?.chars ?? 0;
+    try { this.onProgress?.(progress); } catch {}
   }
   track(onProgress) {
     this.onProgress = onProgress;
@@ -154,6 +188,7 @@ class ReadbackPlayer {
 }
 
 ReadbackPlayer.ALIGNMENT_MARGIN_MS = 50;
+ReadbackPlayer.ALIGNMENT_DRIFT = .01;
 
 async function readJSONStream(response, onText) {
   if (!response.headers?.get('content-type')?.includes('application/x-ndjson')) return response.json();

@@ -32,7 +32,7 @@ class VoiceControls {
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
     document.getElementById('replay-reply').onclick = () => {
       const text = document.getElementById('reply-original').textContent;
-      if (text) this.speakReply(text, this.stopReadback('replay reply'), false, this.replyHeard);
+      if (text) this.speakReply(text, this.stopReadback('replay reply'), false, this.replyHeard, this.replyTrack);
     };
     try {
       this.drafts = new Map(JSON.parse(sessionStorage.getItem('jev-pane-drafts') || '[]'));
@@ -337,7 +337,7 @@ class VoiceControls {
       document.getElementById('stop-readback').hidden = true;
       this.playbackStatus(error ? 'Speech failed: ' + error.message : 'Readback finished');
       this.log(error ? 'voice_error' : 'playback_ended', error?.message || '');
-      if (!error && player.started && generation === this.generation && capture === this.capture) onHeard?.();
+      if (!error && !track && player.started && generation === this.generation && capture === this.capture) onHeard?.();
     };
     const player = new ReadbackPlayer(url, capture.playback, {
       onStart: () => {
@@ -350,11 +350,12 @@ class VoiceControls {
     this.playing = player;
     document.getElementById('stop-readback').hidden = false;
     this.playbackStatus('Preparing audio…');
-    try { track?.(player, {style}); } catch {}
+    try { track?.(player, {style, generation}); } catch {}
     return player;
   }
   presentReply(text) {
     this.replyHeard = null;
+    this.replyTrack = null;
     document.getElementById('reply-original').textContent = text;
     document.getElementById('reply-spoken').textContent = '';
     document.getElementById('reply-presentation').hidden = false;
@@ -364,6 +365,7 @@ class VoiceControls {
     if (generation !== this.generation) return;
     this.presentReply(text);
     this.replyHeard = onHeard;
+    this.replyTrack = track;
     if (this.draft || !this.capture?.ready) {
       document.getElementById('reply-presentation').open = true;
       this.status(this.draft ? 'Original reply shown · finish your draft before listening.' : 'Reply shown. Turn on voice to listen.');
@@ -379,18 +381,23 @@ class VoiceControls {
     this.pending = controller;
     document.getElementById('stop-readback').hidden = false;
     this.playbackStatus('Preparing readback…');
-    let player = null;
+    let player = null, bound = null, tracker = track;
     try {
-      let result = this.lastRendition?.original === text && this.lastRendition.requestedMode === mode
+      if (typeof track?.prepare === 'function') {
+        bound = await track.prepare({style: 'spoken', generation});
+        tracker = bound?.track ?? null;
+        if (controller.signal.aborted || generation !== this.generation) return;
+      }
+      let result = !bound && this.lastRendition?.original === text && this.lastRendition.requestedMode === mode
         ? this.lastRendition : null;
       if (!result) {
         const response = await fetch('/api/spoken-version', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({text, mode, stream: true}), signal: controller.signal
+          body: JSON.stringify({text, mode, stream: true, ...bound?.fields}), signal: controller.signal
         });
         result = await readJSONStream(response, delta => {
           if (generation !== this.generation) return;
-          player ||= this.beginReadback(generation, onHeard, track, 'spoken');
+          player ||= this.beginReadback(generation, onHeard, tracker, 'spoken');
           player?.write(delta);
         });
         if (!response.ok) throw new Error(result.error);
@@ -399,7 +406,7 @@ class VoiceControls {
       this.lastRendition = {...result, original: text, requestedMode: mode};
       document.getElementById('reply-spoken').textContent = result.mode === 'original'
         ? 'Reading original wording.' : result.text;
-      if (!player) { player = this.beginReadback(generation, onHeard, track, 'spoken'); player?.write(result.text); }
+      if (!player) { player = this.beginReadback(generation, onHeard, tracker, 'spoken'); player?.write(result.text); }
       player?.end();
     } catch (error) {
       if (error.name !== 'AbortError' && generation === this.generation) {
@@ -409,6 +416,7 @@ class VoiceControls {
         this.playbackStatus('Could not prepare readback');
       }
     } finally {
+      bound?.cancel();
       if (this.pending === controller) this.pending = null;
       if (!this.pending && !this.playing) document.getElementById('stop-readback').hidden = true;
       this.onChange?.();

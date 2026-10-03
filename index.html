@@ -576,7 +576,9 @@
           if (item.reply.text) {
             const read = document.createElement('button');
             read.textContent = 'Read this reply';
-            read.onclick = () => voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'), false, heardCallback(item.reply));
+            read.onclick = () => item.reply.turn_id
+              ? voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'), false, null, jarvis.tracker(item.reply.turn_id))
+              : voice.speakReply(item.reply.text, voice.stopReadback('read turn reply'), false, heardCallback(item.reply));
             line.append(read);
           }
         }
