@@ -60,6 +60,7 @@ class JarvisClient {
     return {session_id: snapshot.session_id, turn_id: turn.turn_id, request_id: turn.request_id,
       revision: snapshot.revision, status: turn.status, text: turn.result?.text || '',
       actions: Object.values(snapshot.actions || {}).filter(action => action.turn_id === turn.turn_id),
+      ...(turn.result?.readback ? {readback: turn.result.readback} : {}),
       ...(turn.error ? {error: turn.error} : {})};
   }
   reconcile(entry, startedAt) {
@@ -137,7 +138,11 @@ class JarvisClient {
   finish(entry, receipt) {
     this.show(receipt, entry.text, entry.source);
     const current = this.isCurrent(entry);
-    if (receipt.status === 'completed' && receipt.text) {
+    const readback = readbackOf(receipt);
+    if (receipt.status === 'completed' && readback) {
+      entry.player?.stop();
+      if (current) this.voice.speakReply(readback.original, entry.generation, false, this.heardCallback(readback.reply_ref));
+    } else if (receipt.status === 'completed' && receipt.text) {
       if (!current) return entry.player?.stop();
       if (entry.player) {
         const rest = entry.streamed.includes(receipt.text) ? ''
@@ -164,22 +169,38 @@ class JarvisClient {
   show(receipt, text, source) {
     const jobs = Object.values(this.snapshot?.jobs || {}).filter(job => job.turn_id === receipt.turn_id);
     const delivered = receipt.actions.find(action => action.draft_id && ['attempting', 'submitted', 'uncertain'].includes(action.status));
+    const readback = readbackOf(receipt);
     const status = [{running: 'Jarvis is working…', completed: 'Answered', cancelled: 'Superseded or cancelled. Receipts below remain.',
       failed: 'Jarvis could not complete this: ' + (receipt.error || 'unknown error')}[receipt.status] || receipt.status,
-      ...receipt.actions.map(actionLine), ...jobs.map(job => `Job · ${job.subject?.label || 'conversation'}: ${job.status}`)].join('\n');
-    const signature = JSON.stringify([status, receipt.text, delivered?.payload]);
+      ...(readback && receipt.text ? [receipt.text] : []), ...receipt.actions.map(actionLine), ...jobs.map(job => `Job · ${job.subject?.label || 'conversation'}: ${job.status}`)].join('\n');
+    const signature = JSON.stringify([status, receipt.text, delivered?.payload, readback]);
     if (this.rendered.get(receipt.request_id) === signature) return;
     this.rendered.set(receipt.request_id, signature);
     this.retain({id: receipt.request_id, text, source, recipient: 'Jarvis', status,
       deliveredText: delivered?.payload,
-      ...(receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text}} : {})});
+      ...(readback ? {reply: {id: receipt.request_id, target: readback.target?.label || readback.target?.tab || 'Agent',
+        text: readback.original, heard_reply: readback.reply_ref}}
+        : receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text}} : {})});
+  }
+  heardCallback(reference) {
+    if (!reference) return null;
+    return () => this.fetch('/api/replies/heard', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(reference)}).then(response => { if (!response.ok) throw new Error('rejected'); })
+      .catch(() => this.onChange('Could not record that the reply was heard.'));
   }
   async supersedeForDirect() {
-    if (!this.pending.size || !this.sessionId) return;
+    const owned = [...this.pending.values()].filter(entry => !entry.settled);
     this.latestRequestId = null;
-    await this.fetch('/api/jarvis/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({session_id: this.sessionId})}).catch(() => {});
+    await Promise.all(owned.map(entry => this.fetch('/api/jarvis/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({session_id: entry.sessionId, request_id: entry.id})}).catch(() => {})));
   }
+}
+
+function readbackOf(receipt) {
+  const {original, target, reply_ref: reference} = receipt.readback || {};
+  if (typeof original !== 'string' || !original) return null;
+  const plain = value => value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  return {original, target: plain(target), reply_ref: plain(reference)};
 }
 
 function actionLine(action) {

@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import threading
 import time
+import urllib.request
 from playwright.sync_api import sync_playwright
 
 from jarvis_controller import JarvisController
@@ -387,7 +388,10 @@ class ControllerShim:
 
     def __init__(self):
         self.state = fixture_state()
-        self.posts, self.provider_calls, self.drop = [], [], set()
+        self.posts, self.provider_calls, self.drop, self.cancels = [], [], set(), []
+        self.delay, self.hold = set(), threading.Event()
+        self.delayed = threading.Event()
+        self.release_delayed = threading.Event()
         self.controller = JarvisController(self.provider, self.execute_tool)
         shim = self
 
@@ -422,9 +426,16 @@ class ControllerShim:
                     if body['text'] in shim.drop:
                         self.request.shutdown(socket.SHUT_RDWR)
                         return
+                    if body['text'] in shim.delay:
+                        shim.delayed.set()
+                        shim.release_delayed.wait(10)
                     return self.send(receipt)
                 if self.path == '/api/jarvis/cancel':
-                    return self.send(shim.controller.cancel(body.get('turn_id')) or {})
+                    shim.cancels.append(body)
+                    turn_id = body.get('turn_id') or shim.controller.snapshot()['requests'].get(body.get('request_id'))
+                    if not turn_id:
+                        return self.send({'error': 'cancel requires a known request_id or turn_id'}, 400)
+                    return self.send(shim.controller.cancel(turn_id) or {})
                 if self.path == '/api/select':
                     shim.state.update(selected=body['tab'], selected_pane=body['tab'].replace('@', '%'))
                     return self.send(shim.state)
@@ -444,6 +455,11 @@ class ControllerShim:
             while not cancel.is_set():
                 time.sleep(0.01)
             raise InterruptedError('superseded')
+        if text.startswith('Hold'):
+            while not self.hold.wait(0.01):
+                if cancel.is_set():
+                    raise InterruptedError('superseded')
+            return {'text': 'Echo: ' + text}
         if text.startswith('Focus'):
             execute('set_subject', {'target': SUBJECT_B})
             return {'text': 'Focused on B.'}
@@ -497,13 +513,43 @@ def run_controller_shim():
             assert shim.provider_calls.count('This response is lost on the wire') == 1
             assert page.evaluate('spoken').count('Echo: This response is lost on the wire') == 1
             assert all(set(post) == {'session_id', 'request_id', 'text', 'source', 'stream'} for post in shim.posts)
+            shim.delay.add('Stale local request')
+            submit_composer(page, 'Stale local request')
+            assert shim.delayed.wait(10)
+            stale_id = shim.posts[-1]['request_id']
+            other = {'session_id': shim.controller.snapshot()['session_id'], 'request_id': 'other-client-request',
+                     'text': 'Hold other client request', 'source': 'typed'}
+            held = []
+            def other_client():
+                request = urllib.request.Request(shim.url + 'api/jarvis/turn', json.dumps(other).encode(), {'Content-Type': 'application/json'})
+                held.append(json.load(urllib.request.urlopen(request, timeout=20)))
+            thread = threading.Thread(target=other_client)
+            thread.start()
+            for _ in range(500):
+                if shim.controller.snapshot()['requests'].get('other-client-request'):
+                    break
+                time.sleep(0.01)
+            snapshot = shim.controller.snapshot()
+            other_turn = snapshot['requests']['other-client-request']
+            assert snapshot['turns'][other_turn]['status'] == 'running' and page.evaluate('jarvis.pending.size') == 1
+            page.evaluate('jarvis.supersedeForDirect()')
+            assert shim.cancels == [{'session_id': snapshot['session_id'], 'request_id': stale_id}], shim.cancels
+            assert shim.controller.snapshot()['turns'][other_turn]['status'] == 'running'
+            shim.hold.set()
+            thread.join(10)
+            assert held[0]['status'] == 'completed' and held[0]['text'] == 'Echo: Hold other client request'
+            assert shim.controller.snapshot()['turns'][other_turn]['status'] == 'completed'
+            shim.release_delayed.set()
+            page.wait_for_function('jarvis.pending.size === 0')
+            assert 'Echo: Hold other client request' not in page.evaluate('spoken')
             assert not errors, errors
             browser.close()
     finally:
         shim.close()
     report = {'passed': True, 'posts': len(shim.posts),
               'checks': ['real controller subject pinned across pane selection', 'real controller supersedes a running turn',
-                         'lost HTTP response recovered from real state snapshot with one provider call'],
+                         'lost HTTP response recovered from real state snapshot with one provider call',
+                         'stale local cancellation names its own request_id and cannot cancel another client\'s newer running turn'],
               'scope': 'Chromium against a test-local loopback adapter over the real JarvisController; not server.py'}
     print(json.dumps(report))
 

@@ -45,11 +45,16 @@ function setup({state = snapshot(), post, now = {t: 0}} = {}) {
   const spoken = [];
   const presented = [];
   const players = [];
+  const replyCalls = [];
   const voice = {
     generation: 0, capture: {ready: true},
     stopReadback() { for (const player of players) player.stopped = true; return ++this.generation; },
     speak(text, generation) { if (generation === this.generation) spoken.push(text); },
-    speakReply(text, generation) { if (generation === this.generation) spoken.push(text); },
+    speakReply(text, generation, spokenReady, onHeard) {
+      if (generation !== this.generation) return;
+      spoken.push(text);
+      replyCalls.push({text, spokenReady, onHeard});
+    },
     presentReply(text) { presented.push(text); },
     beginReadback(generation) {
       if (generation !== this.generation) return null;
@@ -66,6 +71,7 @@ function setup({state = snapshot(), post, now = {t: 0}} = {}) {
     calls.push(call);
     if (url === '/api/jarvis/state') return env.state instanceof Error ? Promise.reject(env.state) : json(env.state);
     if (url === '/api/jarvis/cancel') return json({});
+    if (url === '/api/replies/heard') return env.heard ? env.heard(call) : json({});
     if (url === '/api/jarvis/turn') return post(call);
     throw new Error('unexpected ' + url);
   };
@@ -73,7 +79,7 @@ function setup({state = snapshot(), post, now = {t: 0}} = {}) {
   const client = new context.JarvisClient({fetch, newId: () => 'r' + ++ids, now: () => now.t, deadlineMs: 1000, lostGraceMs: 100,
     retain: record => records.set(record.id, {...records.get(record.id), ...record}), onChange: message => changes.push(message)});
   client.voice = voice;
-  return {client, calls, records, spoken, presented, players, voice, env, now, changes,
+  return {client, calls, records, spoken, replyCalls, presented, players, voice, env, now, changes,
     posts: () => calls.filter(call => call.url === '/api/jarvis/turn')};
 }
 
@@ -269,7 +275,7 @@ test('a direct submission cancels Jarvis inference only and the cancelled turn c
   await tick();
   await s.client.supersedeForDirect();
   const cancel = s.calls.find(call => call.url === '/api/jarvis/cancel');
-  assert.deepEqual(cancel.body, {session_id: 's1'});
+  assert.deepEqual(cancel.body, {session_id: 's1', request_id: 'r1'});
   s.voice.stopReadback();
   resolve(json(receipt('r1', 'Too late.')));
   await request;
@@ -293,4 +299,143 @@ test('a failed turn shows the error and keeps its receipts without fabricating c
   assert.match(status, /could not complete this: provider down/);
   assert.match(status, /uncertain/);
   assert.equal(s.records.get('r1').reply, undefined);
+});
+
+const REF = {id: 'att-1', tab: '@b', pane: '%b', identity: 'b:original', label: 'B · pane 1'};
+const READBACK = {original: 'Exact  original\nreply — with “quotes”.', target: {tab: '@b', pane: '%b', identity: 'b:original', label: 'B · pane 1'}, reply_ref: REF};
+const heardPosts = s => s.calls.filter(call => call.url === '/api/replies/heard');
+
+test('an immediate readback receipt speaks the exact original through speakReply and keeps it visible', async () => {
+  const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: READBACK, raw_model_text: 'RAW PRE-TOOL NARRATION'}))});
+  await s.client.submit('read B', 'voice');
+  assert.equal(s.replyCalls.length, 1);
+  assert.equal(s.replyCalls[0].text, READBACK.original);
+  assert.equal(s.replyCalls[0].spokenReady, false);
+  assert.equal(typeof s.replyCalls[0].onHeard, 'function');
+  assert.deepEqual(s.spoken, [READBACK.original]);
+  assert.equal(s.players.length, 0);
+  const record = s.records.get('r1');
+  assert.equal(record.reply.text, READBACK.original);
+  assert.equal(record.reply.target, 'B · pane 1');
+  assert.deepEqual(record.reply.heard_reply, REF);
+  assert.match(record.status, /Reading B\./);
+  assert.equal(JSON.stringify([...s.records.values()]).includes('RAW PRE-TOOL'), false);
+  assert.equal(heardPosts(s).length, 0);
+});
+
+test('the heard acknowledgment posts the exact reference only when full audio completes', async () => {
+  const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: READBACK}))});
+  await s.client.submit('read B', 'voice');
+  assert.equal(heardPosts(s).length, 0);
+  s.replyCalls[0].onHeard();
+  await tick();
+  const [heard] = heardPosts(s);
+  assert.equal(heard.method, 'POST');
+  assert.deepEqual(heard.body, REF);
+});
+
+test('a readback without an exact reference is read but can never be marked heard', async () => {
+  const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: {...READBACK, reply_ref: null}}))});
+  await s.client.submit('read B', 'voice');
+  assert.equal(s.replyCalls[0].text, READBACK.original);
+  assert.equal(s.replyCalls[0].onHeard, null);
+  assert.equal(s.records.get('r1').reply.heard_reply, null);
+  assert.equal(heardPosts(s).length, 0);
+});
+
+test('a superseded or stopped generation never speaks a readback or marks it heard, but keeps the original', async () => {
+  let resolve;
+  const s = setup({post: () => new Promise(done => { resolve = done; })});
+  const request = s.client.submit('read B', 'voice');
+  await tick();
+  s.voice.stopReadback();
+  resolve(json(receipt('r1', 'Reading B.', {readback: READBACK})));
+  await request;
+  assert.equal(s.replyCalls.length, 0);
+  assert.deepEqual(s.spoken, []);
+  assert.equal(heardPosts(s).length, 0);
+  assert.equal(s.records.get('r1').reply.text, READBACK.original);
+  assert.deepEqual(s.records.get('r1').reply.heard_reply, REF);
+});
+
+test('a readback that is not the latest request never speaks even when its generation is current', async () => {
+  const gates = {};
+  const s = setup({post: call => new Promise(resolve => { gates[call.body.request_id] = resolve; })});
+  const first = s.client.submit('read B', 'voice');
+  await tick();
+  const second = s.client.submit('next', 'voice');
+  await tick();
+  gates.r1(json(receipt('r1', 'Reading B.', {readback: READBACK})));
+  await first;
+  assert.equal(s.replyCalls.length, 0);
+  assert.equal(heardPosts(s).length, 0);
+  gates.r2(json(receipt('r2', 'Next.')));
+  await second;
+  assert.deepEqual(s.spoken, ['Next.']);
+});
+
+test('a lost POST recovers canonical text and readback from state, speaks once, and never re-posts', async () => {
+  const s = setup({post: async () => { throw new Error('network'); }});
+  const request = s.client.submit('read B', 'voice');
+  await tick(); await tick();
+  s.env.state = snapshot({revision: 2, requests: {r1: 't1'}, turns: {t1: turn('t1', 'r1', 'completed',
+    {result: {text: 'Reading B.', readback: READBACK, raw_model_text: 'RAW'}})}});
+  await s.client.refresh();
+  const result = await request;
+  assert.equal(result.text, 'Reading B.');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.readback)), READBACK);
+  assert.equal(s.posts().length, 1);
+  assert.equal(s.replyCalls.length, 1);
+  assert.equal(s.replyCalls[0].text, READBACK.original);
+  assert.deepEqual(s.records.get('r1').reply.heard_reply, REF);
+  s.replyCalls[0].onHeard();
+  await tick();
+  assert.deepEqual(heardPosts(s).map(call => call.body), [REF]);
+  await s.client.refresh();
+  assert.equal(s.replyCalls.length, 1);
+});
+
+test('replayed state with readback never speaks or marks heard', async () => {
+  const s = setup({post: async () => json({})});
+  s.env.state = snapshot({revision: 2, requests: {r9: 't9'}, turns: {t9: turn('t9', 'r9', 'completed',
+    {result: {text: 'Reading B.', readback: READBACK}})}});
+  await s.client.refresh();
+  await s.client.refresh();
+  assert.equal(s.replyCalls.length, 0);
+  assert.equal(heardPosts(s).length, 0);
+  assert.equal(s.records.get('r9').reply.text, READBACK.original);
+  assert.deepEqual(s.records.get('r9').reply.heard_reply, REF);
+});
+
+test('a failed heard acknowledgment is reported and never retried', async () => {
+  const s = setup({post: async () => json(receipt('r1', 'Reading B.', {readback: READBACK}))});
+  s.env.heard = async () => json({error: 'identity changed'}, 409);
+  await s.client.submit('read B', 'voice');
+  s.replyCalls[0].onHeard();
+  await tick(); await tick();
+  assert.equal(heardPosts(s).length, 1);
+  assert.match(s.changes.at(-1), /Could not record/);
+});
+
+test('automatic cancellation names only the requests this client owns', async () => {
+  const gates = {};
+  const s = setup({post: call => new Promise(resolve => { gates[call.body.request_id] = resolve; })});
+  const first = s.client.submit('first', 'typed');
+  await tick();
+  const second = s.client.submit('second', 'typed');
+  await tick();
+  gates.r1(json(receipt('r1', 'First.', {status: 'cancelled'})));
+  await first;
+  await s.client.supersedeForDirect();
+  const cancels = s.calls.filter(call => call.url === '/api/jarvis/cancel');
+  assert.deepEqual(cancels.map(call => call.body), [{session_id: 's1', request_id: 'r2'}]);
+  gates.r2(json(receipt('r2', 'Too late.', {status: 'cancelled'})));
+  await second;
+});
+
+test('with nothing owned and pending, direct submission sends no cancellation and a stale response cancels nothing', async () => {
+  const s = setup({post: async () => json(receipt('r1', 'Done.'))});
+  await s.client.submit('first', 'typed');
+  await s.client.supersedeForDirect();
+  assert.equal(s.calls.some(call => call.url === '/api/jarvis/cancel'), false);
 });
