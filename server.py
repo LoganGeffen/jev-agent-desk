@@ -930,7 +930,7 @@ def make_server(playground, port=0, public_origin=None):
                     allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send'},
                                '/api/jarvis/turn-decision': {'session_id', 'client_id', 'transcript_id', 'transcript_revision', 'text', 'subject', 'invalidate'},
                                '/api/jarvis/cancel': {'session_id', 'turn_id', 'request_id'},
-                               '/api/jarvis/playback': {'session_id', 'op', 'turn_id', 'style', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}}[self.path]
+                               '/api/jarvis/playback': {'session_id', 'op', 'turn_id', 'style', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases', 'heard_prefix'}}[self.path]
                     if set(body) - allowed:
                         raise ValueError('Unknown Jarvis request field')
                     if self.path == '/api/jarvis/turn-decision':
@@ -948,7 +948,7 @@ def make_server(playground, port=0, public_origin=None):
                                 raise ValueError('Unknown playback creation field')
                             result = playground.jarvis_turns.create_playback(body)
                         elif body.get('op', 'update') == 'update':
-                            if set(body) - {'session_id', 'op', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}:
+                            if set(body) - {'session_id', 'op', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases', 'heard_prefix'}:
                                 raise ValueError('Unknown playback update field')
                             result = playground.jarvis_turns.update_playback(body)
                         else:
@@ -973,11 +973,18 @@ def make_server(playground, port=0, public_origin=None):
                         self.send(200, result)
                     return
                 if self.path == '/api/spoken-version':
+                    retain = playground.jarvis_turns.tracked_rendition(body)
+                    def emit_rendition(text):
+                        if retain:
+                            retain(text)
+                        self.stream_event('text', text=text)
                     if body.get('stream'):
                         self.start_stream()
                         try:
                             result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'),
-                                      lambda text: self.stream_event('text', text=text))
+                                      emit_rendition)
+                            if retain:
+                                retain(complete=True, full_text=result['text'])
                             playground.voice.record('spoken_rendition', original=body['text'], **result)
                             self.stream_event('result', result=result)
                         except (BrokenPipeError, ConnectionResetError):
@@ -988,7 +995,9 @@ def make_server(playground, port=0, public_origin=None):
                             except (BrokenPipeError, ConnectionResetError):
                                 pass
                     else:
-                        result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'))
+                        result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'), (lambda text: retain(text)) if retain else None)
+                        if retain:
+                            retain(complete=True, full_text=result['text'])
                         playground.voice.record('spoken_rendition', original=body['text'], **result)
                         self.send(200, result)
                     return

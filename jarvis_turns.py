@@ -107,10 +107,31 @@ class JarvisTurns:
         if body.get('style') == 'spoken' and readback:
             with state.lock:
                 stored = state.playbacks[playback['playback_id']]
-                stored.update(text=None, rendition_pending=True)
+                stored.update(text=None, rendition_pending=True, generated_text='')
                 state.changed()
                 playback = copy.deepcopy(stored)
         return playback
+
+    def tracked_rendition(self, body):
+        fields = {'playback_id', 'session_id', 'client_id', 'epoch'}
+        if not fields.intersection(body):
+            return None
+        if not fields.issubset(body) or body['session_id'] != self.app.jarvis.state.session_id:
+            raise ValueError('Tracked rendition requires its playback owner and session')
+        playback = self.app.jarvis.snapshot()['playbacks'].get(body['playback_id'])
+        if not playback or playback['client_id'] != body['client_id'] or playback['epoch'] != body['epoch'] or playback['status'] in ('completed', 'cancelled', 'failed'):
+            raise ValueError('Tracked rendition owner is stale')
+        if playback['source_ref']['style'] != 'spoken' or body.get('mode', 'spoken') not in ('spoken', 'auto') or body['text'] != playback['source_ref']['original']:
+            raise ValueError('Tracked rendition does not match application source')
+        prefix = ''
+        def retain(delta=None, complete=False, full_text=None):
+            nonlocal prefix
+            if full_text is not None:
+                prefix = full_text
+            elif delta is not None:
+                prefix += delta
+            self.app.jarvis.state.bind_playback_prefix(body['playback_id'], body['client_id'], body['epoch'], prefix, complete)
+        return retain
 
     def update_playback(self, body):
         state = self.app.jarvis.state
@@ -125,10 +146,9 @@ class JarvisTurns:
                 raise ValueError('Spoken rendition is not yet app-confirmed')
             with state.lock:
                 stored = state.playbacks[body['playback_id']]
-                stored.update(text=result['text'], rendition_pending=False)
-                state.changed()
+                state.bind_playback_prefix(body['playback_id'], body['client_id'], body['epoch'], result['text'], complete=True)
         playback = self.app.jarvis.state.update_playback(body['playback_id'], body['client_id'], body['epoch'],
-                       body['status'], body.get('completed_phrases', []))
+                       body['status'], body.get('completed_phrases', []), body.get('heard_prefix'))
         if playback['status'] == 'completed' and playback['completed_phrases'] == [playback.get('full_boundary_id')] and playback.get('reply_ref'):
             self.app.heard_reply(playback['reply_ref'])
         return playback

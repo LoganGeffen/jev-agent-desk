@@ -304,7 +304,22 @@ class JarvisState:
             self.changed()
             return copy.deepcopy(playback)
 
-    def update_playback(self, playback_id, client_id, epoch, status, completed_phrases=()):
+    def bind_playback_prefix(self, playback_id, client_id, epoch, prefix, complete=False):
+        with self.lock:
+            playback = self.playbacks[playback_id]
+            if playback['client_id'] != client_id or playback['epoch'] != epoch or playback['status'] in ('completed', 'cancelled', 'failed'):
+                raise ValueError('Playback source has a stale owner or ended playback')
+            old = playback.get('generated_text', '')
+            if not isinstance(prefix, str) or not (prefix.startswith(old) or old.startswith(prefix) and not complete):
+                raise ValueError('Generated rendition changed its exact source prefix')
+            if len(prefix) >= len(old):
+                playback['generated_text'] = prefix
+            if complete:
+                playback.update(text=prefix, rendition_pending=False)
+            self.changed()
+            return copy.deepcopy(playback)
+
+    def update_playback(self, playback_id, client_id, epoch, status, completed_phrases=(), heard_prefix=None):
         if status not in ('playing', 'completed', 'cancelled', 'failed'):
             raise ValueError('Invalid playback status')
         if not isinstance(completed_phrases, (list, tuple)) or any(not isinstance(p, str) for p in completed_phrases):
@@ -320,6 +335,17 @@ class JarvisState:
             old = playback['completed_phrases']
             if list(completed_phrases)[:len(old)] != old:
                 raise ValueError('Playback progress cannot retract completed phrases')
+            if heard_prefix is not None:
+                if not isinstance(heard_prefix, dict) or set(heard_prefix) != {'chars', 'sha256', 'alignment'} or heard_prefix['alignment'] != 'provider':
+                    raise ValueError('Invalid provider-aligned prefix')
+                chars = heard_prefix['chars']
+                source = playback.get('generated_text', playback.get('text') or '')
+                previous = playback.get('heard_prefix', {}).get('chars', 0)
+                if type(chars) is not int or not previous <= chars <= len(source):
+                    raise ValueError('Heard prefix is out of range or regresses')
+                if heard_prefix['sha256'] != hashlib.sha256(source[:chars].encode('utf-8')).hexdigest():
+                    raise ValueError('Heard prefix does not match exact app source')
+                playback['heard_prefix'] = copy.deepcopy(heard_prefix)
             playback.update(status=status, completed_phrases=list(completed_phrases))
             self.changed()
             return copy.deepcopy(playback)
@@ -344,7 +370,7 @@ class JarvisState:
                                    for action in self.actions.values() if action['status'] in ('attempting', 'uncertain')],
                        'jobs': [{key: copy.deepcopy(job[key]) for key in ('job_id', 'status', 'subject')}
                                 for job in self.jobs.values() if job['status'] in ('queued', 'running')],
-                       'playbacks': [{key: copy.deepcopy(playback[key]) for key in ('playback_id', 'status', 'completed_phrases')}
+                       'playbacks': [{key: copy.deepcopy(playback[key]) for key in ('playback_id', 'status', 'completed_phrases', 'heard_prefix') if key in playback}
                                      for playback in list(self.playbacks.values())[-8:]],
                        'recent_turns': [], 'evidence': []}
             if encoded_size(context) > max_bytes:

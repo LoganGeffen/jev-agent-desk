@@ -1,3 +1,4 @@
+import hashlib
 import json
 import threading
 from urllib.error import HTTPError
@@ -190,6 +191,75 @@ class ApiTests(DisposableDesk):
                   'epoch': 1, 'status': 'completed', 'completed_phrases': [playback['full_boundary_id']]}
         self.post('/api/jarvis/playback', update)
         self.assertEqual(self.app.attention.view(self.app.observe()['tabs']), [])
+
+    def test_interrupted_stream_retains_unicode_prefix_before_cache_completion(self):
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final()
+        receipt = self.turn('Read Dog Data', 'prefix-read')
+        create = {'session_id': self.session, 'op': 'create', 'turn_id': receipt['turn_id'],
+                  'client_id': 'phone', 'epoch': 1, 'style': 'spoken'}
+        playback = self.post('/api/jarvis/playback', create)
+        release = threading.Event()
+        prefix = 'Café 🐕.'
+        def render(text, mode, emit):
+            emit(prefix)
+            release.wait(3)
+            raise RuntimeError('Synthetic interrupted rendition')
+        body = {'text': receipt['readback']['original'], 'stream': True, 'mode': 'spoken',
+                'session_id': self.session, 'playback_id': playback['playback_id'], 'client_id': 'phone', 'epoch': 1}
+        request = Request(self.url + '/api/spoken-version', data=json.dumps(body).encode(),
+                          headers={'Content-Type': 'application/json', 'Origin': self.url})
+        with self.assertRaises(HTTPError):
+            self.post('/api/spoken-version', {**body, 'client_id': 'other'})
+        with self.assertRaises(HTTPError):
+            self.post('/api/spoken-version', {**body, 'text': 'Client-invented rendition source'})
+        with patch('spoken_reply.render_spoken_reply', side_effect=render):
+            response = urlopen(request, timeout=5)
+            try:
+                self.assertEqual(json.loads(response.readline())['text'], prefix)
+                stored = self.get()['playbacks'][playback['playback_id']]
+                self.assertEqual(stored['generated_text'], prefix)
+                self.assertEqual(stored['source_ref']['original'], receipt['readback']['original'])
+                self.assertTrue(stored['rendition_pending'])
+                self.assertFalse(self.app.readbacks.entries[(body['text'], 'spoken')]['done'])
+                progress = {'chars': len(prefix), 'sha256': hashlib.sha256(prefix.encode()).hexdigest(), 'alignment': 'provider'}
+                update = {key: body[key] for key in ('session_id', 'playback_id', 'client_id', 'epoch')}
+                update.update(status='playing', completed_phrases=[], heard_prefix=progress)
+                with self.assertRaises(HTTPError):
+                    self.post('/api/jarvis/playback', {**update, 'heard_prefix': {**progress, 'chars': len(prefix) + 1}})
+                with self.assertRaises(HTTPError):
+                    self.post('/api/jarvis/playback', {**update, 'heard_prefix': {**progress, 'sha256': '0' * 64}})
+                with self.assertRaises(HTTPError):
+                    self.post('/api/jarvis/playback', {**update, 'client_id': 'other'})
+                self.assertEqual(self.post('/api/jarvis/playback', update)['heard_prefix']['chars'], 7)
+                with self.assertRaises(HTTPError):
+                    self.post('/api/jarvis/playback', {**update, 'heard_prefix': {'chars': 0, 'sha256': hashlib.sha256(b'').hexdigest(), 'alignment': 'provider'}})
+                cancelled = self.post('/api/jarvis/playback', {**update, 'status': 'cancelled'})
+                self.assertEqual(cancelled['heard_prefix'], progress)
+                with self.assertRaises(HTTPError):
+                    self.post('/api/jarvis/playback', {**update, 'status': 'completed', 'completed_phrases': [playback['full_boundary_id']]})
+            finally:
+                release.set()
+                response.read()
+                response.close()
+        final_record = self.get()['playbacks'][playback['playback_id']]
+        self.assertEqual(final_record['generated_text'], prefix)
+        self.assertEqual(final_record['status'], 'cancelled')
+
+    def test_current_semantic_voice_token_dispatches_exact_source_once_through_real_http(self):
+        request, body = 'Tell Dog Data: Café 🐕.', 'Café 🐕.'
+        self.allow(request, body=body)
+        original = self.app.evaluate
+        self.app.evaluate = lambda payload: {'answers': {'decision': {'choice': 'complete'}, 'correction': {'choice': 'no'}}} if 'decision' in payload['questions'] else original(payload)
+        self.provider = self.send_provider
+        transcript = {'session_id': self.session, 'client_id': 'phone', 'transcript_id': 'spoken',
+                      'transcript_revision': 1, 'text': request, 'subject': None}
+        decision = self.post('/api/jarvis/turn-decision', transcript)
+        fields = {key: transcript[key] for key in ('client_id', 'transcript_id', 'transcript_revision')}
+        receipt = self.turn(request, 'voice-current', source='voice', decision_id=decision['decision_id'], **fields)
+        replay = self.turn(request, 'voice-current', source='voice', decision_id=decision['decision_id'], **fields)
+        self.assertEqual(receipt['actions'][0]['payload'], body)
+        self.assertEqual(replay['turn_id'], receipt['turn_id'])
+        self.assertEqual(self.received('Dog Data').count(body.encode()), 1)
 
 if __name__ == '__main__':
     import unittest
