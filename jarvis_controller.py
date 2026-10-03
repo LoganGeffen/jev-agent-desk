@@ -15,7 +15,7 @@ CORE_TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {'target': TARGET_SCHEMA}, 'required': ['target'], 'additionalProperties': False}},
     {'name': 'prepare_literal', 'description': 'Capture an exact span from the current user input as a draft; never send.',
      'inputSchema': {'type': 'object', 'properties': {'start': {'type': 'integer'}, 'end': {'type': 'integer'},
-                     'supersedes': {'type': 'string'}}, 'required': ['start', 'end'], 'additionalProperties': False}},
+                     }, 'required': ['start', 'end'], 'additionalProperties': False}},
     {'name': 'send_draft', 'description': 'Submit an application-owned exact draft to its captured recipient only after authorization.',
      'inputSchema': {'type': 'object', 'properties': {'draft_id': {'type': 'string'}}, 'required': ['draft_id'], 'additionalProperties': False}},
 ]
@@ -44,13 +44,19 @@ def validate_arguments(value, schema):
 
 
 class JarvisController:
-    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=()):
+    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None):
         self.provider = provider
         self.execute_tool = execute_tool
         self.state = state or JarvisState()
+        self.literal_boundaries = literal_boundaries
         self.authorize = authorize or (lambda name, arguments, turn: False)
         self.effect_tools = set(effect_tools) | {'send_draft', 'interrupt_agent', 'close_session'}
         self.tool_specs = copy.deepcopy(CORE_TOOLS + list(tool_specs))
+        if literal_boundaries:
+            prepare = next(tool for tool in self.tool_specs if tool['name'] == 'prepare_literal')
+            prepare['description'] = 'Prepare the intended exact user-message body using application-owned source boundaries; never send. Omit boundary_id to resolve the source. Select a returned boundary_id only if multiple candidates need disambiguation.'
+            prepare['inputSchema'] = {'type': 'object', 'properties': {'boundary_id': {'type': 'string'}},
+                                      'additionalProperties': False}
         names = [tool['name'] for tool in self.tool_specs]
         if len(set(names)) != len(names):
             raise ValueError('Duplicate controller tool name')
@@ -108,11 +114,24 @@ class JarvisController:
                 raise ValueError('Controller tool call limit exceeded')
             with self.effect_lock if name in self.effect_tools else nullcontext():
                 guard()
-                if name == 'prepare_literal':
-                    draft = self.state.prepare_literal(turn['turn_id'], **arguments)
-                    return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target']}
                 app_turn = {key: copy.deepcopy(turn[key]) for key in ('turn_id', 'request_id', 'user_text', 'capture_target')}
                 app_turn.update(session_id=self.state.session_id, subject=self.state.snapshot()['subject'])
+                if name == 'prepare_literal':
+                    span = arguments
+                    if self.literal_boundaries:
+                        options = self.state.snapshot()['turns'][turn['turn_id']].get('literal_boundaries')
+                        identifier = arguments.get('boundary_id')
+                        if not identifier and options is None:
+                            options = self.state.set_literal_boundaries(turn['turn_id'], self.literal_boundaries(turn['user_text'], app_turn))
+                        if identifier:
+                            options = [option for option in options or [] if option['boundary_id'] == identifier]
+                        if not options:
+                            return {'ok': False, 'status': 'blocked', 'error': 'No authorized current-turn literal boundary'}
+                        if len(options) != 1:
+                            return {'ok': False, 'status': 'clarification', 'candidates': options}
+                        span = {key: options[0][key] for key in ('start', 'end')}
+                    draft = self.state.prepare_literal(turn['turn_id'], **span)
+                    return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target']}
                 action = None
                 handler_arguments = copy.deepcopy(arguments)
                 if name in self.effect_tools:

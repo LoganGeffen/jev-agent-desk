@@ -30,7 +30,7 @@ def synthetic_provider(context, tool_specs, execute, **kwargs):
     elif text == 'Read Dog Data':
         result = execute('read_reply', {'name': 'Dog Data'})
     elif text == FOLLOW_UP:
-        draft = execute('prepare_literal', {'start': text.index(MESSAGE_BODY), 'end': len(text)})
+        draft = execute('prepare_literal', {})
         result = execute('send_draft', {'draft_id': draft['draft_id']})
     else:
         result = execute('read_reply', {'name': 'Controller'})
@@ -68,7 +68,9 @@ def run(provider, trace_path=None):
         contexts.append(context)
         return provider(context, *args, **kwargs)
     app = JarvisController(wrapped, application, TOOLS,
-                           authorize=lambda name, arguments, turn: name == 'send_draft' and turn['user_text'] == FOLLOW_UP)
+                           authorize=lambda name, arguments, turn: name == 'send_draft' and turn['user_text'] == FOLLOW_UP,
+                           literal_boundaries=lambda text, turn: [{'boundary_id': 'fixture-message-body',
+                              'start': text.index(MESSAGE_BODY), 'end': len(text)}] if text == FOLLOW_UP else [])
     scenario = ('What is ready?', 'Read Dog Data', FOLLOW_UP,
                 'While it runs what did the controller say?', 'Read Controller again; do not send anything')
     start = time.monotonic()

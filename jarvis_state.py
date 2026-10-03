@@ -114,6 +114,26 @@ class JarvisState:
             self.changed()
             return copy.deepcopy(target)
 
+    def set_literal_boundaries(self, turn_id, options):
+        if not isinstance(options, list):
+            raise ValueError('Literal boundary resolver returned invalid options')
+        with self.lock:
+            self.guard(turn_id)
+            source = self.turns[turn_id]['user_text']
+            boundaries = []
+            for option in options:
+                if not isinstance(option, dict):
+                    raise ValueError('Invalid literal boundary')
+                identifier, start, end = option.get('boundary_id'), option.get('start'), option.get('end')
+                if not isinstance(identifier, str) or not identifier or type(start) is not int or type(end) is not int or not 0 <= start < end <= len(source):
+                    raise ValueError('Invalid application-owned literal boundary')
+                boundaries.append({'boundary_id': identifier, 'start': start, 'end': end, 'text': source[start:end]})
+            if len({item['boundary_id'] for item in boundaries}) != len(boundaries):
+                raise ValueError('Duplicate literal boundary ID')
+            self.turns[turn_id]['literal_boundaries'] = boundaries
+            self.changed()
+            return copy.deepcopy(boundaries)
+
     def prepare_literal(self, turn_id, start, end, target=None, supersedes=None):
         with self.lock:
             self.guard(turn_id)

@@ -272,6 +272,55 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(app.submit('Read', 'one')['status'], 'completed')
         self.assertEqual(next(iter(app.snapshot()['evidence'].values()))['output'], output)
 
+    def test_app_boundary_resolver_is_lazy_and_slices_exact_authorized_body(self):
+        resolver_calls, deliveries = [], []
+        text = 'Tell Dog: café\n x = 1;  '
+        def resolve(source, turn):
+            resolver_calls.append(source)
+            return [{'boundary_id': 'body', 'start': 10, 'end': len(source)}]
+        def application(name, args, turn):
+            if name == 'set_subject':
+                return {'ok': True, 'status': 'completed', 'subject': DOG}
+            deliveries.append(args)
+            return {'ok': True, 'status': 'submitted'}
+        def provider(context, specs, execute, **kwargs):
+            self.assertEqual(resolver_calls, [])
+            execute('set_subject', {'target': DOG})
+            draft = execute('prepare_literal', {})
+            execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        app = JarvisController(provider, application, authorize=lambda *args: True, literal_boundaries=resolve)
+        self.assertEqual(app.submit(text, 'one')['status'], 'completed')
+        self.assertEqual(resolver_calls, [text])
+        self.assertEqual(deliveries[0]['text'], 'café\n x = 1;  ')
+        self.assertEqual(deliveries[0]['target'], DOG)
+
+    def test_multiple_boundaries_require_stored_current_turn_id_selection(self):
+        def provider(context, specs, execute, **kwargs):
+            execute('set_subject', {'target': DOG})
+            candidates = execute('prepare_literal', {})
+            self.assertEqual(candidates['status'], 'clarification')
+            self.assertEqual([option['text'] for option in candidates['candidates']], ['alpha', 'beta'])
+            denied = execute('prepare_literal', {'boundary_id': 'invented'})
+            self.assertEqual(denied['status'], 'blocked')
+            self.assertEqual(app.snapshot()['drafts'], {})
+            draft = execute('prepare_literal', {'boundary_id': candidates['candidates'][1]['boundary_id']})
+            self.assertEqual(app.snapshot()['drafts'][draft['draft_id']]['text'], 'beta')
+            return final()
+        app = JarvisController(provider, lambda name, args, turn: {'ok': True, 'status': 'completed', 'subject': DOG},
+                               literal_boundaries=lambda text, turn: [{'boundary_id': 'first', 'start': 0, 'end': 5},
+                                                                      {'boundary_id': 'second', 'start': 6, 'end': 10}])
+        self.assertEqual(app.submit('alpha beta', 'one')['status'], 'completed')
+
+    def test_boundary_capability_rejects_numeric_offsets_and_invented_supersedes(self):
+        for arguments in ({'start': 0, 'end': 3}, {'supersedes': 'current_turn'}):
+            def provider(context, specs, execute, **kwargs):
+                execute('prepare_literal', arguments)
+                return final()
+            app = JarvisController(provider, lambda *args: None, literal_boundaries=lambda *args: [])
+            self.assertEqual(app.submit('read only', 'one')['status'], 'failed')
+            self.assertEqual(app.snapshot()['drafts'], {})
+
     def test_tool_call_budget_rejects_ninth_call(self):
         calls = []
         def provider(context, specs, execute, **kwargs):
