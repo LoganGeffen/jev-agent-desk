@@ -203,7 +203,9 @@ explanation of a chat's output. Things to know:
   client and epoch. Only a full completion with its boundary marks a reply heard.
   A partial heard prefix is a count of Unicode characters with a hash and is only
   reported when the provider's alignment supports it. A stale or superseded client
-  is rejected. See the open cross-client limit in [VERIFICATION.md](VERIFICATION.md).
+  is rejected. When another device takes over playback, this client stops its own
+  audio for that exact record, without touching newer local playback or the agent.
+  See [VERIFICATION.md](VERIFICATION.md) for how this was exercised.
 - **Quiet jobs.** An explanation queued for another chat runs as a background job
   (two at a time). Its completion is a quiet notice that you pick up by asking.
   Notices do not interrupt speech.
@@ -233,12 +235,18 @@ On startup:
 
 - an attempt that was in flight becomes **uncertain**; it is never replayed
 - an unsent prepared draft or open clarification becomes **needs review**
-- a turn that was still running is cancelled and marked interrupted
+- a turn that was still running is cancelled and marked interrupted, with canonical
+  text such as "Input submitted to X. Its task is not complete; no automatic retry."
 - a queued or running job becomes interrupted; no worker is resumed
 - audio that was generating or playing becomes cancelled; nothing is inferred to
   have been heard, though a stored full-completion stays heard
 - a repeated POST with a request ID the store knows returns the stored outcome
   without a second provider call or terminal input
+- the browser page that sent the request and is still open reconnects, reads the
+  stored turn and speaks that canonical text once, if the request is still its
+  latest and you have not stopped readback. A page you reloaded, a request you
+  superseded by switching to direct mode, and an ordinary cancellation stay quiet.
+  The page never resends the request
 
 Limits: this is store recovery, not process supervision or crash detection. If the
 process dies between external input and the receipt write, the outcome is reported

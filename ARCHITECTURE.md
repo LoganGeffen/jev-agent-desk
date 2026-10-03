@@ -86,7 +86,11 @@ general prompt:
   message, tab names, pane facts and the subject. The target pane must come from
   the choices offered, so a missing or ambiguous pane blocks.
 - `turn_decision_question` (`jev.py`): complete, wait or cancel, plus a correction
-  flag (observed to be unreliable; see VERIFICATION.md).
+  flag. The correction question sees the exact previous accepted user words and
+  judges revision intent separately from grammatical completeness, so an
+  unfinished replacement still counts as a correction and a filler does not. The
+  flag is consumed by the semantic pause below. Measured results are in
+  VERIFICATION.md.
 - the narrative safety check, the confirm and discard permission checks, and a
   continuity classifier over batches of eight older turns (`server.py`).
 
@@ -107,6 +111,16 @@ revision, or a mode switch invalidate older decisions. A server or Jev failure
 holds the text. Explicit Send passes `explicit_send=true`. Direct mode keeps the
 earlier 3 s timer and never calls the decision endpoint.
 
+Authorization of a dispatched voice request is bound to its captured transcript id
+and revision, not to whichever draft was most recent. A consumed authorization
+therefore survives an unrelated later filler or waiting draft. A revision or speech
+onset on the same transcript, or a recognized correction or cancel from that
+client, revokes that client's earlier pending effects at once and retires the
+transcript so it cannot be recommitted; other clients are untouched. A *complete*
+decision that is neither a correction nor a cancel never dispatches or cancels by
+itself. A submitted receipt is immutable: a correction after delivery never
+manufactures a terminal interrupt or a replay.
+
 **Playback ledger.** `/api/jarvis/playback` creates and updates a record for each
 spoken readback: generated, scheduled and played are distinct states, owned by
 `client_id` and an epoch. A completed status needs the full boundary id; a partial
@@ -116,8 +130,13 @@ full completion marks the reply heard (`heard_reply`), and `/api/replies/heard`
 remains the legacy acknowledgment for non-Jarvis readback. Stop & listen cancels
 audio without touching the agent, and results arriving after a cancel cannot
 restart it. The server cancels a displaced client's ledger record but cannot stop
-that client's audio itself; the client must observe the cancellation (open
-limit F1 in VERIFICATION.md).
+that client's audio itself. The client keeps a registry of its own tracked
+playbacks (exact player, session, epoch) and, on seeing its own record cancelled or
+failed in a polled snapshot or in a rejected update, stops that exact player: audio
+sources, socket and scheduling, and only that player's interface state. It does not
+bump the generation, stop newer local playback, call the heard endpoint, restart
+audio or touch the agent. A rejected update triggers a state refresh so revocation
+is confirmed from the server record rather than assumed.
 
 **Jobs and notices.** `observer_job` queues a bounded explanation of an agent's
 evidence through the existing session-question path (two workers). Completion
@@ -141,6 +160,18 @@ recovers a lost POST response by polling `/api/jarvis/state` (10 s grace, 90 s
 deadline) and says the message "was not resent". The input-mode selector in
 `index.html` defaults to Jarvis; direct mode calls `supersedeForDirect()` and uses
 the legacy request path.
+
+Across a server restart the page keeps polling; once the same-port server returns
+with the same `session_id`, a pending request settles from the stored turn. A turn
+that `recover()` cancelled as interrupted carries the canonical text (for example
+"Input submitted to Dog Data. Its task is not complete; no automatic retry."). The
+client speaks that text once, only if the request is still the client's latest and
+its readback generation is unchanged. A page reloaded after the restart has no
+pending request and stays quiet. A request superseded by direct mode, or stopped
+with Stop & listen, stays quiet. An ordinary cancellation without the interrupted
+flag is not spoken. The client never resends the POST, so the provider, the action
+and the terminal input are not repeated; the turn stays shown as cancelled with its
+receipts.
 
 ## Direct path
 

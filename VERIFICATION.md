@@ -10,9 +10,10 @@ This file separates three kinds of evidence and never lets one stand in for anot
 - **Unverified**: nothing was exercised. This includes every physical-device
   property.
 
-Evidence is labelled by build stage (M1 to M5). Each stage was verified on its own
-tree; no single full-suite run covers the final tree. A final independent review
-that combines the stages on an immutable candidate is a later step that is not
+Evidence is labelled by build stage (M1 to M5) and by the tree it ran on. Each stage
+was verified on its own tree; no single full-suite run covers this branch's tree.
+The product is **not accepted**: the final independent review of a combined,
+immutable candidate and its combined full suite are later steps that are not
 recorded here.
 
 Run artifacts live in a private, uncommitted run directory
@@ -25,35 +26,98 @@ credential sources are recorded by path and configured variable names only.
 These are open. None is described as passing anywhere in this repository.
 
 1. **Contextual send is not proven end to end against real providers.** The
-   unchanged natural request "Ask it to explain those numbers with an example"
-   was denied by Jev 1.13.0 before the local repair (permission deny, message
+   unchanged natural request "Ask it to explain those numbers with an example" was
+   denied by Jev 1.13.0 before the authorization repair (permission deny, message
    start 0 instead of 10; `M5-PROVIDER-FINDINGS.json`, `SOL-M5-PROVIDERS.json`).
    After the repair, the focused authorization question allowed it with the exact
-   span (start 10, end 47; `SOL-M5-AUTH-RECHECK.json`). That recheck's own
-   end-to-end case still failed: Haiku resolved "Read Dog Data" to the visible
-   Notes pane, so the subject became Notes rather than Dog Data, and all three
-   delivery cases (contextual, explicit literal, recipient correction) were
-   blocked because the fixture's pane number was 0 while the server uses
-   `len(panes)+1`, so every pane choice returned none. The fixture was corrected
-   afterward in probe commit `fbe04e2` and **not rerun**. No delivery occurred.
-2. **M3 F1, cross-client audio revocation (`OPUS-M3.json`).** When client B takes
-   over a playback, client A's already-playing audio keeps playing; A learns of the
-   revocation only from a rejected ledger post. No heard state is fabricated (only
-   B's full completion acknowledges the reply), but two devices can speak at once.
-   A fix is owned by another run and is not recorded as accepted.
-3. **M3 F2, filler after dispatch (`OPUS-M3.json`).** A later turn-decision from
-   the same client, such as a filler utterance, invalidates an already dispatched
-   voice request before its effect. Nothing is misdelivered or duplicated and the
-   screen shows "Superseded or cancelled", but nothing is spoken and the request
-   is lost. The intended rule is awaiting adjudication.
-4. **Jev `correction` metadata.** In the measured calls the correction flag was
-   false for "Actually ..." utterances. No functional impact was demonstrated, and
-   the complete/wait decision itself was correct. It is recorded, not fixed.
-5. **Speech compatibility is partial.** One synthetic phrase round-tripped
+   span (start 10, end 47; `SOL-M5-AUTH-RECHECK.json`). The named read now works
+   (`SOL-M5-NAMED-READ.json`: Haiku listed sessions and read Dog Data, and the
+   subject became Dog Data independent of the visible Notes pane). The natural send
+   and the explicit literal send were still blocked in that run: Jev allowed them
+   with the correct target and the exact source span, but **every pane choice was
+   "none"**, so nothing was delivered. This is real pane judgment, not only the
+   earlier fixture numbering. A pane-question repair (concrete default pane id in
+   the question; `SOL-M5-PANE.json`, commit `97c5c75`, 28 tools tests passing) was
+   verified only with synthetic assertions and is **not in this branch's tree**.
+   The real-provider recheck of the three blocked positive cases and the missing-pane
+   negative is pending and owned by the provider run. Until it passes, no
+   real-provider contextual or literal send is claimed.
+2. **Speech compatibility is partial.** One synthetic phrase round-tripped
    through the real relay, but recognition changed capitalization, so the exact
    transcription check is false (see Measured: speech).
-6. **Final-tree full suite.** See Tests. The current tree has no recorded full
-   `python check.py` run; that combined gate is a later step.
+3. **Final independent review and combined full suite.** See Tests. This branch's
+   tree has no recorded full `python check.py` run, and no independent review of the
+   combined candidate is recorded.
+
+### Resolved since the earlier version of this file
+
+Each item below was a recorded open finding. The fix, the original reproduction
+rechecked by someone other than the author, and, where relevant, a real-provider
+case are listed separately.
+
+- **M3 F1, cross-client audio revocation (`OPUS-M3.json`).** Client A kept playing
+  after client B took over. Fix: commit `71cd555` in this branch (run
+  `SONNET-M3-REVOKE.json`, tested commit `abcd6dc`, tree `975a9e5e`). Thirteen
+  playback-flow tests passed, four new; the two revocation tests fail on the base
+  `jarvis.js`/`voice.js` and pass with the fix. The **unchanged original Opus
+  two-client probe was rerun** against that tree and, independently, by a non-author
+  on the integrated tree (`M3-GATE.json`, `m3-fixed-original-probes.log`): A's player
+  and sources were stopped and its socket closed, the stop button hid, zero new audio
+  was scheduled after takeover, zero heard posts were made, and only B's full
+  completion marked the reply heard. Controlled WebSocket and AudioContext; no
+  physical audio.
+- **M3 F2, filler after dispatch (`OPUS-M3.json`).** A later filler invalidated an
+  already dispatched request. Fix: commit `73e8d59` in this branch (`SOL-M3-F2.json`,
+  original commit `1e4421b`, tested tree `3b3c6fc2`). 27 turns and API tests passed.
+  The unchanged original probe now shows the original request completed, exactly one
+  terminal payload and the filler draft retained, and a non-author reran it
+  (`M3-GATE.json`). Same-source invalidation, correction revocation and other-client
+  isolation have their own negative tests.
+- **F2 real-provider case (`SOL-M3-F2-PROVIDER.json`, tree `effae3a9`).** Three
+  independent cases through the actual turn-decision path with the actual Jev
+  (`jev-1.13.0`), one call each, 286, 279 and 353 ms. All three passed:
+  "Actually, tell Controller to pause the queue." was complete with correction yes;
+  "Actually, tell Controller to" was wait with correction yes; "Hmm." was wait with
+  correction no. The two earlier real calls had returned correction no for both
+  "Actually" utterances (`SOL-M5-PROVIDERS-initial.json`, preserved). The margin on
+  the complete correction is modest (probability 0.74, confidence 0.48). Only the
+  current decision used the real Jev; the controller, deliveries and terminal were
+  not involved. Three utterances are not a general accuracy claim.
+- **Jev `correction` flag.** Previously recorded as metadata only. It is no longer
+  metadata: after the F2 fix a recognized correction or cancel revokes that client's
+  earlier pending effects. Treat it as a model judgment with the measured margin
+  above, not as proof.
+
+## Restart announcement to the current client (M5)
+
+Hypothesis: `recover()` cancels a running turn as interrupted with canonical
+submitted or uncertain text, but the client only spoke failed receipts, so the page
+that sent the request stayed silent after a server restart. Reproduced first with the
+new test on unmodified `jarvis.js`: the two current-client cases timed out waiting
+for any speech. Fix: commit `d9b381b` (tree `a941b9ef`), a narrow `jarvis.js`
+change plus `test_jarvis_restart_browser.py`.
+
+`test_jarvis_restart_browser.py` (6 tests) drives an actual Chromium page at a
+loopback `server.make_server`, kills that server's connections, reopens the real
+SQLite store in a new `Playground` and serves it on the **same port**, with a
+controlled synthetic provider and disposable tmux fixtures. `VoiceControls.speak` is
+captured, so audibility is judged by what the client asked to speak. It exercised:
+
+| Case | Outcome |
+| --- | --- |
+| current pending client, input already submitted | speaks the stored canonical "Input submitted to Dog Data. Its task is not complete; no automatic retry." once; terminal input count 1; the new provider is never called; page sent exactly one turn POST |
+| current pending client, nothing sent yet | speaks the canonical interruption text once; zero terminal input; no action recorded |
+| page reloaded before the restart | quiet; no pending request; receipts still shown as superseded or cancelled |
+| request superseded by direct mode during the outage | quiet; no redispatch |
+| Stop & listen during the outage | quiet; agent unchanged; no redispatch |
+| explicit cancellation of the current request, no restart | quiet |
+
+Deliberately breaking the check that the request is still current makes both
+non-current cases fail. The interrupted-flag restriction is a narrowing safeguard:
+through the real server an ordinary cancellation never carries result text, so the
+test cannot separate it. Nothing was measured on a physical device. The uncertain
+case (a crash between input and receipt) is covered at the store and HTTP level by
+the M4 evidence below, not repeated here in the browser.
 
 ## Measured
 
@@ -83,7 +147,7 @@ subscription calls; Jev actual model `jev-1.13.0`). Overall `passed: false`, sta
 | unfinished pause waits | passed |
 | harmless narrative (`narrative_check_ms` 302) | passed |
 | contextual send | **failed** (deny, confidence 0.39) |
-| correction flag | **failed** (metadata only) |
+| correction flag | **failed** at this stage (both "Actually" utterances returned correction no); superseded by the F2 real-provider pass in Resolved above |
 
 Jev calls took 271 to 329 ms; Haiku turns 2.8 to 8.8 s. The harness first ran with a
 null handoff that broke the Jev question before the HTTP send cases; the handoff
@@ -138,8 +202,10 @@ Gate results below were recorded by the stage that produced them.
 | --- | --- | --- |
 | M1 core, bridge | controller, restricted Haiku bridge, exact literal boundaries, single delivery attempt per turn | `M1-GATE.json` passed at `aaf5a72`; 226 Python, 48 Node, intercepted Chromium |
 | M2 backend, browser | validated tools, receipt-derived speech, original replies, direct-mode switch, actual server and 390x844 Chromium to disposable tmux | `M2-GATE.json` passed at `8308edb`; 244 Python, 81 Node, Chromium |
-| M3 voice, turns, playback | semantic pause, decision fencing, owner/epoch playback ledger, Unicode partial prefix, actual-page probes | combined run at `0565a48`: 262 Python, 149 Node, Chromium. Independent review `OPUS-M3.json`: **not accepted** (F1, F2 above; F3 was a fixture race, fixed in `0565a48`) |
+| M3 voice, turns, playback | semantic pause, decision fencing, owner/epoch playback ledger, Unicode partial prefix, actual-page probes | combined run at `0565a48`: 262 Python, 149 Node, Chromium. Independent review `OPUS-M3.json`: **not accepted** at that commit (F1 and F2, both since fixed and rechecked, see Resolved above; F3 was a fixture race, fixed in `0565a48`) |
 | M4 durability | SQLite ledger, restart recovery, jobs, continuity, byte bounds | `SOL-M4.json`; see Tests |
+| M5 F1/F2 fixes | cross-client audio revocation; transcript-bound authorization and filler handling | `SONNET-M3-REVOKE.json`, `SOL-M3-F2.json`, nonauthor original-probe rerun in `M3-GATE.json`; see Resolved above |
+| M5 restart announcement | actual Chromium, same-port HTTP restart, real SQLite, disposable tmux, synthetic provider | `SONNET-M5.json` run 8b755dea, commit `d9b381b`; 6 tests, see above |
 
 Specific M4 behaviors exercised with real subprocess exits, the real SQLite store,
 loopback HTTP and disposable tmux (`SOL-M4.json`): exit after the write-ahead record
@@ -158,20 +224,29 @@ Counts are what each stage recorded for its own tree. Nothing here repeats them.
 
 - M4 full `python check.py`: 302 Python, 149 Node, Chromium (`sol-m4-full-check.log`)
   on tree `814885a2`. The M4 final tree `52f8d1f` was verified only by 45 focused
-  recovery/state/controller/store tests and 56 with the tools tests. A full-suite
-  run on that tree, and on this branch's tree, is not recorded.
-- The last full tested tree in the run state is `394c0fa2`, not this branch.
-- This documentation commit changes no code and ran no tests. A final combined
-  `python check.py` is a later step. Run it with the dependencies in
-  `requirements-dev.txt`.
+  recovery/state/controller/store tests and 56 with the tools tests.
+- F1 fix (`71cd555`, tested tree `975a9e5e`): 13 playback-flow tests; F2 fix
+  (`73e8d59`, tested tree `3b3c6fc2`): 27 turns and API tests.
+- Restart announcement (`d9b381b`, tree `a941b9ef`): the 6 new browser tests pass;
+  neighbouring suites also passed, 150 Node tests and 19 Python tests. The new tests were checked for
+  sensitivity: they fail on the unmodified `jarvis.js`, and deleting the
+  "request is still current" condition fails both non-current cases.
+- The last full tested tree recorded in the run state is `394c0fa2`. **No full
+  `python check.py` run is recorded for this branch's tree.** The integrated suite
+  and final independent review are pending, run by the lead, and not reported here.
+- This documentation commit changes no code. It was checked only with
+  `git diff --check`. Run the suite with the dependencies in `requirements-dev.txt`.
 
 ## Isolated checkout smoke
 
 The README's isolated-run commands were run against a disposable tmux server with
-no credentials. Evidence is in `SONNET-M5.json`: loopback bind, an explicit port and
-run directory, the Jarvis state endpoint, creation of the SQLite file, and clean
-shutdown. This is a startup smoke test, not feature verification, and it used no
-existing conversation.
+no credentials by the earlier documentation run (`cc077555`, at `5ba0f91`). Evidence
+is in `SONNET-M5.json`: loopback bind, an explicit port and run directory, the
+Jarvis state endpoint, creation of the SQLite file, and clean shutdown. That run's
+launcher receipt was invalid because of a future `not_run` check; this file
+preserves the smoke evidence and that receipt does not count as acceptance. The smoke
+was **not rerun** after later commits. It is a startup smoke test, not feature
+verification, and it used no existing conversation.
 
 ## Unverified
 
@@ -182,7 +257,10 @@ existing conversation.
 - Non-ASCII provider audio alignment, long real conversations, and accuracy of the
   continuity classifier on real history.
 - Behavior with existing real Codex and Claude conversations, which were not used.
-- Any service restart or cutover. None was performed.
+- Any service restart or cutover. None was performed. The restart test restarts a
+  loopback test server only.
+- Whether a real Jev or Haiku conversation produces a deliverable pane choice (item 1
+  of Not accepted yet).
 
 ## Artifacts
 
@@ -193,5 +271,8 @@ All names are in the private run directory unless noted.
 - Stages: `M1-GATE.json`, `M2-GATE.json`, `OPUS-M3.json`,
   `M3-REVIEW-INTEGRATION-NOTE.json`, `SOL-M4.json`
 - Live Haiku: `haiku-probe-fixes.json`, `core-scenario-live.json`
-- This documentation: `SONNET-M5.json`
-- Repository: `README.md`, `ARCHITECTURE.md`
+- Fixes: `SONNET-M3-REVOKE.json`, `SOL-M3-F2.json`, `SOL-M3-F2-PROVIDER.json`,
+  `M3-GATE.json`, `SOL-M5-NAMED-READ.json`, `SOL-M5-PANE.json`
+- Restart announcement and this refresh: `SONNET-M5-FINAL.json`; earlier
+  documentation run: `SONNET-M5.json`
+- Repository: `README.md`, `ARCHITECTURE.md`, `test_jarvis_restart_browser.py`
