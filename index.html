@@ -489,8 +489,12 @@
     const openedAt = Date.now();
     let inputMode = 'jarvis';
     const voice = new VoiceControls(submitInput, activeTarget);
-    const jarvis = new JarvisClient({fetch: (...args) => fetch(...args), newId: () => crypto.randomUUID(), retain: record => retainSpeech(record), onChange: renderJarvis});
+    const jarvis = new JarvisClient({fetch: (...args) => fetch(...args), newId: () => crypto.randomUUID(), clientId: crypto.randomUUID(),
+      retain: record => retainSpeech(record), onChange: renderJarvis});
     jarvis.voice = voice;
+    voice.semantic = jarvis.semantic;
+    voice.onDiscard = draft => retainSpeech({id: crypto.randomUUID(), text: draft.text, source: 'voice', recipient: 'Jarvis', target: draft.target,
+      status: 'Jarvis judged this cancelled before sending. Nothing was sent. Your words are saved.', recoverable: true});
     voice.onChange = renderTurnStatus;
     function renderTurnStatus(playbackText) {
       const draft = voice.draft;
@@ -1082,8 +1086,8 @@
       return plain[event.key] || null;
     }
 
-    async function submitInput(text, captureTarget = null, source = 'voice') {
-      if (inputMode === 'jarvis') return jarvis.submit(text, source);
+    async function submitInput(text, captureTarget = null, source = 'voice', meta = {}) {
+      if (inputMode === 'jarvis') return jarvis.submit(text, source, meta);
       jarvis.supersedeForDirect();
       return submitRequest(text, captureTarget, source);
     }
@@ -1205,6 +1209,7 @@
     }
     $('input-mode').onchange = event => {
       inputMode = event.target.value;
+      voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
       voice.selectTarget();
       renderJarvis();
       if (currentState) render(currentState);

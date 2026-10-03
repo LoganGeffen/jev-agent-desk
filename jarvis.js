@@ -1,8 +1,10 @@
 const JARVIS_TARGET = Object.freeze({tab: 'jarvis', pane: 'jarvis', identity: 'jarvis'});
 
 class JarvisClient {
-  constructor({fetch, newId, retain, onChange = () => {}, now = Date.now, deadlineMs = 90000, lostGraceMs = 10000}) {
+  constructor({fetch, newId, retain, onChange = () => {}, now = Date.now, deadlineMs = 90000, lostGraceMs = 10000, clientId = null}) {
     this.fetch = fetch;
+    this.clientId = clientId || 'client-' + Math.random().toString(36).slice(2) + now();
+    this.semantic = {decide: (payload, signal) => this.decideTurn(payload, signal), invalidate: payload => this.invalidateTurn(payload)};
     this.newId = newId;
     this.retain = retain;
     this.onChange = onChange;
@@ -74,7 +76,34 @@ class JarvisClient {
   isCurrent(entry) {
     return this.latestRequestId === entry.id && this.voice?.generation === entry.generation;
   }
-  async submit(text, source = 'voice') {
+  turnDecisionRequest(payload) {
+    return {session_id: this.sessionId, client_id: this.clientId, ...payload, subject: this.snapshot?.subject ?? null};
+  }
+  async decideTurn(payload, signal) {
+    if (!this.sessionId) throw new Error('Jarvis is unavailable');
+    const sent = this.turnDecisionRequest(payload);
+    const response = await this.fetch('/api/jarvis/turn-decision', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      signal, body: JSON.stringify(sent)});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Turn decision failed');
+    const subject = canonical(sent.subject);
+    const current = result.session_id === this.sessionId && sent.session_id === this.sessionId
+      && result.client_id === sent.client_id && result.transcript_id === sent.transcript_id
+      && result.transcript_revision === sent.transcript_revision
+      && canonical(result.subject ?? null) === subject && canonical(this.snapshot?.subject ?? null) === subject;
+    if (!current) return {decision: 'wait', stale: true};
+    const decision = result.decision;
+    if (decision === 'complete' && typeof result.decision_id === 'string' && result.decision_id) {
+      return {decision, decision_id: result.decision_id, correction: result.correction === true};
+    }
+    return {decision: decision === 'cancel' ? 'cancel' : 'wait', reason: result.reason, correction: result.correction === true};
+  }
+  invalidateTurn(payload) {
+    if (!this.sessionId) return;
+    this.fetch('/api/jarvis/turn-decision', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({...this.turnDecisionRequest(payload), invalidate: true})}).catch(() => {});
+  }
+  async submit(text, source = 'voice', meta = {}) {
     if (!this.sessionId) await this.refresh().catch(() => {});
     const id = this.newId();
     if (!this.sessionId) {
@@ -83,7 +112,7 @@ class JarvisClient {
       this.onChange('Jarvis is unavailable. Nothing was sent. Your words are saved.');
       return null;
     }
-    const entry = {id, text, source, sessionId: this.sessionId, generation: this.voice.stopReadback('new request'),
+    const entry = {id, text, source, meta, sessionId: this.sessionId, generation: this.voice.stopReadback('new request'),
       streamed: '', player: null, settled: false, lost: false};
     entry.done = new Promise(resolve => { entry.resolve = resolve; });
     this.pending.set(id, entry);
@@ -100,7 +129,9 @@ class JarvisClient {
       const response = await this.fetch('/api/jarvis/turn', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, signal: entry.controller.signal,
         body: JSON.stringify({session_id: entry.sessionId, request_id: entry.id, text: entry.text,
-          source: entry.source, stream: !!this.voice.capture?.ready})
+          source: entry.source, stream: !!this.voice.capture?.ready, client_id: this.clientId,
+          ...(entry.meta.transcript_id ? {transcript_id: entry.meta.transcript_id, transcript_revision: entry.meta.transcript_revision} : {}),
+          ...(entry.meta.decision_id ? {decision_id: entry.meta.decision_id} : {explicit_send: entry.meta.explicit_send !== false})})
       });
       const receipt = await readJSONStream(response, delta => this.delta(entry, delta));
       if (!response.ok && !receipt.turn_id) {
@@ -139,18 +170,21 @@ class JarvisClient {
     this.show(receipt, entry.text, entry.source);
     const current = this.isCurrent(entry);
     const readback = readbackOf(receipt);
+    const track = (player, {style}) => this.trackPlayback(player, {generation: entry.generation, turnId: receipt.turn_id, style});
     if (receipt.status === 'completed' && readback) {
       entry.player?.stop();
-      if (current) this.voice.speakReply(readback.original, entry.generation, false, this.heardCallback(readback.reply_ref));
+      if (current) this.voice.speakReply(readback.original, entry.generation, false, this.heardCallback(readback.reply_ref), track);
     } else if (receipt.status === 'completed' && receipt.text) {
       if (!current) return entry.player?.stop();
       if (entry.player) {
+        const exact = receipt.text.startsWith(entry.streamed);
         const rest = entry.streamed.includes(receipt.text) ? ''
-          : receipt.text.startsWith(entry.streamed) ? receipt.text.slice(entry.streamed.length) : ' ' + receipt.text;
+          : exact ? receipt.text.slice(entry.streamed.length) : ' ' + receipt.text;
         this.voice.presentReply(receipt.text);
         if (rest) entry.player.write(rest);
         entry.player.end();
-      } else this.voice.speakReply(receipt.text, entry.generation, true);
+        if (exact) track(entry.player, {style: 'original'});
+      } else this.voice.speakReply(receipt.text, entry.generation, true, null, track);
     } else {
       entry.player?.stop();
       if (receipt.status === 'failed' && current) {
@@ -185,6 +219,39 @@ class JarvisClient {
         text: readback.original, heard_reply: readback.reply_ref}}
         : receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text}} : {})});
   }
+  trackPlayback(player, {generation, turnId, style}) {
+    const sessionId = this.sessionId;
+    if (!sessionId || !turnId || typeof player?.track !== 'function') return;
+    const ledger = {id: null, boundary: null, dead: false, sent: null, queue: Promise.resolve()};
+    const post = async body => {
+      const response = await this.fetch('/api/jarvis/playback', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({session_id: sessionId, ...body})});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Playback rejected');
+      return result;
+    };
+    const report = async progress => {
+      if (ledger.dead || sessionId !== this.sessionId) return;
+      const terminal = progress.status !== 'playing' && progress.status !== 'generated';
+      if (progress.status === 'generated' || ledger.sent === progress.status) return;
+      try {
+        if (!ledger.id) {
+          const created = await post({op: 'create', turn_id: turnId, client_id: this.clientId, epoch: generation, style});
+          if (created.turn_id !== turnId || created.client_id !== this.clientId || created.epoch !== generation
+            || typeof created.playback_id !== 'string') throw new Error('Playback record does not match');
+          ledger.id = created.playback_id;
+          ledger.boundary = created.full_boundary_id;
+        }
+        const complete = progress.status === 'completed' && typeof ledger.boundary === 'string' && ledger.boundary;
+        await post({op: 'update', playback_id: ledger.id, client_id: this.clientId, epoch: generation,
+          status: progress.status === 'completed' && !complete ? 'failed' : progress.status,
+          completed_phrases: complete ? [ledger.boundary] : []});
+        ledger.sent = progress.status;
+        if (terminal) ledger.dead = true;
+      } catch { ledger.dead = true; }
+    };
+    player.track(progress => { ledger.queue = ledger.queue.then(() => report(progress)); });
+  }
   heardCallback(reference) {
     if (!reference) return null;
     return () => this.fetch('/api/replies/heard', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -218,4 +285,10 @@ function actionLine(action) {
     blocked: `Nothing was sent to ${who}.`,
     cancelled: `Delivery to ${who} was cancelled.`,
   }[action.status] || `Message to ${who}: ${action.status}`;
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+  return JSON.stringify(value ?? null);
 }

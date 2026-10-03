@@ -9,6 +9,14 @@ class VoiceControls {
     this.recognitionWaitMs = 2500;
     this.lateWordsTarget = undefined;
     this.graceMs = 3000;
+    this.semantic = null;
+    this.onDiscard = null;
+    this.silenceMs = 700;
+    this.recheckMs = 4000;
+    this.maxRechecks = 2;
+    this.evalSeq = 0;
+    this.evaluating = null;
+    this.newId = () => globalThis.crypto?.randomUUID?.() ?? 'draft-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     this.capture = null;
     this.generation = 0;
     this.pending = null;
@@ -42,7 +50,10 @@ class VoiceControls {
     document.getElementById('speech-draft-status').textContent = !draft ? '' : draft.held && changed
       ? 'Session changed. Review this draft, then press Send.' : draft.held
       ? draft.unfinalized ? 'Review the last recognized words before sending.' : draft.recoveryReason || ''
-      : draft.partial ? 'Listening…' : draft.awaitingCommit ? 'Waiting for recognized words…' : 'Pause to send · keep talking to continue';
+      : draft.partial ? 'Listening…' : draft.awaitingCommit ? 'Waiting for recognized words…'
+      : draft.checking ? 'Checking whether you are finished…'
+      : draft.waiting ? 'Waiting for you · keep talking or press Send'
+      : this.semantic ? 'Keep talking, or pause and Jarvis decides when you are done' : 'Pause to send · keep talking to continue';
     try {
       sessionStorage.setItem('jev-pane-drafts', JSON.stringify([...this.drafts]));
       if (draft) sessionStorage.setItem('jev-speech-draft', JSON.stringify(draft));
@@ -66,9 +77,31 @@ class VoiceControls {
     if (this.draft && JSON.stringify(this.draft.target) !== JSON.stringify(target)) this.holdDraft();
     this.renderDraft();
   }
+  cancelEvaluation() {
+    this.evalSeq++;
+    this.evaluating?.abort();
+    this.evaluating = null;
+    if (this.draft) { this.draft.checking = false; this.draft.waiting = false; }
+  }
+  identify(draft) {
+    draft.transcriptId ||= this.newId();
+    draft.revision ??= 0;
+    return draft;
+  }
+  touchTranscript() {
+    this.cancelEvaluation();
+    const draft = this.draft && this.identify(this.draft);
+    if (!draft) return;
+    draft.revision++;
+    if (draft.outstanding) {
+      draft.outstanding = false;
+      this.semantic?.invalidate({transcript_id: draft.transcriptId, transcript_revision: draft.revision, text: draft.text});
+    }
+  }
   speechOnset(recognized = false) {
     clearTimeout(this.draftTimer);
     clearTimeout(this.recognitionTimer);
+    this.touchTranscript();
     this.lastSpeechAt = Date.now();
     if (!this.draft && this.onsetTarget === undefined) this.onsetTarget = this.target();
     if (this.draft) {
@@ -89,6 +122,7 @@ class VoiceControls {
   holdDraft() {
     clearTimeout(this.draftTimer);
     clearTimeout(this.recognitionTimer);
+    this.cancelEvaluation();
     if (this.draft) this.draft.held = true;
     this.renderDraft();
   }
@@ -108,9 +142,10 @@ class VoiceControls {
     this.draft.partial = '';
     this.draft.awaitingCommit = false;
   }
-  async finishDraft(manual = false) {
+  async finishDraft(manual = false, decision = null) {
     const draft = this.draft;
     clearTimeout(this.draftTimer);
+    this.cancelEvaluation();
     if (!draft?.text || draft.partial || draft.awaitingCommit) {
       this.status('Waiting for the final recognized words');
       return;
@@ -127,12 +162,52 @@ class VoiceControls {
     this.draft = null;
     this.onsetTarget = undefined;
     this.renderDraft();
-    await this.submit(draft.text, draft.target, draft.source || 'voice');
+    const transcript = {transcript_id: this.identify(draft).transcriptId, transcript_revision: draft.revision};
+    await this.submit(draft.text, draft.target, draft.source || 'voice',
+      decision ? {...transcript, decision_id: decision.decision_id} : {...transcript, explicit_send: manual});
+  }
+  async evaluate(attempt = 0) {
+    const draft = this.draft;
+    if (!this.semantic || !draft?.text || draft.partial || draft.awaitingCommit || draft.held) return;
+    if (JSON.stringify(draft.target) !== JSON.stringify(this.target())) return this.holdDraft();
+    this.evaluating?.abort();
+    const seq = ++this.evalSeq, text = draft.text, revision = ++this.identify(draft).revision;
+    const controller = this.evaluating = new AbortController();
+    draft.outstanding = true;
+    draft.checking = true;
+    draft.waiting = false;
+    this.renderDraft();
+    let result = null;
+    try {
+      result = await this.semantic.decide({transcript_id: draft.transcriptId, transcript_revision: revision, text}, controller.signal);
+    } catch { result = null; }
+    if (seq !== this.evalSeq || this.draft !== draft || draft.revision !== revision || draft.text !== text) return;
+    this.evaluating = null;
+    draft.checking = false;
+    if (result?.decision === 'complete' && typeof result.decision_id === 'string' && result.decision_id) {
+      return this.finishDraft(false, result);
+    }
+    if (result?.decision === 'cancel') return this.discardDraft(draft);
+    draft.waiting = true;
+    this.renderDraft();
+    if (attempt < this.maxRechecks) {
+      this.draftTimer = setTimeout(() => this.evaluate(attempt + 1), this.recheckMs * 2 ** attempt);
+    }
+  }
+  discardDraft(draft) {
+    clearTimeout(this.draftTimer);
+    this.cancelEvaluation();
+    this.draft = null;
+    this.onsetTarget = undefined;
+    this.renderDraft();
+    this.status('Discarded unsent words');
+    this.onDiscard?.(draft);
   }
   ensureDraft() {
     if (!this.draft) {
       const late = this.lateWordsTarget !== undefined;
       this.draft = {text: '', partial: '', target: late ? this.lateWordsTarget : this.onsetTarget ?? this.target(), held: late,
+        transcriptId: this.newId(), revision: 0, outstanding: false,
         recoveryReason: late ? 'These words may have arrived late. Review before sending.' : ''};
       this.lateWordsTarget = undefined;
     }
@@ -140,6 +215,7 @@ class VoiceControls {
   committed(text) {
     clearTimeout(this.recognitionTimer);
     this.ensureDraft();
+    this.touchTranscript();
     this.draft.text = [this.draft.text, text].filter(Boolean).join(' ');
     this.draft.partial = '';
     this.draft.awaitingCommit = false;
@@ -147,7 +223,9 @@ class VoiceControls {
     clearTimeout(this.draftTimer);
     if (JSON.stringify(this.draft.target) !== JSON.stringify(this.target())) this.draft.held = true;
     this.renderDraft();
-    if (!this.draft.held) this.draftTimer = setTimeout(() => this.finishDraft(), this.graceMs);
+    if (this.draft.held) return;
+    this.draftTimer = this.semantic ? setTimeout(() => this.evaluate(), this.silenceMs)
+      : setTimeout(() => this.finishDraft(), this.graceMs);
   }
   status(text) { document.getElementById('voice-status').textContent = text; this.onChange?.(); }
   toggleState(active) {
@@ -246,7 +324,7 @@ class VoiceControls {
       this.onChange?.();
     }
   }
-  beginReadback(generation, onHeard = null) {
+  beginReadback(generation, onHeard = null, track = null, style = 'original') {
     const capture = this.capture;
     if (!capture?.ready || this.draft || generation !== this.generation) return null;
     const profile = document.getElementById('voice-profile').value || 'current';
@@ -272,6 +350,7 @@ class VoiceControls {
     this.playing = player;
     document.getElementById('stop-readback').hidden = false;
     this.playbackStatus('Preparing audio…');
+    try { track?.(player, {style}); } catch {}
     return player;
   }
   presentReply(text) {
@@ -281,7 +360,7 @@ class VoiceControls {
     document.getElementById('reply-presentation').hidden = false;
     document.getElementById('replay-reply').hidden = false;
   }
-  async speakReply(text, generation, spokenReady = false, onHeard = null) {
+  async speakReply(text, generation, spokenReady = false, onHeard = null, track = null) {
     if (generation !== this.generation) return;
     this.presentReply(text);
     this.replyHeard = onHeard;
@@ -292,7 +371,7 @@ class VoiceControls {
     }
     const mode = spokenReady ? 'original' : document.getElementById('speech-style').value || 'spoken';
     if (mode === 'original') {
-      const player = this.beginReadback(generation, onHeard);
+      const player = this.beginReadback(generation, onHeard, track, 'original');
       player?.write(text); player?.end();
       return;
     }
@@ -311,7 +390,7 @@ class VoiceControls {
         });
         result = await readJSONStream(response, delta => {
           if (generation !== this.generation) return;
-          player ||= this.beginReadback(generation, onHeard);
+          player ||= this.beginReadback(generation, onHeard, track, 'spoken');
           player?.write(delta);
         });
         if (!response.ok) throw new Error(result.error);
@@ -320,7 +399,7 @@ class VoiceControls {
       this.lastRendition = {...result, original: text, requestedMode: mode};
       document.getElementById('reply-spoken').textContent = result.mode === 'original'
         ? 'Reading original wording.' : result.text;
-      if (!player) { player = this.beginReadback(generation, onHeard); player?.write(result.text); }
+      if (!player) { player = this.beginReadback(generation, onHeard, track, 'spoken'); player?.write(result.text); }
       player?.end();
     } catch (error) {
       if (error.name !== 'AbortError' && generation === this.generation) {
@@ -384,7 +463,7 @@ class VoiceControls {
         if (message.message_type === 'session_started') {
           clearTimeout(capture.timer);
           capture.ready = true;
-          this.status('Listening · pause about 4 seconds to send');
+          this.status(this.semantic ? 'Listening · Jarvis decides when you are done' : 'Listening · pause about 4 seconds to send');
           this.log('mic_started');
         } else if (message.message_type === 'partial_transcript') {
           if (!this.recognitionPaused() && message.text?.trim()) {

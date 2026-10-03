@@ -47,6 +47,7 @@ def run():
     jarvis_state = {'session_id': 's1', 'revision': 1, 'subject': None, 'turns': {}, 'requests': {}, 'drafts': {},
                     'actions': {}, 'jobs': {}, 'playbacks': {}, 'clarifications': {}}
     jarvis_posts, jarvis_cancels = [], []
+    decisions, playbacks = [], []
     requests, raw, errors, heard = [], [], [], []
     recommendation = {'id': 'attention-b', 'tab': '@b', 'pane': '%b',
                       'identity': 'b:original', 'label': 'B · pane 1'}
@@ -64,6 +65,19 @@ def run():
         if path == '/api/jarvis/cancel':
             jarvis_cancels.append(body)
             return r.fulfill(json={})
+        if path == '/api/jarvis/turn-decision':
+            decisions.append(body)
+            if body.get('invalidate'):
+                return r.fulfill(json={'decision': 'wait'})
+            echo = {key: body[key] for key in ('session_id', 'client_id', 'transcript_id', 'transcript_revision', 'subject')}
+            return r.fulfill(json={**echo, 'decision': 'complete', 'decision_id': 'dec-browser', 'correction': False})
+        if path == '/api/jarvis/playback':
+            playbacks.append(body)
+            if body['op'] == 'create':
+                number = len([item for item in playbacks if item['op'] == 'create'])
+                return r.fulfill(json={'playback_id': 'pb-%d' % number, 'turn_id': body['turn_id'], 'client_id': body['client_id'],
+                                       'epoch': body['epoch'], 'full_boundary_id': 'fb-%d' % number, 'status': 'generated'})
+            return r.fulfill(json={'playback_id': body['playback_id'], 'status': body['status']})
         if path == '/api/request':
             requests.append(body)
             commands = {"What's next?": 'recommend_next', 'Read it': 'read_recommended',
@@ -363,6 +377,47 @@ def run():
         assert len(jarvis_cancels) == 0 and len(requests) == direct_requests
         assert page.evaluate('currentState.selected') == '@b'
         assert 'Subject: B · pane 1' in page.locator('#jarvis-status').inner_text()
+        page.evaluate("voice.committed('Ask Dog Data about it.')")
+        page.wait_for_function('turnPosts.length === 5')
+        assert [item['text'] for item in decisions] == ['Ask Dog Data about it.']
+        assert decisions[0]['subject'] == SUBJECT_B and decisions[0]['client_id'] == page.evaluate('jarvis.clientId')
+        automatic = page.evaluate('turnPosts[4]')
+        assert automatic['text'] == 'Ask Dog Data about it.' and automatic['decision_id'] == 'dec-browser'
+        assert 'explicit_send' not in automatic and automatic['transcript_id'] == decisions[0]['transcript_id']
+        assert automatic['transcript_revision'] == decisions[0]['transcript_revision'] and automatic['source'] == 'voice'
+        page.evaluate('(args) => gates[args[0]](args[1])', [automatic['request_id'], finished('Done.', automatic['request_id'])])
+        page.wait_for_function('jarvis.pending.size === 0')
+        assert len(requests) == direct_requests and not raw[2:]
+        page.evaluate("voice.committed('Hold this for a moment.')")
+        page.evaluate("voice.speechOnset(true)")
+        page.wait_for_timeout(1200)
+        assert [item['text'] for item in decisions if not item.get('invalidate')] == ['Ask Dog Data about it.']
+        assert page.evaluate('turnPosts.length') == 5
+        page.evaluate("voice.draft = null; voice.cancelEvaluation(); voice.renderDraft()")
+        page.evaluate("""() => {
+          voice.capture = {ready: true, playback: new AudioContext()};
+          window.heardCount = 0;
+          window.begin = turn => voice.beginReadback(voice.generation, () => heardCount++,
+            (player, meta) => jarvis.trackPlayback(player, {generation: voice.generation, turnId: turn, style: meta.style}));
+          const full = begin('t-full');
+          full.write('Complete reply from the browser.'); full.end();
+        }""")
+        page.wait_for_function("heardCount === 1", timeout=15000)
+        page.wait_for_function('jarvis.pending.size === 0')
+        done = [item for item in playbacks if item['op'] == 'update' and item['status'] == 'completed']
+        assert [item['completed_phrases'] for item in done] == [['fb-1']] and done[0]['playback_id'] == 'pb-1'
+        page.evaluate("""() => {
+          const partial = begin('t-partial');
+          partial.write('Reply that is interrupted. '); partial.end();
+        }""")
+        page.wait_for_function("voice.playing && voice.playing.started")
+        page.evaluate("voice.stopReadback('stop')")
+        page.wait_for_timeout(2500)
+        updates = [item for item in playbacks if item['op'] == 'update' and item['playback_id'] == 'pb-2']
+        assert [item['status'] for item in updates] == ['playing', 'cancelled'], updates
+        assert all(item['completed_phrases'] == [] for item in updates)
+        assert page.evaluate('heardCount') == 1 and not jarvis_cancels and len(requests) == direct_requests
+        page.evaluate('voice.capture.playback.close(); voice.capture = null')
         assert not errors, errors
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
@@ -376,6 +431,8 @@ def run():
                              'streamed observer audio before answer completion', 'stop prevents late streamed playback',
                              'default input reaches Jarvis only', 'Jarvis draft not held by pane selection or identity change',
                              'second request accepted while first waits', 'superseded and stopped answers stay visible without audio',
+                             'semantic completion token reaches the turn without direct delivery', 'new speech invalidates a pending judgment',
+                             'full playback acknowledges only the app boundary', 'interrupted playback reports no completed boundary',
                              'lost response recovered from state without resend'],
                   'scope': 'Intercepted Chromium endpoints and a static Jarvis state; no model routing or physical phone proof'}
         (output / 'browser.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -514,7 +571,8 @@ def run_controller_shim():
             assert [post['text'] for post in shim.posts].count('This response is lost on the wire') == 1
             assert shim.provider_calls.count('This response is lost on the wire') == 1
             assert page.evaluate('spoken').count('Echo: This response is lost on the wire') == 1
-            assert all(set(post) == {'session_id', 'request_id', 'text', 'source', 'stream'} for post in shim.posts)
+            assert all(set(post) - {'transcript_id', 'transcript_revision'} == {'session_id', 'request_id', 'text', 'source', 'stream', 'client_id', 'explicit_send'}
+                   and post['explicit_send'] is True for post in shim.posts), shim.posts
             shim.delay.add('Stale local request')
             submit_composer(page, 'Stale local request')
             assert shim.delayed.wait(10)

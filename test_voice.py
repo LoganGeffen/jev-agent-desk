@@ -14,7 +14,7 @@ from websockets.sync.client import connect
 
 import test_playground
 from server import make_server
-from voice import Voice, load_voice_settings
+from voice import Voice, forwarded_alignment, load_voice_settings
 
 
 class VoiceTests(unittest.TestCase):
@@ -76,6 +76,63 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(json.loads(request.data), {"text": "Hello Luna", "model_id": "eleven_flash_v2_5"})
         self.assertIn("/text-to-speech/test-voice?", request.full_url)
         self.assertNotIn("fake-private-key", self.voice.log.read_text())
+
+    def test_speech_relay_requests_and_forwards_only_valid_alignment(self):
+        alignment = {'chars': ['H', 'i'], 'charStartTimesMs': [0, 40], 'charDurationsMs': [40, 50]}
+        frames = [{'audio': 'QQ==', 'alignment': alignment, 'normalizedAlignment': {'chars': ['x']}},
+                  {'audio': 'Qg==', 'alignment': {'chars': ['H'], 'charStartTimesMs': [0]}},
+                  {'audio': None, 'isFinal': True}]
+
+        class Provider:
+            def __init__(self):
+                self.sent = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, message):
+                self.sent.append(json.loads(message))
+
+            def close(self):
+                pass
+
+            def __iter__(self):
+                return iter([json.dumps(frame) for frame in frames])
+
+        class Browser:
+            def __init__(self):
+                self.sent = []
+
+            def __iter__(self):
+                return iter([json.dumps({'text': 'Hi '}), json.dumps({'text': ''})])
+
+            def send(self, message):
+                self.sent.append(json.loads(message))
+
+            def close(self):
+                pass
+
+        provider, browser = Provider(), Browser()
+        with patch.dict("os.environ", {"ELEVENLABS_API_KEY": "fake-private-key", "ELEVENLABS_VOICE_ID": "test-voice"}), \
+                patch("voice.connect", return_value=provider) as dial:
+            self.voice.speech_relay(browser, 'current')
+        self.assertIn('sync_alignment=true', dial.call_args.args[0])
+        self.assertEqual(browser.sent, [
+            {'audio': 'QQ==', 'alignment': {'chars': ['H', 'i'], 'starts': [0, 40], 'durations': [40, 50]}},
+            {'audio': 'Qg=='}, {'isFinal': True}])
+        self.assertNotIn('normalizedAlignment', json.dumps(browser.sent))
+        self.assertNotIn('fake-private-key', json.dumps(browser.sent))
+
+    def test_alignment_forwarding_rejects_malformed_values(self):
+        good = {'chars': ['a'], 'charStartTimesMs': [0], 'charDurationsMs': [5]}
+        self.assertEqual(forwarded_alignment({'alignment': good}), {'chars': ['a'], 'starts': [0], 'durations': [5]})
+        for bad in [None, [], {}, {**good, 'chars': 'a'}, {**good, 'charDurationsMs': [1, 2]}, {**good, 'chars': [1]},
+                    {**good, 'charStartTimesMs': [-1]}, {**good, 'charDurationsMs': [True]}, {**good, 'chars': ['x' * 9]},
+                    {'chars': ['a'] * 4001, 'charStartTimesMs': [0] * 4001, 'charDurationsMs': [1] * 4001}]:
+            self.assertIsNone(forwarded_alignment({'alignment': bad}))
 
     def test_missing_key_and_invalid_text_do_not_call_provider(self):
         with patch.dict("os.environ", {}, clear=True), patch("voice.urlopen") as send:

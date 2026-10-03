@@ -3,11 +3,38 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-function setup() {
+function fakeClock() {
+  let now = 1_000_000, seq = 0;
+  const timers = new Map();
+  const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  const clock = {
+    setTimeout(callback, ms = 0) { const id = ++seq; timers.set(id, {id, callback, at: now + ms}); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    Date: class extends Date { static now() { return now; } },
+    pending: () => timers.size,
+    async advance(ms) {
+      const end = now + ms;
+      for (;;) {
+        const due = [...timers.values()].filter(timer => timer.at <= end).sort((a, b) => a.at - b.at || a.id - b.id)[0];
+        if (!due) break;
+        timers.delete(due.id);
+        now = Math.max(now, due.at);
+        due.callback();
+        await flush();
+      }
+      now = end;
+      await flush();
+    },
+  };
+  return clock;
+}
+
+function setup({clock = null} = {}) {
   const elements = new Map();
   const listeners = {};
   const logs = [];
   const submitted = [];
+  const submissions = [];
   const sources = [];
   const sockets = [];
   const tracks = [{stopped: false, stop() { this.stopped = true; }}];
@@ -48,7 +75,8 @@ function setup() {
     navigator: {mediaDevices: {getUserMedia: async () => stream}},
     AudioContext: Context, WebSocket: Socket,
     AudioWorkletNode: class { port = {}; connect() {} disconnect() {} },
-    AbortController, setTimeout, clearTimeout, Uint8Array, DataView, TextDecoder, btoa, atob,
+    AbortController, setTimeout: clock?.setTimeout ?? setTimeout, clearTimeout: clock?.clearTimeout ?? clearTimeout,
+    ...(clock ? {Date: clock.Date} : {}), Uint8Array, DataView, TextDecoder, btoa, atob,
     fetch: async (url, options) => {
       if (url === '/api/voice-event') logs.push(JSON.parse(options.body));
       return {ok: true, arrayBuffer: async () => new ArrayBuffer(8)};
@@ -56,9 +84,12 @@ function setup() {
   });
   vm.runInContext(readFileSync(new URL('./readback.js', import.meta.url), 'utf8'), context);
   vm.runInContext(readFileSync(new URL('./voice.js', import.meta.url), 'utf8') + '\nglobalThis.Controls = VoiceControls;', context);
-  const voice = new context.Controls(async text => { submitted.push(text); });
+  const voice = new context.Controls(async (text, target, source, meta) => {
+    submitted.push(text);
+    submissions.push(JSON.parse(JSON.stringify({text, target, source, meta})));
+  });
   voice.configure({configured: true, websocket_url: 'ws://test'});
-  return {voice, context, document, elements, listeners, logs, submitted, sources, tracks, stream, sockets};
+  return {voice, context, document, elements, listeners, logs, submitted, submissions, sources, tracks, stream, sockets};
 }
 
 async function listening(s) {
@@ -554,5 +585,351 @@ test('reply is heard only after all audio finishes, never on cancel, failure or 
   await play();
   s.sockets.at(-1).onmessage({data: JSON.stringify({isFinal: true})});
   assert.equal(heard, 1);
+  s.voice.stop();
+});
+
+function semanticSetup() {
+  const clock = fakeClock();
+  const s = setup({clock});
+  const decisions = [], invalidations = [], discarded = [];
+  s.voice.semantic = {
+    decide: (payload, signal) => new Promise((resolve, reject) => {
+      decisions.push({payload: JSON.parse(JSON.stringify(payload)), signal, resolve, reject});
+    }),
+    invalidate: payload => invalidations.push(JSON.parse(JSON.stringify(payload))),
+  };
+  s.voice.onDiscard = draft => discarded.push(draft.text);
+  let ids = 0;
+  s.voice.newId = () => 'tr' + ++ids;
+  const receive = (message_type, text) => s.voice.capture.ws.onmessage({data: JSON.stringify({message_type, text})});
+  return {...s, clock, decisions, invalidations, discarded, receive};
+}
+
+test('a thinking pause that continues stays one turn; the late judgment for the shorter text cannot submit', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Tell Nova');
+  await s.clock.advance(699);
+  assert.equal(s.decisions.length, 0);
+  await s.clock.advance(1);
+  assert.equal(s.decisions.length, 1);
+  assert.equal(s.decisions[0].payload.text, 'Tell Nova');
+  s.receive('partial_transcript', 'and check');
+  assert.equal(s.decisions[0].signal.aborted, true);
+  assert.equal(s.invalidations.length, 1);
+  assert.equal(s.invalidations[0].transcript_id, 'tr1');
+  assert.ok(s.invalidations[0].transcript_revision > s.decisions[0].payload.transcript_revision);
+  s.decisions[0].resolve({decision: 'complete', decision_id: 'd1'});
+  await s.clock.advance(10);
+  assert.deepEqual(s.submitted, []);
+  s.receive('committed_transcript', 'and check the logs');
+  await s.clock.advance(700);
+  assert.equal(s.decisions.length, 2);
+  assert.equal(s.decisions[1].payload.text, 'Tell Nova and check the logs');
+  assert.equal(s.decisions[1].payload.transcript_id, 'tr1');
+  s.decisions[1].resolve({decision: 'complete', decision_id: 'd2'});
+  await s.clock.advance(0);
+  assert.equal(s.submissions.length, 1);
+  assert.equal(s.submissions[0].text, 'Tell Nova and check the logs');
+  assert.deepEqual(s.submissions[0].meta, {transcript_id: 'tr1', transcript_revision: s.decisions[1].payload.transcript_revision, decision_id: 'd2'});
+  assert.equal(s.invalidations.length, 1);
+  assert.equal(s.voice.draft, null);
+  s.voice.stop();
+});
+
+test('each new word or onset restarts the silence window before any judgment is requested', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Hello');
+  await s.clock.advance(600);
+  s.receive('partial_transcript', 'there');
+  s.receive('committed_transcript', 'there');
+  await s.clock.advance(600);
+  assert.equal(s.decisions.length, 0);
+  await s.clock.advance(100);
+  assert.equal(s.decisions.length, 1);
+  assert.equal(s.decisions[0].payload.text, 'Hello there');
+  s.voice.stop();
+});
+
+test('explicit Send submits immediately, aborts the judgment and a late complete cannot send twice', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Send this now');
+  await s.clock.advance(700);
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions.length, 1);
+  assert.equal(s.submissions[0].meta.explicit_send, true);
+  assert.equal('decision_id' in s.submissions[0].meta, false);
+  assert.equal(s.decisions[0].signal.aborted, true);
+  s.decisions[0].resolve({decision: 'complete', decision_id: 'late'});
+  await s.clock.advance(10000);
+  assert.equal(s.submissions.length, 1);
+  s.voice.stop();
+});
+
+test('wait and failed judgments never send; rechecks back off and stop after the bound', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Maybe the second one');
+  await s.clock.advance(700);
+  s.decisions[0].resolve({decision: 'wait'});
+  await s.clock.advance(0);
+  assert.equal(s.elements.get('speech-draft-status').textContent, 'Waiting for you · keep talking or press Send');
+  await s.clock.advance(3999);
+  assert.equal(s.decisions.length, 1);
+  await s.clock.advance(1);
+  assert.equal(s.decisions.length, 2);
+  s.decisions[1].reject(new Error('provider down'));
+  await s.clock.advance(0);
+  await s.clock.advance(7999);
+  assert.equal(s.decisions.length, 2);
+  await s.clock.advance(1);
+  assert.equal(s.decisions.length, 3);
+  s.decisions[2].resolve({decision: 'wait'});
+  await s.clock.advance(120000);
+  assert.equal(s.decisions.length, 3);
+  assert.deepEqual(s.submitted, []);
+  assert.equal(s.voice.draft.text, 'Maybe the second one');
+  assert.equal(s.clock.pending(), 0);
+  s.voice.stop();
+});
+
+test('a complete judgment without a decision id is treated as wait', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Do the thing');
+  await s.clock.advance(700);
+  s.decisions[0].resolve({decision: 'complete'});
+  await s.clock.advance(0);
+  assert.deepEqual(s.submitted, []);
+  assert.equal(s.voice.draft.waiting, true);
+  s.voice.stop();
+});
+
+test('a cancel judgment discards the unsent words as recoverable history without submitting', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Never mind forget it');
+  await s.clock.advance(700);
+  s.decisions[0].resolve({decision: 'cancel'});
+  await s.clock.advance(0);
+  assert.deepEqual(s.submitted, []);
+  assert.deepEqual(s.discarded, ['Never mind forget it']);
+  assert.equal(s.voice.draft, null);
+  assert.equal(s.elements.get('voice-status').textContent, 'Discarded unsent words');
+  s.voice.stop();
+});
+
+test('a complete judgment after the recipient changed holds the draft instead of sending', async () => {
+  const s = semanticSetup();
+  let target = {pane: '%1', identity: 'one'};
+  s.voice.target = () => target;
+  await listening(s);
+  s.receive('committed_transcript', 'Please fix it');
+  await s.clock.advance(700);
+  target = {pane: '%2', identity: 'two'};
+  s.decisions[0].resolve({decision: 'complete', decision_id: 'd1'});
+  await s.clock.advance(0);
+  assert.deepEqual(s.submitted, []);
+  assert.equal(s.voice.draft.held, true);
+  assert.equal(s.voice.draft.text, 'Please fix it');
+  s.voice.stop();
+});
+
+test('stopping voice aborts the judgment and a late complete cannot send', async () => {
+  const s = semanticSetup();
+  await listening(s);
+  s.receive('committed_transcript', 'Almost done');
+  await s.clock.advance(700);
+  s.voice.stop();
+  assert.equal(s.decisions[0].signal.aborted, true);
+  s.decisions[0].resolve({decision: 'complete', decision_id: 'd1'});
+  await s.clock.advance(60000);
+  assert.deepEqual(s.submitted, []);
+  assert.equal(s.voice.draft.text, 'Almost done');
+});
+
+test('direct dictation never consults the judge and keeps the captured recipient identity', async () => {
+  const clock = fakeClock();
+  const s = setup({clock});
+  let calls = 0;
+  s.voice.semantic = null;
+  const target = {tab: 't1', pane: '%1', identity: 'one'};
+  s.voice.target = () => target;
+  await listening(s);
+  s.voice.capture.ws.onmessage({data: JSON.stringify({message_type: 'committed_transcript', text: 'Run the tests'})});
+  await clock.advance(2999);
+  assert.equal(s.submissions.length, 0);
+  await clock.advance(1);
+  assert.equal(s.submissions.length, 1);
+  assert.deepEqual(s.submissions[0].target, target);
+  assert.equal(s.submissions[0].meta.explicit_send, false);
+  assert.equal('decision_id' in s.submissions[0].meta, false);
+  assert.equal(calls, 0);
+  s.voice.stop();
+});
+
+function streamed(events) {
+  const encoder = new TextEncoder();
+  const queue = [...events];
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  return {release, response: {ok: true, headers: {get: () => 'application/x-ndjson'}, body: {getReader: () => ({
+    read: async () => {
+      if (!queue.length) return {done: true};
+      const next = queue.shift();
+      if (next === 'GATE') { await gate; return {value: new Uint8Array(), done: false}; }
+      return {value: encoder.encode(JSON.stringify(next) + '\n'), done: false};
+    },
+    releaseLock() {},
+  })}}};
+}
+
+function cancellation() {
+  const s = setup();
+  const urls = [];
+  const original = s.context.fetch;
+  s.context.fetch = (url, options) => { if (url !== '/api/voice-event') urls.push(url); return original(url, options); };
+  const tracked = [];
+  const track = (player, meta) => {
+    const entry = {meta, progress: []};
+    player.track(value => entry.progress.push(JSON.parse(JSON.stringify(value))));
+    tracked.push(entry);
+  };
+  let heard = 0;
+  return {...s, urls, tracked, track, heard: () => heard, onHeard: () => { heard++; }};
+}
+const ttsSocket = s => s.sockets.filter(socket => socket.url.includes('tts='));
+const audioFrame = JSON.stringify({audio: btoa('\0\0\0\0')});
+const noControlCalls = s => assert.deepEqual(s.urls.filter(url => /jarvis|input|request/.test(url)), []);
+
+test('stop while the rendition is still streaming cancels the player and the rest of the stream cannot restart speech', async () => {
+  const s = cancellation();
+  await listening(s);
+  const stream = streamed([{type: 'text', text: 'First sentence. '}, 'GATE',
+    {type: 'text', text: 'Second sentence. '}, {type: 'result', result: {mode: 'rendition', text: 'First sentence. Second sentence. '}}]);
+  s.context.fetch = (url, options) => url === '/api/spoken-version' ? Promise.resolve(stream.response) : Promise.resolve({ok: true});
+  const generation = s.voice.generation;
+  const speaking = s.voice.speakReply('Original text.', generation, false, s.onHeard, s.track);
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = ttsSocket(s)[0];
+  assert.equal(socket.messages[0].text, 'First sentence. ');
+  assert.equal(s.tracked[0].meta.style, 'spoken');
+  s.voice.stopReadback('stop');
+  stream.release();
+  await speaking;
+  socket.onmessage({data: audioFrame});
+  socket.onmessage({data: JSON.stringify({isFinal: true})});
+  assert.equal(ttsSocket(s).length, 1);
+  assert.equal(socket.messages.length, 1);
+  assert.equal(s.sources.length, 0);
+  assert.equal(s.heard(), 0);
+  assert.equal(s.tracked[0].progress.at(-1).status, 'cancelled');
+  assert.deepEqual(s.tracked[0].progress.at(-1).completed_phrases, []);
+  assert.equal(s.voice.lastRendition, null);
+  assert.equal(s.voice.playing, null);
+  assert.deepEqual(s.submitted, []);
+  s.voice.stop();
+});
+
+test('stop before first audio leaves late audio and the provider final inert', async () => {
+  const s = cancellation();
+  await listening(s);
+  s.document.getElementById('speech-style').value = 'original';
+  await s.voice.speakReply('Exact reply.', s.voice.generation, false, s.onHeard, s.track);
+  const socket = ttsSocket(s)[0];
+  assert.equal(s.tracked[0].progress.at(-1).status, 'generated');
+  s.voice.stopReadback('stop');
+  socket.onmessage({data: audioFrame});
+  socket.onmessage({data: JSON.stringify({isFinal: true})});
+  socket.onclose();
+  assert.equal(s.sources.length, 0);
+  assert.equal(s.heard(), 0);
+  assert.equal(s.tracked[0].progress.at(-1).status, 'cancelled');
+  assert.equal(s.elements.get('reply-original').textContent, 'Exact reply.');
+  noControlCalls(s);
+  s.voice.stop();
+});
+
+test('stop in the middle of audio keeps the reply unheard and late sources cannot restart it', async () => {
+  const s = cancellation();
+  await listening(s);
+  s.document.getElementById('speech-style').value = 'original';
+  await s.voice.speakReply('Exact reply.', s.voice.generation, false, s.onHeard, s.track);
+  const socket = ttsSocket(s)[0];
+  socket.onmessage({data: audioFrame});
+  assert.equal(s.tracked[0].progress.at(-1).status, 'playing');
+  s.sources[0].onended();
+  socket.onmessage({data: audioFrame});
+  s.voice.stopReadback('stop');
+  assert.equal(s.sources[1].stopped, true);
+  socket.onmessage({data: audioFrame});
+  socket.onmessage({data: JSON.stringify({isFinal: true})});
+  assert.equal(s.sources.length, 2);
+  assert.equal(s.heard(), 0);
+  const last = s.tracked[0].progress.at(-1);
+  assert.equal(last.status, 'cancelled');
+  assert.deepEqual(last.completed_phrases, []);
+  noControlCalls(s);
+  s.voice.stop();
+});
+
+test('hiding the page mid-audio and mid-generation stops everything and nothing restarts on return', async () => {
+  const s = cancellation();
+  await listening(s);
+  s.document.getElementById('speech-style').value = 'original';
+  const generation = s.voice.generation;
+  await s.voice.speakReply('Exact reply.', generation, false, s.onHeard, s.track);
+  const socket = ttsSocket(s)[0];
+  socket.onmessage({data: audioFrame});
+  s.document.hidden = true;
+  s.listeners.visibilitychange();
+  assert.equal(s.sources[0].stopped, true);
+  assert.equal(s.voice.capture, null);
+  s.document.hidden = false;
+  s.listeners.visibilitychange();
+  socket.onmessage({data: audioFrame});
+  socket.onmessage({data: JSON.stringify({isFinal: true})});
+  await s.voice.speakReply('Exact reply.', generation, false, s.onHeard, s.track);
+  await s.voice.speak('Old outcome.', generation);
+  assert.equal(ttsSocket(s).length, 1);
+  assert.equal(s.sources.length, 1);
+  assert.equal(s.heard(), 0);
+  assert.equal(s.tracked[0].progress.at(-1).status, 'cancelled');
+  assert.equal(s.elements.get('reply-original').textContent, 'Exact reply.');
+  noControlCalls(s);
+});
+
+test('hiding the page while a rendition is generating cannot start audio when text arrives later', async () => {
+  const s = cancellation();
+  await listening(s);
+  const stream = streamed(['GATE', {type: 'text', text: 'Late words. '}, {type: 'result', result: {mode: 'rendition', text: 'Late words. '}}]);
+  s.context.fetch = url => url === '/api/spoken-version' ? Promise.resolve(stream.response) : Promise.resolve({ok: true});
+  const speaking = s.voice.speakReply('Original text.', s.voice.generation, false, s.onHeard, s.track);
+  await new Promise(resolve => setImmediate(resolve));
+  s.document.hidden = true;
+  s.listeners.visibilitychange();
+  stream.release();
+  await speaking;
+  assert.equal(ttsSocket(s).length, 0);
+  assert.equal(s.sources.length, 0);
+  assert.equal(s.heard(), 0);
+  assert.equal(s.tracked.length, 0);
+  assert.equal(s.voice.lastRendition, null);
+});
+
+test('a late text-to-speech fetch after stop never plays or marks heard', async () => {
+  const s = cancellation();
+  await listening(s);
+  let finish;
+  s.context.fetch = (url, options) => url === '/api/speech'
+    ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ok: true});
+  const speaking = s.voice.speak('Old outcome.', s.voice.generation, s.onHeard);
+  s.voice.stopReadback('stop');
+  finish({ok: true, arrayBuffer: async () => new ArrayBuffer(8)});
+  await speaking;
+  assert.equal(s.sources.length, 0);
+  assert.equal(s.heard(), 0);
   s.voice.stop();
 });

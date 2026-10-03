@@ -121,3 +121,144 @@ test('NDJSON exposes text before outcome and rejects a truncated result', async 
   await assert.rejects(s.context.readJSONStream(new Response('{"type":"text","text":"Partial"}\n',
     {headers: {'content-type': 'application/x-ndjson'}}), () => {}), /before its outcome/);
 });
+
+function tracked() {
+  const s = setup();
+  const progress = [];
+  s.player.track(value => progress.push(JSON.parse(JSON.stringify(value))));
+  return {...s, progress};
+}
+
+test('progress keeps partial and cancelled playback unknown and never lists a completed phrase', () => {
+  const s = tracked();
+  s.player.write('First sentence. Second');
+  s.socket.onmessage({data: audio});
+  s.sources[0].onended();
+  assert.equal(s.progress.at(-1).status, 'playing');
+  assert.deepEqual(s.progress.at(-1).completed_phrases, []);
+  assert.deepEqual(s.progress.at(-1).phrase_ids, ['p1']);
+  assert.equal(s.player.progress().audio_ended_ms, 100);
+  s.player.stop();
+  const last = s.progress.at(-1);
+  assert.equal(last.status, 'cancelled');
+  assert.deepEqual(last.completed_phrases, []);
+  assert.equal(last.text_complete, false);
+});
+
+test('a reply is completed only after end, provider final and every scheduled source ended', () => {
+  const s = tracked();
+  s.player.write('One two. ');
+  s.player.end();
+  s.socket.onmessage({data: audio});
+  s.socket.onmessage({data: audio});
+  s.socket.onmessage({data: '{"isFinal":true}'});
+  s.sources[0].onended();
+  assert.notEqual(s.progress.at(-1).status, 'completed');
+  assert.equal(s.progress.at(-1).text_complete, true);
+  s.sources[1].onended();
+  const last = s.progress.at(-1);
+  assert.equal(last.status, 'completed');
+  assert.deepEqual(last.completed_phrases, last.phrase_ids);
+  assert.equal(last.text, 'One two. ');
+  assert.deepEqual(s.events, ['start', 'end']);
+});
+
+test('a provider final before the reply text was fully sent fails and never completes', () => {
+  const s = tracked();
+  s.player.write('Long reply still arriving. ');
+  s.socket.onmessage({data: audio});
+  s.socket.onmessage({data: '{"isFinal":true}'});
+  assert.equal(s.progress.at(-1).status, 'failed');
+  assert.deepEqual(s.progress.at(-1).completed_phrases, []);
+  assert.equal(s.events.at(-1), 'Speech ended before the reply was complete');
+  assert.ok(!s.events.includes('end'));
+});
+
+test('a provider final with no audio fails rather than completing', () => {
+  const s = tracked();
+  s.player.write('Silent. ');
+  s.player.end();
+  s.socket.onmessage({data: '{"isFinal":true}'});
+  assert.equal(s.progress.at(-1).status, 'failed');
+  assert.deepEqual(s.progress.at(-1).completed_phrases, []);
+});
+
+test('late audio and final messages after a stop change neither progress nor status', () => {
+  const s = tracked();
+  s.player.write('Hello there. ');
+  s.player.end();
+  s.socket.onmessage({data: audio});
+  s.player.stop();
+  const count = s.progress.length;
+  s.socket.onmessage({data: audio});
+  s.socket.onmessage({data: '{"isFinal":true}'});
+  s.socket.onclose();
+  s.player.write('more'); s.player.end();
+  assert.equal(s.progress.length, count);
+  assert.equal(s.progress.at(-1).status, 'cancelled');
+  assert.equal(s.sources.length, 1);
+  assert.deepEqual(s.events, ['start']);
+});
+
+test('tracking an already playing player reports the current state immediately', () => {
+  const s = setup();
+  s.socket.onmessage({data: audio});
+  const seen = [];
+  s.player.track(value => seen.push(value.status));
+  assert.deepEqual(seen, ['playing']);
+  s.player.stop();
+  assert.equal(seen.at(-1), 'cancelled');
+});
+
+const pcm = Buffer.alloc(4800).toString('base64');
+const frame = (text, start, per, extra = {}) => JSON.stringify({audio: pcm, alignment: {chars: [...text],
+  starts: [...text].map((_, i) => start + i * per), durations: [...text].map(() => per)}, ...extra});
+
+test('aligned phrases count only after their audio fully ended, with a safety margin, and never from scheduled audio', () => {
+  const s = tracked();
+  s.player.write('Alpha beta. ');
+  s.player.write('Gamma delta. ');
+  s.player.end();
+  assert.deepEqual([...s.player.phrases], ['Alpha beta. ', 'Gamma delta. ']);
+  s.socket.onmessage({data: frame('Alpha beta. ', 0, 8)});
+  s.socket.onmessage({data: frame('Gamma delta. ', 96, 8)});
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
+  s.sources[0].onended();
+  const first = s.player.progress();
+  assert.equal(first.audio_ended_ms, 100);
+  assert.deepEqual([...first.aligned_phrase_ids], []);
+  assert.deepEqual([...first.completed_phrases], []);
+  s.player.stop();
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
+});
+
+test('aligned phrase ids advance with ended audio but completed_phrases stays empty until full playback', () => {
+  const s = tracked();
+  s.player.write('Hi there. ');
+  const long = frame('Hi there. ', 0, 4);
+  s.player.ended = 0;
+  s.socket.onmessage({data: long});
+  s.player.endedMs = 120;
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], ['p1']);
+  assert.deepEqual([...s.player.progress().completed_phrases], []);
+  s.player.stop();
+});
+
+test('alignment that diverges from the sent text or goes backwards is ignored and never claims phrases', () => {
+  for (const make of [() => frame('Other text. ', 0, 8), () => JSON.stringify({audio: pcm, alignment: {chars: ['H'], starts: [0], durations: []}})]) {
+    const s = tracked();
+    s.player.write('Hi there. ');
+    s.socket.onmessage({data: make()});
+    s.player.endedMs = 100000;
+    assert.equal(s.player.progress().alignment_valid, false);
+    assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
+    s.player.stop();
+  }
+  const s = tracked();
+  s.player.write('Hi there. ');
+  s.socket.onmessage({data: frame('Hi ', 100, 4)});
+  s.socket.onmessage({data: frame('there. ', 0, 4)});
+  s.player.endedMs = 100000;
+  assert.deepEqual([...s.player.progress().aligned_phrase_ids], []);
+  s.player.stop();
+});

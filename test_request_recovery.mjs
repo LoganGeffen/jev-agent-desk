@@ -166,7 +166,7 @@ function routerSetup(mode) {
 test('default mode sends natural-language input to Jarvis and never to the direct request endpoint', async () => {
   const s = routerSetup('jarvis');
   await s.context.submitInput('Ask Dog Data about it', {tab: '@a', pane: '%a', identity: 'x'}, 'typed');
-  assert.deepEqual(s.jarvisCalls, [['Ask Dog Data about it', 'typed']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(s.jarvisCalls)), [['Ask Dog Data about it', 'typed', {}]]);
   assert.deepEqual(s.fetched, []);
   assert.deepEqual(s.cancelled, []);
 });

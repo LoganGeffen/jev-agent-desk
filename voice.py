@@ -39,6 +39,23 @@ def load_voice_settings(path=None):
         os.environ[key] = parts[0]
 
 
+def forwarded_alignment(data):
+    alignment = data.get('alignment')
+    if not isinstance(alignment, dict):
+        return None
+    chars, starts, durations = (alignment.get(key) for key in ('chars', 'charStartTimesMs', 'charDurationsMs'))
+    if not all(isinstance(value, list) for value in (chars, starts, durations)):
+        return None
+    if not 0 < len(chars) == len(starts) == len(durations) <= 4000:
+        return None
+    if not all(isinstance(char, str) and len(char) <= 8 for char in chars):
+        return None
+    if not all(isinstance(number, (int, float)) and not isinstance(number, bool) and number >= 0
+               for number in starts + durations):
+        return None
+    return {'chars': chars, 'starts': starts, 'durations': durations}
+
+
 class Voice:
     def __init__(self, log):
         self.log = Path(log)
@@ -85,7 +102,8 @@ class Voice:
         if profile not in models or not self.config()['configured']:
             browser.send(json.dumps({'error': 'Speech is unavailable'}))
             return
-        params = urlencode({'model_id': models[profile], 'output_format': 'pcm_24000', 'auto_mode': 'true'})
+        params = urlencode({'model_id': models[profile], 'output_format': 'pcm_24000', 'auto_mode': 'true',
+                              'sync_alignment': 'true'})
         url = 'wss://api.elevenlabs.io/v1/text-to-speech/' + quote(os.environ['ELEVENLABS_VOICE_ID'], safe='') + '/stream-input?' + params
         started = time.monotonic()
         first_audio = None
@@ -119,7 +137,11 @@ class Voice:
                         if data.get('audio'):
                             if first_audio is None:
                                 first_audio = round((time.monotonic() - started) * 1000)
-                            browser.send(json.dumps({'audio': data['audio']}))
+                            message = {'audio': data['audio']}
+                            alignment = forwarded_alignment(data)
+                            if alignment:
+                                message['alignment'] = alignment
+                            browser.send(json.dumps(message))
                         if data.get('isFinal'):
                             browser.send(json.dumps({'isFinal': True}))
                             break
