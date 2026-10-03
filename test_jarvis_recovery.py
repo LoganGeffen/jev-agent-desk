@@ -274,3 +274,127 @@ class HttpRecoveryTests(DisposableDesk):
             server.shutdown()
             server.server_close()
             worker.join(2)
+
+
+class ContextPressureTests(unittest.TestCase):
+    append = ContinuityTests.append
+
+    def test_large_observed_reply_keeps_recent_correction_and_exact_sources_after_restore(self):
+        for original in ('Sample numbers: 12.5. ' * 1700, 'Café 🐕 — sample numbers. ' * 1700):
+            with self.subTest(unicode='🐕' in original), tempfile.TemporaryDirectory() as path:
+                db = Path(path) / 'state.sqlite3'
+                store = JarvisStore(db)
+                state = JarvisState(store=store)
+                preference = self.append(state, 'Prefer brief answers.', 0)
+                for number in range(1, 32):
+                    self.append(state, 'Ordinary request ' + str(number), number)
+                state.compact_continuity(lambda candidates, active: [
+                    {'source_turn_id': turn['turn_id'], 'category': 'preference' if turn['turn_id'] == preference else 'other'} for turn in candidates])
+                correction_text = 'Correction: use detailed answers for scientific reports instead.'
+                correction = self.append(state, correction_text, 'correction')
+                read, _ = state.begin_turn('Read Dog Data', 'read')
+                evidence = state.record_evidence(read['turn_id'], 'read_reply', original)
+                state.finish_turn(read['turn_id'], {'text': original, 'readback': {
+                    'original': original, 'target': {'label': 'Dog Data'}, 'reply_ref': {'id': 'reply'}}})
+                for restart in (False, True):
+                    if restart:
+                        store.close()
+                        store = JarvisStore(db)
+                        state = JarvisState(store=store)
+                    current, _ = state.begin_turn('Ask it to explain those numbers with an example', 'now-' + str(restart))
+                    context = state.context(current['turn_id'])
+                    recent = {item['turn_id']: item for item in context['recent_turns']}
+                    self.assertEqual(recent[correction]['user_text'], correction_text)
+                    self.assertEqual(recent[read['turn_id']]['user_text'], 'Read Dog Data')
+                    observed = recent[read['turn_id']]
+                    self.assertEqual(observed['assistant_kind'], 'observed_reply')
+                    self.assertEqual(observed['assistant_trust'], 'untrusted_evidence')
+                    self.assertTrue(observed['assistant_text_truncated'])
+                    self.assertEqual(observed['assistant_source_ref']['turn_id'], read['turn_id'])
+                    self.assertEqual(observed['evidence_ref'], evidence['evidence_ref'])
+                    self.assertLessEqual(encoded_size(context['recent_turns']), 32768)
+                    self.assertLessEqual(encoded_size(context), 65536)
+                    self.assertEqual(state.read_user_source(correction)['text'], correction_text)
+                    self.assertEqual(state.snapshot()['turns'][read['turn_id']]['result']['readback']['original'], original)
+                    self.assertEqual(state.evidence[evidence['evidence_ref']]['output'], original)
+                store.close()
+
+    def test_many_large_observations_yield_budget_to_users_before_excerpting_user_sources(self):
+        state = JarvisState()
+        sources = []
+        original = '🐕 observed data ' * 3000
+        for number in range(23):
+            text = 'Exact user source ' + str(number) + ': ' + 'Café 🐕. ' * 400
+            turn, _ = state.begin_turn(text, str(number))
+            sources.append((turn['turn_id'], text))
+            state.finish_turn(turn['turn_id'], {'text': original, 'readback': {
+                'original': original, 'target': {'label': 'Dog Data'}, 'reply_ref': {'id': str(number)}}})
+        current, _ = state.begin_turn('Continue', 'now')
+        before = state.snapshot()
+        context = state.context(current['turn_id'])
+        recent = {item['turn_id']: item for item in context['recent_turns']}
+        self.assertEqual(set(recent), {identifier for identifier, _ in sources})
+        self.assertLessEqual(encoded_size(context['recent_turns']), 32768)
+        self.assertLessEqual(encoded_size(context), 65536)
+        self.assertEqual(state.snapshot(), before)
+        for identifier, text in sources:
+            item = recent[identifier]
+            self.assertEqual(item['user_source_ref']['source_turn_id'], identifier)
+            self.assertTrue(text.startswith(item['user_text']))
+            self.assertTrue(item['user_text_truncated'])
+            self.assertEqual(item['assistant_text'], '')
+            recovered, offset = '', 0
+            while True:
+                page = state.read_user_source(identifier, offset)
+                recovered += page['text']
+                if page['next_offset'] is None:
+                    break
+                offset = page['next_offset']
+            self.assertEqual(recovered, text)
+
+
+class RecoveryReceiptWordingTests(unittest.TestCase):
+    def test_known_action_outcomes_keep_truthful_recovered_text_and_receipts(self):
+        from test_jarvis_state import DOG
+        for status in ('submitted', 'uncertain', 'attempting', 'blocked', 'failed', 'not_attempted', 'completed'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as path:
+                db = Path(path) / 'state.sqlite3'
+                store = JarvisStore(db)
+                state = JarvisState(store=store)
+                turn, _ = state.begin_turn('Interrupt Dog Data' if status == 'completed' else 'Tell Dog Data: exact body', status)
+                state.set_subject(turn['turn_id'], DOG)
+                if status == 'completed':
+                    action = state.begin_action(turn['turn_id'], 'interrupt_agent', {'name': 'Dog Data'})
+                else:
+                    draft = state.prepare_literal(turn['turn_id'], 15, len(turn['user_text']))
+                    action = state.begin_action(turn['turn_id'], 'send_draft', {'draft_id': draft['draft_id']}, draft['draft_id'])
+                if status != 'attempting':
+                    state.finish_action(action['action_id'], {'ok': status in ('submitted', 'completed'), 'status': status,
+                                                           'error': 'Synthetic ' + status, 'output': 'Agent interruption completed.'})
+                before = state.snapshot()['actions'][action['action_id']]
+                store.close()
+                store = JarvisStore(db)
+                restored = JarvisState(store=store)
+                recovered = restored.actions[action['action_id']]
+                text = restored.turns[turn['turn_id']]['result']['text']
+                if status == 'attempting':
+                    self.assertEqual(recovered['status'], 'uncertain')
+                    self.assertIn('uncertain', text)
+                else:
+                    self.assertEqual(recovered, before)
+                    if status == 'uncertain':
+                        self.assertIn('uncertain', text)
+                    elif status == 'submitted':
+                        self.assertIn('Input submitted', text)
+                        self.assertIn('task is not complete', text)
+                    elif status == 'completed':
+                        self.assertIn('Agent interruption completed.', text)
+                        self.assertNotIn('uncertain', text)
+                        self.assertNotIn('Delivery', text)
+                    else:
+                        self.assertIn(status, text)
+                        self.assertNotIn('uncertain', text)
+                        self.assertIn('Synthetic ' + status, text)
+                self.assertEqual(len(restored.actions), 1)
+                self.assertEqual(restored.turns[turn['turn_id']]['status'], 'cancelled')
+                store.close()

@@ -78,7 +78,20 @@ class JarvisState:
                 actions = [a for a in self.actions.values() if a['turn_id'] == turn['turn_id']]
                 text = 'Controller inference interrupted by restart. No action will be retried.'
                 if actions:
-                    text = ' '.join(('Input submitted to ' if a['status'] == 'submitted' else 'Delivery is uncertain for ') + (a.get('target') or {}).get('label', 'the captured conversation') + '. Its task is not complete; no automatic retry.' for a in actions)
+                    phrases = []
+                    for action in actions:
+                        label = (action.get('target') or {}).get('label', 'the captured conversation')
+                        status = action['status']
+                        if status == 'submitted':
+                            phrases.append('Input submitted to ' + label + '. Its task is not complete; no automatic retry.')
+                        elif status == 'uncertain':
+                            phrases.append('Delivery is uncertain for ' + label + '. Its task is not complete; no automatic retry.')
+                        elif status == 'completed':
+                            phrases.append(str(action.get('result', {}).get('output') or 'The requested control action completed.'))
+                        else:
+                            phrases.append('The requested action for ' + label + ' was ' + status + ': ' +
+                                           str(action.get('result', {}).get('error', status)) + '. No automatic retry.')
+                    text = ' '.join(phrases)
                 turn.update(status='cancelled', interrupted=True, error='Control service restarted', result={'text': text})
         for job in self.jobs.values():
             if job['status'] in ('queued', 'running'):
@@ -624,10 +637,20 @@ class JarvisState:
                 if turn['turn_id'] == turn_id:
                     continue
                 item = {key: copy.deepcopy(turn[key]) for key in ('turn_id', 'user_text', 'status')}
-                item['user_trust'] = 'explicit_user_source'
+                item.update(user_trust='explicit_user_source', user_source_ref={'source_turn_id': turn['turn_id']},
+                            user_text_truncated=False)
                 result = turn.get('result', {})
                 if result:
-                    item['assistant_text'] = result.get('text', '')
+                    original = result.get('text', '')
+                    excerpt = original[:1000]
+                    while encoded_size(excerpt) > 2048:
+                        excerpt = excerpt[:len(excerpt) // 2]
+                    item.update(assistant_text=excerpt, assistant_text_truncated=excerpt != original,
+                                assistant_source_ref={'turn_id': turn['turn_id'], 'field': 'result.text'})
+                    evidence = next((record for record in reversed(list(self.evidence.values()))
+                                     if record['turn_id'] == turn['turn_id']), None)
+                    if evidence:
+                        item['evidence_ref'] = evidence['evidence_ref']
                     if result.get('readback'):
                         item.update(assistant_kind='observed_reply', assistant_trust='untrusted_evidence',
                                     reply_ref=copy.deepcopy(result['readback'].get('reply_ref')),
@@ -640,11 +663,21 @@ class JarvisState:
                 while encoded_size(text) > 8192:
                     text = text[:len(text) // 2]
                 context['evidence'].append({'evidence_ref': record['evidence_ref'], 'tool': record['tool'], 'trust': 'untrusted', 'output': text})
-            while recent and (encoded_size(recent) > 32768 or encoded_size(dict(context, recent_turns=recent)) > max_bytes):
-                recent.pop(0)
-            context['recent_turns'] = recent
-            while context['evidence'] and encoded_size(context) > max_bytes:
+            def exceeds_budget():
+                return encoded_size(recent) > 32768 or encoded_size(dict(context, recent_turns=recent)) > max_bytes
+
+            while context['evidence'] and encoded_size(dict(context, recent_turns=recent)) > max_bytes:
                 context['evidence'].pop(0)
+            for kind in ('observed_reply', 'controller_response'):
+                for item in recent:
+                    if exceeds_budget() and item.get('assistant_kind') == kind and item.get('assistant_text'):
+                        item.update(assistant_text='', assistant_text_truncated=True)
+            while recent and exceeds_budget():
+                item = max(recent, key=lambda record: encoded_size(record['user_text']))
+                if not item['user_text']:
+                    break
+                item.update(user_text=item['user_text'][:len(item['user_text']) // 2], user_text_truncated=True)
+            context['recent_turns'] = recent
             if encoded_size(context) > max_bytes:
                 raise ValueError('Current source or offered pending state exceeds context limit; review/discard pending work')
             return context
