@@ -105,6 +105,10 @@ class RealBrowserTests(DisposableDesk):
             emit(rendition[len(prefix):])
             release.wait(15)
             raise RuntimeError('Synthetic delayed rendition failure')
+        config = patch.object(self.app.voice, 'config', return_value={
+            'configured': True, 'websocket_url': 'ws://controlled.invalid/speech'})
+        config.start()
+        self.addCleanup(config.stop)
         server = make_server(self.app)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -132,16 +136,17 @@ class RealBrowserTests(DisposableDesk):
                     }
                   };
                   voice.capture = {ready: true, playback: context};
-                  voice.config = {configured: true, websocket_url: 'ws://controlled.invalid/speech'};
                   document.getElementById('speech-style').value = 'spoken';
                 }""")
+                page.evaluate('refresh()')
                 page.locator('#phone-text').fill('Read Dog Data')
                 page.locator('#phone-input [type=submit]').click()
-                page.wait_for_function('speechSockets.length && speechSockets[0].sent.filter(m => m.text).length >= 2')
+                page.wait_for_function("""(text) => speechSockets.length &&
+                    speechSockets[0].sent.map(m => m.text || '').join('') === text""", arg=rendition)
                 page.evaluate("""() => {
                   const socket = speechSockets[0];
                   const phrases = socket.sent.filter(m => m.text).map(m => m.text);
-                  const first = Array.from(phrases[0]).length;
+                  const first = Array.from("Café 🐕. ").length;
                   const chars = Array.from(phrases.join(''));
                   socket.receive({alignment: {chars, starts: chars.map((_, i) => i < first ? i * 5 : 450 + (i - first) * 5), durations: chars.map(() => 5)}});
                   const audio = btoa(String.fromCharCode(0).repeat(19200));
