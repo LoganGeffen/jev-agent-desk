@@ -39,8 +39,9 @@ class ApiTests(DisposableDesk):
             return json.loads(raw)
 
     def turn(self, text, request_id, **fields):
+        source = fields.pop('source', 'typed')
         return self.post('/api/jarvis/turn', {'session_id': self.session, 'text': text,
-                                           'request_id': request_id, 'source': 'typed', **fields})
+                                           'request_id': request_id, 'source': source, **fields})
 
     def test_real_http_send_stream_and_polling_use_verified_status_not_hostile_prose(self):
         request, body = 'Tell Dog Data: exact words', 'exact words'
@@ -154,6 +155,41 @@ class ApiTests(DisposableDesk):
         self.assertEqual(second['delivery'], 'submitted')
         self.assertEqual(self.received('Dog Data').count(request.encode()), 1)
 
+
+    def test_semantic_voice_endpoint_never_dispatches_and_stale_commit_blocks(self):
+        original = self.app.evaluate
+        self.app.evaluate = lambda payload: {'answers': {'decision': {'choice': 'complete'}, 'correction': {'choice': 'yes'}}} if 'decision' in payload['questions'] else original(payload)
+        body = {'session_id': self.session, 'client_id': 'phone', 'transcript_id': 'words',
+                'transcript_revision': 1, 'text': 'No, tell Dog Data: exact words', 'subject': None}
+        decision = self.post('/api/jarvis/turn-decision', body)
+        self.assertTrue(decision['correction'])
+        self.assertEqual(self.get()['turns'], {})
+        self.post('/api/jarvis/turn-decision', {**body, 'transcript_revision': 2, 'invalidate': True})
+        with self.assertRaises(HTTPError) as error:
+            self.turn(body['text'], 'stale', source='voice', client_id='phone', transcript_id='words',
+                      transcript_revision=1, decision_id=decision['decision_id'])
+        self.assertEqual(error.exception.code, 400)
+        self.assertEqual(self.get()['actions'], {})
+        self.provider = lambda *args, **kwargs: final('Which conversation?')
+        receipt = self.turn('unfinished because', 'explicit', source='voice', explicit_send=True)
+        self.assertEqual(receipt['status'], 'completed')
+
+    def test_http_playback_source_is_application_owned_and_completion_marks_exact_reply_heard(self):
+        target = self.targets['Dog Data']
+        agent = self.app.jarvis_tools.agent(target)
+        self.app.attention.observe(agent, self.history(agent['thread_id']))
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final()
+        receipt = self.turn('Read Dog Data', 'read-playback')
+        create = {'session_id': self.session, 'op': 'create', 'turn_id': receipt['turn_id'],
+                  'client_id': 'phone', 'epoch': 1, 'style': 'original'}
+        with self.assertRaises(HTTPError):
+            self.post('/api/jarvis/playback', {**create, 'text': 'Invented heard text'})
+        playback = self.post('/api/jarvis/playback', create)
+        self.assertEqual(playback['text'], receipt['readback']['original'])
+        update = {'session_id': self.session, 'playback_id': playback['playback_id'], 'client_id': 'phone',
+                  'epoch': 1, 'status': 'completed', 'completed_phrases': [playback['full_boundary_id']]}
+        self.post('/api/jarvis/playback', update)
+        self.assertEqual(self.app.attention.view(self.app.observe()['tabs']), [])
 
 if __name__ == '__main__':
     import unittest

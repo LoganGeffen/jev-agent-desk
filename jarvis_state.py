@@ -282,15 +282,24 @@ class JarvisState:
             self.changed()
             return copy.deepcopy(job)
 
-    def create_playback(self, turn_id, client_id, epoch, text, reply_ref=None):
+    def create_playback(self, turn_id, client_id, epoch, text, reply_ref=None, source_ref=None):
         if not isinstance(client_id, str) or not client_id or type(epoch) is not int or not isinstance(text, str):
             raise ValueError('Invalid playback owner or text')
         with self.lock:
             if self.turns[turn_id]['status'] not in ('running', 'completed'):
                 raise ValueError('Cancelled or failed turns cannot begin playback')
+            if source_ref is not None:
+                previous = [p for p in self.playbacks.values() if p['client_id'] == client_id]
+                if any(p['epoch'] > epoch for p in previous):
+                    raise ValueError('Playback epoch is stale')
+                for old in self.playbacks.values():
+                    if old['status'] not in ('completed', 'cancelled', 'failed'):
+                        old['status'] = 'cancelled'
             playback = {'playback_id': opaque_id(), 'turn_id': turn_id, 'client_id': client_id,
                         'epoch': epoch, 'text': text, 'reply_ref': copy.deepcopy(reply_ref),
                         'status': 'generated', 'completed_phrases': []}
+            if source_ref is not None:
+                playback.update(source_ref=copy.deepcopy(source_ref), full_boundary_id=opaque_id())
             self.playbacks[playback['playback_id']] = playback
             self.changed()
             return copy.deepcopy(playback)
@@ -306,6 +315,8 @@ class JarvisState:
                 raise ValueError('Playback acknowledgment has a stale owner')
             if playback['status'] in ('completed', 'cancelled', 'failed'):
                 raise ValueError('Playback already ended')
+            if 'full_boundary_id' in playback and (list(completed_phrases) not in ([], [playback['full_boundary_id']]) or completed_phrases and status != 'completed'):
+                raise ValueError('Only application-approved completed audio boundaries are accepted')
             old = playback['completed_phrases']
             if list(completed_phrases)[:len(old)] != old:
                 raise ValueError('Playback progress cannot retract completed phrases')

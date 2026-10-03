@@ -511,3 +511,14 @@ def evaluate(payload):
         raise ProviderError(details) from None
     except URLError:
         raise RuntimeError('Jev could not connect while interpreting the request. No action was taken.') from None
+
+
+def turn_decision_question(text, subject):
+    return {'model': 'jev-latest', 'state': {'transcript': text, 'subject': subject}, 'questions': {
+        'decision': {'type': 'choice',
+            'instructions': 'Judge only whether the exact current spoken transcript is a complete user turn. Silence is not authorization. Never rewrite words or dispatch. A complete conversation question, instruction, or clarification may finish. Hold an unfinished dependent clause, missing recipient/body, thinking pause, or ambiguous continuation. A correction may be complete or unfinished independently.',
+            'criteria': {'complete': 'The speaker expressed a complete request or conversational response.',
+                         'wait': 'Incomplete, ambiguous, thinking, or awaiting more words.',
+                         'cancel': 'Explicitly cancel or discard this unsent request; never imply an earlier effect was undone.'}},
+        'correction': {'type': 'choice', 'instructions': 'Does this transcript revise an earlier recipient or message? Preserve its exact words; correction alone does not decide completeness.',
+                       'criteria': {'yes': 'Explicit revision or correction.', 'no': 'No revision.'}}}}

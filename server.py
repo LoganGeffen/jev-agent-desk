@@ -24,6 +24,7 @@ from claude_actions import working_indicator as claude_working_indicator
 from session_questions import ask_session
 from message_delivery import prepare_message
 from spoken_reply import ReadbackCache
+from jarvis_turns import JarvisTurns
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
@@ -230,6 +231,8 @@ class Playground:
             authorize=self.jarvis_tools.authorize, literal_boundaries=self.jarvis_tools.boundaries,
             response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"})
         self.jarvis_tools.controller = self.jarvis
+        self.jarvis_turns = JarvisTurns(self)
+        self.jarvis.turn_guard = self.jarvis_turns.guard
 
     def session_group(self, session):
         name, group = tmux(self.socket, "display-message", "-p", "-t", f"={session}:",
@@ -908,7 +911,7 @@ def make_server(playground, port=0, public_origin=None):
             if not self.local_request():
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
                 return
-            if self.path not in ("/api/jarvis/turn", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
+            if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move",
                                  "/api/tabs/close", "/api/panes/close",
@@ -917,18 +920,22 @@ def make_server(playground, port=0, public_origin=None):
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/jarvis/turn", "/api/spoken-version") else 8192
+                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/spoken-version") else 8192
                 if self.headers.get_content_type() != "application/json" or not 0 < size <= limit:
                     raise ValueError(f"Send a JSON request up to {limit} bytes")
                 body = json.loads(self.rfile.read(size))
                 if self.path.startswith('/api/jarvis/'):
                     if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
                         raise ValueError('Jarvis session changed; refresh before acting')
-                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream'},
+                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send'},
+                               '/api/jarvis/turn-decision': {'session_id', 'client_id', 'transcript_id', 'transcript_revision', 'text', 'subject', 'invalidate'},
                                '/api/jarvis/cancel': {'session_id', 'turn_id', 'request_id'},
-                               '/api/jarvis/playback': {'session_id', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}}[self.path]
+                               '/api/jarvis/playback': {'session_id', 'op', 'turn_id', 'style', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}}[self.path]
                     if set(body) - allowed:
                         raise ValueError('Unknown Jarvis request field')
+                    if self.path == '/api/jarvis/turn-decision':
+                        self.send(200, playground.jarvis_turns.decide(body))
+                        return
                     if self.path == '/api/jarvis/cancel':
                         if bool(body.get('turn_id')) == bool(body.get('request_id')):
                             raise ValueError('Cancel exactly one captured turn or request ID')
@@ -936,13 +943,22 @@ def make_server(playground, port=0, public_origin=None):
                         self.send(200, (playground.jarvis.cancel(turn_id) if turn_id else None) or {'status': 'not_attempted'})
                         return
                     if self.path == '/api/jarvis/playback':
-                        result = playground.jarvis.state.update_playback(body['playback_id'], body['client_id'], body['epoch'],
-                                    body['status'], body.get('completed_phrases', []))
+                        if body.get('op', 'update') == 'create':
+                            if set(body) - {'session_id', 'op', 'turn_id', 'client_id', 'epoch', 'style'}:
+                                raise ValueError('Unknown playback creation field')
+                            result = playground.jarvis_turns.create_playback(body)
+                        elif body.get('op', 'update') == 'update':
+                            if set(body) - {'session_id', 'op', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}:
+                                raise ValueError('Unknown playback update field')
+                            result = playground.jarvis_turns.update_playback(body)
+                        else:
+                            raise ValueError('Unknown playback operation')
                         self.send(200, result)
                         return
                     streaming = body.get('stream', False)
                     if type(streaming) is not bool:
                         raise ValueError('stream must be a boolean')
+                    playground.jarvis_turns.commit(body)
                     result = playground.jarvis.submit(body['text'], body['request_id'], capture_target=body.get('capture_target'),
                                                        source=body.get('source', 'typed'))
                     if streaming:

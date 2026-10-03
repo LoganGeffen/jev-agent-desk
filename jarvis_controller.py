@@ -44,10 +44,11 @@ def validate_arguments(value, schema):
 
 
 class JarvisController:
-    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None):
+    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None, turn_guard=None):
         self.provider = provider
         self.execute_tool = execute_tool
         self.state = state or JarvisState()
+        self.turn_guard = turn_guard
         self.response_policy = response_policy
         self.literal_boundaries = literal_boundaries
         self.authorize = authorize or (lambda name, arguments, turn: False)
@@ -98,6 +99,8 @@ class JarvisController:
         calls = 0
 
         def guard():
+            if self.turn_guard:
+                self.turn_guard(turn['request_id'])
             with self.state.lock:
                 self.state.guard(turn['turn_id'])
             if cancel.is_set():
