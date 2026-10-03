@@ -191,6 +191,15 @@ class RunTurnTests(unittest.TestCase):
         for rule in ('authoritative', 'untrusted', 'submitted', 'did not happen', 'only proof'):
             self.assertIn(rule, jarvis_haiku.INSTRUCTIONS)
 
+    def test_instructions_separate_delegation_from_observation_and_keep_app_ownership(self):
+        text = jarvis_haiku.INSTRUCTIONS
+        for rule in ('delegation', 'observation', 'Do not answer, explain', 'application subject',
+                     'independent of the visible capture target', 'never redirect', 'draft ids',
+                     'prepare a draft before sending', 'do not retry'):
+            self.assertIn(rule, text)
+        for utterance in ('Dog Data', 'dog', 'those numbers', 'example', 'read_reply', 'prepare_literal'):
+            self.assertNotIn(utterance, text)
+
     def test_unusable_context_is_refused_before_launch(self):
         oversize = {**CONTEXT, 'pad': 'x' * jarvis_haiku.CONTEXT_BYTES}
         unsafe = {**CONTEXT, 'bad': float('nan')}
