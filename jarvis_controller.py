@@ -135,10 +135,21 @@ class JarvisController:
                 action = None
                 handler_arguments = copy.deepcopy(arguments)
                 if name in self.effect_tools:
-                    if not self.authorize(name, copy.deepcopy(arguments), app_turn):
+                    authorization_arguments = copy.deepcopy(arguments)
+                    draft_id = arguments.get('draft_id') if name == 'send_draft' else None
+                    if draft_id:
+                        with self.state.lock:
+                            self.state.guard(turn['turn_id'])
+                            draft = self.state.drafts.get(draft_id)
+                            if draft is None:
+                                return {'ok': False, 'status': 'not_attempted', 'error': 'Unknown application draft'}
+                            if draft['turn_id'] != turn['turn_id'] or draft['status'] != 'prepared':
+                                raise ValueError('Draft lacks current-turn prepared provenance')
+                            authorization_arguments.update(target=copy.deepcopy(draft['target']),
+                                                           text=draft['text'], source_turn_id=draft['source_turn_id'])
+                    if not self.authorize(name, authorization_arguments, copy.deepcopy(app_turn)):
                         return {'ok': False, 'status': 'not_attempted', 'error': 'The user has not authorized this action'}
                     guard()
-                    draft_id = arguments.get('draft_id') if name == 'send_draft' else None
                     action = self.state.begin_action(turn['turn_id'], name, arguments, draft_id)
                     if draft_id:
                         handler_arguments = {'draft_id': draft_id, 'target': action['target'], 'text': action['payload']}

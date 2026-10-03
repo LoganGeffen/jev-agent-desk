@@ -77,6 +77,55 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.submit('changed wording', 'send')
 
+    def test_authorizer_sees_immutable_draft_body_and_can_deny_wrong_recipient(self):
+        checked, deliveries = [], []
+        request = 'Tell Controller: pause the queue'
+        def application(name, arguments, turn):
+            if name == 'set_subject':
+                return {'ok': True, 'status': 'completed', 'subject': DOG}
+            deliveries.append(arguments)
+            return {'ok': True, 'status': 'submitted'}
+        def authorize(name, arguments, turn):
+            checked.append(arguments)
+            self.assertEqual(turn['user_text'], request)
+            self.assertEqual(arguments['text'], 'pause the queue')
+            self.assertEqual(arguments['source_turn_id'], turn['turn_id'])
+            return arguments['target'] == CONTROLLER
+        def provider(context, specs, execute, **kwargs):
+            execute('set_subject', {'target': DOG})
+            draft = execute('prepare_literal', {'start': request.index('pause'), 'end': len(request)})
+            result = execute('send_draft', {'draft_id': draft['draft_id']})
+            self.assertEqual(result['status'], 'not_attempted')
+            return final('No message was submitted.')
+        app = JarvisController(provider, application, authorize=authorize)
+        result = app.submit(request, 'one')
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(checked[0]['target'], DOG)
+        self.assertEqual(deliveries, [])
+        self.assertEqual(result['actions'], [])
+
+    def test_authorizer_argument_mutation_cannot_change_captured_delivery(self):
+        deliveries = []
+        def application(name, arguments, turn):
+            if name == 'set_subject':
+                return {'ok': True, 'status': 'completed', 'subject': DOG}
+            deliveries.append(arguments)
+            return {'ok': True, 'status': 'submitted'}
+        def authorize(name, arguments, turn):
+            arguments['target'].update(CONTROLLER)
+            arguments['text'] = 'altered'
+            turn['subject'].update(CONTROLLER)
+            return True
+        def provider(context, specs, execute, **kwargs):
+            execute('set_subject', {'target': DOG})
+            draft = execute('prepare_literal', {'start': 0, 'end': 5})
+            execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        app = JarvisController(provider, application, authorize=authorize)
+        self.assertEqual(app.submit('Hello dog', 'one')['status'], 'completed')
+        self.assertEqual(deliveries[0]['target'], DOG)
+        self.assertEqual(deliveries[0]['text'], 'Hello')
+
     def test_unknown_tool_and_argument_override_never_reach_application(self):
         for name, args in [('shell', {}), ('send_draft', {'draft_id': 'any', 'text': 'replacement'}),
                            ('prepare_literal', {'start': True, 'end': 4}), ('read_reply', {'target': DOG})]:
