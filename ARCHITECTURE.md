@@ -1,5 +1,149 @@
 # Architecture
 
+There are two request paths. **Jarvis** is the browser default: a continuing
+conversation owned by the app. **Direct dictation** is the selectable alternative
+and the original path, described under [Direct path](#direct-path). The tmux, identity,
+history and voice modules below serve both.
+
+## Jarvis path
+
+```text
+browser (index.html, jarvis.js, voice.js)
+  | POST /api/jarvis/turn-decision   semantic pause, voice only
+  | POST /api/jarvis/turn            exact text, request_id, captured target
+  v
+server.py: loopback + Origin + session_id checks, unknown fields rejected
+  -> jarvis_turns.JarvisTurns        decision/transcript fencing, playback ledger
+  -> jarvis_controller.JarvisController.submit
+       state guard -> provider run_turn -> tool dispatch -> response policy
+       -> jarvis_haiku.run_turn      fresh Claude CLI call per turn
+          <-> jarvis_mcp.ToolBridge  private loopback MCP, 8 calls, 60 s
+       -> jarvis_tools.JarvisTools.execute / authorize
+          -> session_actions -> provider adapter -> tmux delivery
+  <- receipt-derived result {text, status, actions, readback}
+jarvis_state.JarvisState  <-> jarvis_store.JarvisStore (SQLite)
+```
+
+**Modules.**
+
+- `jarvis_state.py`: the application-owned record. Turns, requests (idempotent by
+  `request_id`), drafts, actions, jobs, playbacks, clarifications, evidence
+  excerpts, notices, decisions, continuity and the attention queue. It builds the
+  bounded model context and runs startup recovery. It is the only place delivery
+  status changes.
+- `jarvis_store.py`: durable form of that record. One SQLite table of
+  `(kind, id, value)` rows in WAL mode with `synchronous=FULL`. A checkpoint writes
+  only the records that changed, and a failure raises so the caller does not
+  proceed.
+- `jarvis_controller.py`: runs one turn. It serializes effects under a lock, calls
+  the injected provider, enforces the call budget and deadline, and falls back to a
+  deterministic response if the provider errors. The provider is injected, so tests
+  use a synthetic one.
+- `jarvis_haiku.py`: the real provider. Each turn is a fresh `claude -p` call to
+  `claude-haiku-4-5-20251001` with `--tools ''`, a strict MCP config, an allowlist of
+  only the bridge tool names, no settings sources, hooks disabled, no session
+  persistence, low effort and thinking disabled. API-key and provider overrides
+  are removed so the subscription route is used. It rejects a turn if the init tool
+  list differs from the bridge set.
+- `jarvis_mcp.py`: a stdio MCP bridge bound to this process with schema validation,
+  a maximum of 8 calls, serialized execution and cancellation.
+- `jarvis_tools.py`: the application tools, authorization and receipt-derived
+  speech. Core tools (`read_user_source`, `set_subject`, `prepare_literal`,
+  `send_draft`) come from the controller; `JarvisTools` adds `list_sessions`,
+  `list_ready`, `resolve_subject`, `read_reply`, `select_session`,
+  `interrupt_agent`, `observer_job`, `job_status`, `confirm_draft`, `list_pending`,
+  `review_pending` and `discard_pending`.
+- `jarvis_turns.py`: HTTP-facing turn decisions and the playback ledger.
+
+**Control flow and authority.** The current user text is the only authoritative
+input. Replies, tool output and chat titles reach the model as untrusted evidence
+in a separate part of its context. Model text is never delivered to an agent. A
+literal send works this way:
+
+1. The app records source boundaries over the user's own message
+   (`set_literal_boundaries`); the model may only choose an offered `boundary_id`
+   through `prepare_literal`, producing an immutable draft that carries
+   current-turn provenance.
+2. `send_draft` runs under the effect lock. `authorize` first validates the target
+   identity again, then compares the target and exact text with the semantic
+   decision for this turn (below). A confirmed pending draft instead requires the
+   offer prompt in the immediately preceding turn.
+3. Delivery status is written as `attempting` before input is sent, then becomes
+   `submitted`, `uncertain` or `failed`. Only one delivery attempt is allowed per
+   original user turn; later attempts, with any draft, fail as duplicates.
+4. The spoken text comes from the receipt (`JarvisTools.response`), not from model
+   prose: submitted means handed over and not complete; uncertain means it will
+   not be retried; failure says nothing was submitted. A harmless reply with no
+   tool call passes a model-based narrative check (`narrative_check_ms`) or is
+   replaced. That check is a safety judgment; action acknowledgments are
+   deterministic.
+
+**Jev judgments.** Each is a focused question with its own typed choices, not a
+general prompt:
+
+- `authorization_question` (built in `jarvis_tools.py`): permission, target tab,
+  pane, message start, end and form, for send and interrupt. Shown only the current
+  message, tab names, pane facts and the subject. The target pane must come from
+  the choices offered, so a missing or ambiguous pane blocks.
+- `turn_decision_question` (`jev.py`): complete, wait or cancel, plus a correction
+  flag (observed to be unreliable; see VERIFICATION.md).
+- the narrative safety check, the confirm and discard permission checks, and a
+  continuity classifier over batches of eight older turns (`server.py`).
+
+A Jev failure is a hold or a block. It never becomes a send.
+
+**Subject and selection.** The conversational subject is stored in `JarvisState`
+and changes only through a tool result that resolves a chat. The visible selected
+pane is passed as a `capture_target`, independent of the subject. An absent subject
+produces a clarification question, never a selected-pane fallback.
+
+**Semantic pause (voice).** `voice.js` commits a transcript, waits `silenceMs`
+(700 ms) in Jarvis mode, and posts it to `/api/jarvis/turn-decision`. A *complete*
+judgment returns a `decision_id` tied to the transcript id, revision, text, subject
+and client. `JarvisTurns.commit` rejects a voice turn without the current, complete
+decision; `JarvisTurns.guard` re-checks that before every controller tool call.
+*Wait* rechecks at 4 s and again 8 s later (`maxRechecks=2`). New words, a
+revision, or a mode switch invalidate older decisions. A server or Jev failure
+holds the text. Explicit Send passes `explicit_send=true`. Direct mode keeps the
+earlier 3 s timer and never calls the decision endpoint.
+
+**Playback ledger.** `/api/jarvis/playback` creates and updates a record for each
+spoken readback: generated, scheduled and played are distinct states, owned by
+`client_id` and an epoch. A completed status needs the full boundary id; a partial
+`heard_prefix` is a Unicode-codepoint count with a SHA-256 of the prefix and
+provider alignment. A newer owner cancels the older record in the ledger. Only
+full completion marks the reply heard (`heard_reply`), and `/api/replies/heard`
+remains the legacy acknowledgment for non-Jarvis readback. Stop & listen cancels
+audio without touching the agent, and results arriving after a cancel cannot
+restart it. The server cancels a displaced client's ledger record but cannot stop
+that client's audio itself; the client must observe the cancellation (open
+limit F1 in VERIFICATION.md).
+
+**Jobs and notices.** `observer_job` queues a bounded explanation of an agent's
+evidence through the existing session-question path (two workers). Completion
+creates a quiet notice, consumed through `job_status`; persistence errors surface as
+diagnostics. Jobs never send and cannot be resumed after a restart.
+
+**Persistence and recovery.** `Playground` opens `<run-dir>/jarvis.sqlite3` and
+loads `JarvisState` from it, restores the attention queue, and `recover()` runs
+before serving. In-flight deliveries become `uncertain` and are never replayed;
+unsent prepared drafts and open clarifications become `needs_review`; running turns
+are cancelled as interrupted; jobs become interrupted; playbacks that were
+generating or playing become cancelled. No heard state is inferred. A repeated
+request id returns the stored outcome. Continuity beyond the recent window is a
+bounded summary of explicit user decisions with exact sources kept; pending drafts
+and actions are never summarized. Not covered: process supervision, a second writer
+on the same run directory, a corrupt database, and delivery whose receipt was lost,
+which is reported uncertain.
+
+**Browser client.** `jarvis.js` (`JarvisClient`) tracks pending requests per client,
+recovers a lost POST response by polling `/api/jarvis/state` (10 s grace, 90 s
+deadline) and says the message "was not resent". The input-mode selector in
+`index.html` defaults to Jarvis; direct mode calls `supersedeForDirect()` and uses
+the legacy request path.
+
+## Direct path
+
 The browser's typed and spoken drafts converge on `/api/request`. It sends exact
 composed text, a request ID, and a captured tab/pane/process-conversation identity.
 `server.py` snapshots available targets, calls Jev, validates the selected action
@@ -63,7 +207,8 @@ or interrupt. Browser follow-ups carry the exact recommendation reference and
 server-side pane validation runs before switching/readback. Only successful audio
 completion acknowledges that reply through `/api/replies/heard`; cancellation,
 errors and late completion cannot acknowledge a newer reply. Reply notices stay
-silent. Queue state is in memory and shared by clients of the web process.
+silent. The queue is shared by clients of the web process and is checkpointed in the
+Jarvis store, so its entries and heard state are restored on restart.
 `session_questions.py` captures history plus live terminal evidence and
 asks an isolated model for an observer answer. `model_stream.py` limits generation
 to two concurrent calls. Claude model names use `claude_stream.py`, defaulting to
@@ -102,5 +247,6 @@ has its own explicit pane identity checks.
 
 The HTTP and WebSocket listeners bind to loopback. HTTP checks Host/Origin;
 WebSocket checks Origin. Remote access requires a separately authenticated private
-proxy. There are no accounts, multi-user isolation, public hosting, or automatic
-crash recovery in this application.
+proxy. There are no accounts, multi-user isolation, public hosting, or process
+supervision in this application. The Jarvis ledger is durable across restarts, but a
+crashed web process must be restarted by you.
