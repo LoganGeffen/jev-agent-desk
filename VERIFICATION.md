@@ -10,44 +10,30 @@ This file separates three kinds of evidence and never lets one stand in for anot
 - **Unverified**: nothing was exercised. This includes every physical-device
   property.
 
-Evidence is labelled by build stage (M1 to M5) and by the tree it ran on. Each stage
-was verified on its own tree; no single full-suite run covers this branch's tree.
-The product is **not accepted**: the final independent review of a combined,
-immutable candidate and its combined full suite are later steps that are not
-recorded here.
+Evidence is labelled by build stage (M1 to M5) and by the tree it ran on. The
+combined M4 identity/continuity candidate `653c4dd` (tree `346a1bfb`) passed
+341 Python tests, 153 Node tests and Chromium checks. Its unchanged original
+identity and continuity probes passed in nonauthor rechecks; independent
+`OPUS-FINAL-DELTA.json` closed those blockers (`M4-GATE.json`).
+The later prepared-message repair is integrated at `8cd019c` (runtime tree
+`058f3c3d`). Its exact-runtime natural Haiku/Jev composition passed; see Measured.
+The final suite on this later runtime passed: 344 Python tests, 153 Node tests and
+Chromium checks (`final-prepared-check.log`, exit 0). Independent delta review
+applies to `653c4dd`, not to the later prepared-result repair.
 
 Run artifacts live in a private, uncommitted run directory
 (`.run/jarvis-build-20261003` of the original checkout). They are referenced by name
 below and are not part of this repository. They contain no credential values;
 credential sources are recorded by path and configured variable names only.
 
-## Not accepted yet
+## Current verification limits
 
-These are open. None is described as passing anywhere in this repository.
-
-1. **Contextual send is not proven end to end against real providers.** The
-   unchanged natural request "Ask it to explain those numbers with an example" was
-   denied by Jev 1.13.0 before the authorization repair (permission deny, message
-   start 0 instead of 10; `M5-PROVIDER-FINDINGS.json`, `SOL-M5-PROVIDERS.json`).
-   After the repair, the focused authorization question allowed it with the exact
-   span (start 10, end 47; `SOL-M5-AUTH-RECHECK.json`). The named read now works
-   (`SOL-M5-NAMED-READ.json`: Haiku listed sessions and read Dog Data, and the
-   subject became Dog Data independent of the visible Notes pane). The natural send
-   and the explicit literal send were still blocked in that run: Jev allowed them
-   with the correct target and the exact source span, but **every pane choice was
-   "none"**, so nothing was delivered. This is real pane judgment, not only the
-   earlier fixture numbering. A pane-question repair (concrete default pane id in
-   the question; `SOL-M5-PANE.json`, commit `97c5c75`, 28 tools tests passing) was
-   verified only with synthetic assertions and is **not in this branch's tree**.
-   The real-provider recheck of the three blocked positive cases and the missing-pane
-   negative is pending and owned by the provider run. Until it passes, no
-   real-provider contextual or literal send is claimed.
-2. **Speech compatibility is partial.** One synthetic phrase round-tripped
-   through the real relay, but recognition changed capitalization, so the exact
-   transcription check is false (see Measured: speech).
-3. **Final independent review and combined full suite.** See Tests. This branch's
-   tree has no recorded full `python check.py` run, and no independent review of the
-   combined candidate is recorded.
+- **Speech compatibility is partial.** One synthetic phrase round-tripped through
+  the real relay, but recognition changed capitalization, so the exact transcription
+  check is false (see Measured: speech). Physical-device behavior remains unverified.
+- **Evidence scope.** The final `8cd019c` suite and two-turn real composition passed.
+  Independent M4 delta closure applies to `653c4dd`; synthetic tests and bounded
+  provider cases do not establish general model accuracy or physical-device behavior.
 
 ### Resolved since the earlier version of this file
 
@@ -55,6 +41,32 @@ Each item below was a recorded open finding. The fix, the original reproduction
 rechecked by someone other than the author, and, where relevant, a real-provider
 case are listed separately.
 
+- **Prepared but unsent follow-up.** The exact-runtime `653c4dd` probe prepared
+  the supplied body but did not send it, and canonical output replayed earlier
+  readback (`SOL-FINAL-PROVIDER.json`, preserved). Repair `8cd019c` exposes the exact
+  prepared text and source provenance to Haiku, clarifies draft usage, and offers
+  explicit recovery when preparation ends without sending. That unsent status
+  outranks earlier readback; the full original remains `available_readback`, while
+  `readback` denotes the primary read response. No automatic send or retry was
+  added. Fifty-nine controller/tools tests passed (`SOL-PREPARED-RESULT.json`).
+  The unchanged natural two-turn real composition then passed at the repaired
+  runtime (`SOL-FINAL-PROVIDER-REPAIRED.json`); its recorder limitation is below.
+- **Pane resolution.** Repair `04ea6f0` makes the default pane identity explicit
+  while preserving explicit number/role overrides. `SOL-M5-PANE-RECHECK.json`
+  passed four cases on probe `315b1bf`, runtime tree `9eae6f9a`: the unchanged
+  contextual follow-up, exact literal, recipient correction and missing-pane
+  denial. This used real Haiku/Jev with synthetic workspace and delivery callbacks.
+- **M4 captured identity (P2).** Fix `653c4dd` keeps the turn-captured subject
+  through same-turn read, resolve and set-subject calls. A replacement holds the
+  exact intended send body for explicit confirmation of an offered identity; a
+  second replacement holds again. Read/resolve confirmation changes the subject
+  without a draft or send authority. Eight regressions and all 36 tools tests pass
+  (`SOL-M4-IDENTITY.json`); the lead reran the unchanged original P2 successfully.
+- **M4 continuity (C1).** Fix `f6f4255` bounds observed reply text in model history
+  without changing the stored original. The nonauthor unchanged P8 recheck
+  (`P8-FIXED-RECHECK.json`) retains 23 recent turns, the newest user correction and
+  prior preference after a 34 KB readback; model context is 20,866 bytes. A later
+  20 KB readback gives 27,795 bytes. Exact originals remain available.
 - **M3 F1, cross-client audio revocation (`OPUS-M3.json`).** Client A kept playing
   after client B took over. Fix: commit `71cd555` in this branch (run
   `SONNET-M3-REVOKE.json`, tested commit `abcd6dc`, tree `975a9e5e`). Thirteen
@@ -173,11 +185,52 @@ tests).
 | permission for the contextual request | allow (0.71), start 10, end 47, target = subject |
 | explicit exact literal, recipient correction | Jev allowed; delivery blocked by fixture pane numbering |
 | discussion, negation, injected evidence | denied, no delivery |
-| Haiku plus Jev contextual send, end to end | **failed** (item 1 above) |
+| Haiku plus Jev contextual send, end to end | **failed** in this earlier recheck |
 
 The three guard cases (discussion, negation, injected evidence) held; the
 send-capable cases show only that the Jev judgment improved, not that delivery works.
 The recheck ran on its own recorded tree, not on this branch's tree.
+
+### Pane repair recheck and exact-runtime composition (M5)
+
+`SOL-M5-PANE-RECHECK.json` passed the four cases listed in Resolved: requested and
+actual Haiku `claude-haiku-4-5-20251001`, requested `jev-latest`, actual
+`jev-1.13.0`. Four Jev calls took 497, 357, 322 and 294 ms; two Haiku calls took
+4565 and 5464 ms. The natural read/follow-up selected Dog Data while Notes stayed
+visible and delivered exactly "explain those numbers with an example" once.
+Injected reply instructions supplied no authority. An explicit missing pane sent
+nothing and retained the exact source. Prior misses remain in
+`SOL-M5-PROVIDERS-initial.json`, `SOL-M5-AUTH-RECHECK.json` and
+`SOL-M5-NAMED-READ.json`.
+
+The later `SOL-FINAL-PROVIDER.json` used the actual modules from `653c4dd`, tree
+`346a1bfb`, including the archive tool and continuity context. Two real Haiku calls
+and one real Jev call completed (Haiku 5904 and 7053 ms; Jev 415 ms).
+"Read Dog Data" worked; the unchanged "Ask it to
+explain those numbers with an example" called read and prepared a draft, then asked
+for exact message text instead of sending. Zero delivery callbacks occurred. Notes
+stayed visible, the subject stayed Dog Data, and reply evidence remained untrusted.
+This failure is preserved unchanged.
+
+`SOL-FINAL-PROVIDER-REPAIRED.json` exercised the exact clean runtime `8cd019c`,
+tree `058f3c3d`, after the prepared-result/adapter repair. Actual Haiku
+`claude-haiku-4-5-20251001` calls took 5294 and 6887 ms; actual Jev `jev-1.13.0`
+took 304 ms. The unchanged read/follow-up called read, prepare and send. The
+captured app action contains one submitted Dog Data payload exactly
+"explain those numbers with an example", and one send tool receipt confirms it.
+Canonical output reports submission and explicitly says the task is not complete.
+The exact original reply remains available and evidence grants no authority.
+
+The provider run passed with a recorder limitation: final report serialization
+encountered a fixture callback that is not JSON serializable. Incremental actual
+receipts and tool counts were preserved; no provider calls were repeated. The
+post-run full state snapshot, raw delivery callback list and selected-pane
+observation are unavailable and are not reconstructed. Both inputs captured Notes,
+and the fixture observe function remained fixed to Notes with no focus tool call;
+this is not a separate final selection measurement. This two-turn composition and
+the earlier four authority cases are bounded evidence, not general routing accuracy.
+All these runs used synthetic workspace/delivery callbacks without existing
+terminals, microphone, speaker or phone.
 
 ### Speech compatibility (M5)
 
@@ -205,6 +258,7 @@ Gate results below were recorded by the stage that produced them.
 | M3 voice, turns, playback | semantic pause, decision fencing, owner/epoch playback ledger, Unicode partial prefix, actual-page probes | combined run at `0565a48`: 262 Python, 149 Node, Chromium. Independent review `OPUS-M3.json`: **not accepted** at that commit (F1 and F2, both since fixed and rechecked, see Resolved above; F3 was a fixture race, fixed in `0565a48`) |
 | M4 durability | SQLite ledger, restart recovery, jobs, continuity, byte bounds | `SOL-M4.json`; see Tests |
 | M5 F1/F2 fixes | cross-client audio revocation; transcript-bound authorization and filler handling | `SONNET-M3-REVOKE.json`, `SOL-M3-F2.json`, nonauthor original-probe rerun in `M3-GATE.json`; see Resolved above |
+| M5 actual mobile story | actual 390x844 Chromium to HTTP and disposable tmux: exact follow-up, slow observer plus Controller read, incomplete/corrected semantic request, quiet completion, Unicode aligned stop | `SOL-M5.json`; 3 tests pass, independently rerun with the 6 restart cases in `OPUS-M5.json` |
 | M5 restart announcement | actual Chromium, same-port HTTP restart, real SQLite, disposable tmux, synthetic provider | `SONNET-M5.json` run 8b755dea, commit `d9b381b`; 6 tests, see above |
 
 Specific M4 behaviors exercised with real subprocess exits, the real SQLite store,
@@ -214,6 +268,13 @@ as uncertain with zero replay; a lost submitted response is answered from the
 store on an identical repeated POST with one terminal input and no second provider
 call; checkpoint failure prevents the external call; jobs restore as interrupted
 without workers; exact partial playback restores without inferring heard.
+
+Remaining measured durability costs (`OPUS-M4.json`): synchronous whole-state
+checkpoints took about 20 ms at 50 readback turns, 120 ms at 300 and 170 ms at 600
+(1.6, 9.8 and 19.7 MB respectively). An injected 2 s checkpoint blocked a foreground
+read for 2.1 s. Long-lived ledgers can degrade foreground latency; this remains a
+limitation. An oversized 62 KiB user source is rejected with a generic message and
+is not retained.
 
 Everything in this section used synthetic providers, intercepted browser
 endpoints, or fake transports. It establishes control flow, not model quality.
@@ -231,11 +292,22 @@ Counts are what each stage recorded for its own tree. Nothing here repeats them.
   neighbouring suites also passed, 150 Node tests and 19 Python tests. The new tests were checked for
   sensitivity: they fail on the unmodified `jarvis.js`, and deleting the
   "request is still current" condition fails both non-current cases.
-- The last full tested tree recorded in the run state is `394c0fa2`. **No full
-  `python check.py` run is recorded for this branch's tree.** The integrated suite
-  and final independent review are pending, run by the lead, and not reported here.
+- Combined pre-fix candidate `6f0233f`, tree `a624058e`: 330 Python, 153 Node and
+  Chromium conversation-browser checks passed (`final-candidate-check.log`).
+  `OPUS-M5.json` independently reran the 3 actual mobile story and 6 restart browser
+  tests, 9 passing in 42.5 s, and checked lost-response reconciliation and stopping
+  readback without cancelling a running observer.
+- M4 fixed runtime `653c4dd`, tree `346a1bfb`: 341 Python, 153 Node and Chromium
+  passed (`final-fixed-check.log`). `OPUS-FINAL-DELTA.json` independently accepted
+  identity/continuity closure, including unchanged P2/P8 and additional laundering,
+  repeated-replacement and resolve-without-send challenges (`M4-GATE.json`).
+- Latest prepared-result runtime `8cd019c`, tree `058f3c3d`: 344 Python tests
+  (178.813 s), 153 Node tests and both Chromium checks passed, `check_exit=0`
+  (`final-prepared-check.log`). The real composition passed separately; independent
+  M4 delta review applies to the preceding `653c4dd` tree.
 - This documentation commit changes no code. It was checked only with
-  `git diff --check`. Run the suite with the dependencies in `requirements-dev.txt`.
+  `git diff --check` and local Markdown link checks. The recorded runtime code is
+  unchanged by this documentation commit. Run the suite with the dependencies in `requirements-dev.txt`.
 
 ## Isolated checkout smoke
 
@@ -259,20 +331,28 @@ verification, and it used no existing conversation.
 - Behavior with existing real Codex and Claude conversations, which were not used.
 - Any service restart or cutover. None was performed. The restart test restarts a
   loopback test server only.
-- Whether a real Jev or Haiku conversation produces a deliverable pane choice (item 1
-  of Not accepted yet).
+- General model routing accuracy beyond the measured cases. Initial failures and
+  subsequent repaired passes remain recorded separately above.
 
 ## Artifacts
 
 All names are in the private run directory unless noted.
 
 - Provider: `SOL-M5-PROVIDERS.json`, `SOL-M5-AUTH-RECHECK.json`,
-  `SOL-M5-SPEECH.json`, `M5-PROVIDER-FINDINGS.json`, `SONNET-M5-AUTH.json`
+  `SOL-M5-SPEECH.json`, `M5-PROVIDER-FINDINGS.json`, `SONNET-M5-AUTH.json`,
+  `SOL-M5-PANE-RECHECK.json`, `SOL-FINAL-PROVIDER.json`,
+  `SOL-FINAL-PROVIDER-REPAIRED.json`
 - Stages: `M1-GATE.json`, `M2-GATE.json`, `OPUS-M3.json`,
   `M3-REVIEW-INTEGRATION-NOTE.json`, `SOL-M4.json`
 - Live Haiku: `haiku-probe-fixes.json`, `core-scenario-live.json`
 - Fixes: `SONNET-M3-REVOKE.json`, `SOL-M3-F2.json`, `SOL-M3-F2-PROVIDER.json`,
-  `M3-GATE.json`, `SOL-M5-NAMED-READ.json`, `SOL-M5-PANE.json`
+  `M3-GATE.json`, `SOL-M5-NAMED-READ.json`, `SOL-M5-PANE.json`,
+  `SOL-M4-IDENTITY.json`, `SOL-M4-CONTEXT-FIX.json`, `P8-FIXED-RECHECK.json`,
+  `SOL-PREPARED-RESULT.json`
 - Restart announcement and this refresh: `SONNET-M5-FINAL.json`; earlier
   documentation run: `SONNET-M5.json`
-- Repository: `README.md`, `ARCHITECTURE.md`, `test_jarvis_restart_browser.py`
+- Final story/review: `SOL-M5.json`, `OPUS-M5.json`, `OPUS-FINAL-DELTA.json`,
+  `M4-GATE.json`, `final-candidate-check.log`, `final-fixed-check.log`,
+  `final-prepared-check.log`
+- Repository: `README.md`, `ARCHITECTURE.md`, `test_jarvis_browser.py`,
+  `test_jarvis_restart_browser.py`

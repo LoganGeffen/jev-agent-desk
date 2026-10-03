@@ -162,8 +162,8 @@ built-in tools, no hooks, no session persistence, thinking disabled and provider
 API overrides removed. Its only tools are the app's own, reached through a private
 loopback bridge, with at most 8 tool calls and a 60 s limit per turn. The app, not
 the model, owns the conversation state; Haiku receives a bounded snapshot (24
-recent turns, a 32 KiB older-conversation summary, 8 KiB evidence excerpts, 64 KiB
-total).
+recent turns bounded to 32 KiB, 8 KiB older continuity entries, 8 KiB pending
+unclassified user sources, 8 KiB evidence excerpts, 64 KiB total).
 
 What Jarvis can do: list and read chats, set the conversational subject, switch the
 visible pane, deliver a message to a chat, interrupt a chat, and queue a background
@@ -177,7 +177,11 @@ explanation of a chat's output. Things to know:
   message at boundaries the app offers; the model only picks an offered boundary
   and never supplies message text. The only generated text is the
   indirect-question rewording the existing delivery path already uses.
-  Recipient identity is captured and checked again at send.
+  Recipient identity is captured and checked again at send. A replaced conversation
+  blocks a follow-up even if it has the same name and pane. Jarvis retains the exact
+  intended body and asks you to confirm the offered current conversation; another
+  replacement requires another confirmation. Confirming a read or subject resolution
+  never turns that command into a message.
 - **Jev authorizes effects.** Before a send or interrupt, Jev answers a compact
   authorization question about your current message alone: permission, recipient,
   pane, and where the message starts and ends. The app compares the target and exact
@@ -190,6 +194,9 @@ explanation of a chat's output. Things to know:
   submitted." plus the reason. A reply from Haiku that claims no action passes a
   model-based narrative check or is replaced by the tool output. That check is a
   safety judgment, not deterministic proof that the sentence is true.
+- **Preparation is not delivery.** If a turn prepares exact words but does not send,
+  Jarvis says no message was submitted and offers the retained draft for explicit
+  confirmation. Earlier readback stays available alongside that status.
 - **One delivery attempt per user turn.** A changed draft, recipient or retry in the
   same turn is rejected. After an unconfirmed delivery you must decide again.
 - **Originals stay available.** The exact original reply is always shown and can be
