@@ -582,6 +582,11 @@
             line.append(read);
           }
         }
+        if (item.availableReply) {
+          const original = document.createElement('pre');
+          original.textContent = item.availableReply.target + ' · preserved original reply\n' + item.availableReply.text;
+          line.append(original);
+        }
         if (item.recoverable) {
           const review = document.createElement('button');
           review.type = 'button';

@@ -78,6 +78,7 @@ class JarvisClient {
       revision: snapshot.revision, status: turn.status, text: turn.result?.text || '',
       actions: Object.values(snapshot.actions || {}).filter(action => action.turn_id === turn.turn_id),
       ...(turn.result?.readback ? {readback: turn.result.readback} : {}),
+      ...(turn.result?.available_readback ? {available_readback: turn.result.available_readback} : {}),
       ...(turn.interrupted ? {interrupted: true} : {}),
       ...(turn.error ? {error: turn.error} : {})};
   }
@@ -225,14 +226,16 @@ class JarvisClient {
     const jobs = Object.values(this.snapshot?.jobs || {}).filter(job => job.turn_id === receipt.turn_id);
     const delivered = receipt.actions.find(action => action.draft_id && ['attempting', 'submitted', 'uncertain'].includes(action.status));
     const readback = readbackOf(receipt);
+    const available = readbackOf(receipt, 'available_readback');
     const status = [{running: 'Jarvis is working…', completed: 'Answered', cancelled: 'Superseded or cancelled. Receipts below remain.',
       failed: 'Jarvis could not complete this: ' + (receipt.error || 'unknown error')}[receipt.status] || receipt.status,
       ...(readback && receipt.text ? [receipt.text] : []), ...receipt.actions.map(actionLine), ...jobs.map(job => `Job · ${job.subject?.label || 'conversation'}: ${job.status}`)].join('\n');
-    const signature = JSON.stringify([status, receipt.text, delivered?.payload, readback]);
+    const signature = JSON.stringify([status, receipt.text, delivered?.payload, readback, available]);
     if (this.rendered.get(receipt.request_id) === signature) return;
     this.rendered.set(receipt.request_id, signature);
     this.retain({id: receipt.request_id, text, source, recipient: 'Jarvis', status,
       deliveredText: delivered?.payload,
+      availableReply: available && available.original !== readback?.original ? {target: available.target?.label || available.target?.tab || 'Agent', text: available.original} : null,
       ...(readback ? {reply: {id: receipt.request_id, target: readback.target?.label || readback.target?.tab || 'Agent',
         text: readback.original, heard_reply: readback.reply_ref, turn_id: receipt.turn_id}}
         : receipt.status === 'completed' && receipt.text ? {reply: {id: receipt.request_id, target: 'Jarvis', text: receipt.text, turn_id: receipt.turn_id}} : {})});
@@ -359,8 +362,8 @@ async function sha256Hex(text) {
   } catch { return null; }
 }
 
-function readbackOf(receipt) {
-  const {original, target, reply_ref: reference} = receipt.readback || {};
+function readbackOf(receipt, field = 'readback') {
+  const {original, target, reply_ref: reference} = receipt[field] || {};
   if (typeof original !== 'string' || !original) return null;
   const plain = value => value && typeof value === 'object' && !Array.isArray(value) ? value : null;
   return {original, target: plain(target), reply_ref: plain(reference)};

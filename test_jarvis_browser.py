@@ -321,5 +321,112 @@ class RealBrowserTests(DisposableDesk):
             server.server_close()
             thread.join(2)
 
+    def test_incidental_original_is_visible_after_send_or_preparation_and_reload_without_playback(self):
+        original = 'Exact  original\nCafé 🐕. <b>not markup</b>  '
+        server = make_server(self.app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        errors = []
+        outcomes = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                for send in (False, True):
+                    with self.subTest(send=send), patch('jarvis_tools.read_reply', return_value=original):
+                        request = 'Tell Dog Data: preserved words ' + str(send)
+                        body = 'preserved words ' + str(send)
+                        self.allow(request, body=body)
+                        def provider(context, specs, execute, **kwargs):
+                            execute('read_reply', {'name': 'Dog Data'})
+                            draft = execute('prepare_literal', {})
+                            if send:
+                                execute('send_draft', {'draft_id': draft['draft_id']})
+                            return final('Untrusted narration: all done.')
+                        self.provider = provider
+                        self.app.focus(self.targets['Notes']['tab'])
+                        page = browser.new_page(viewport={'width': 390, 'height': 844})
+                        page.on('pageerror', lambda error: errors.append(str(error)))
+                        def spy_voice(route):
+                            response = route.fetch()
+                            route.fulfill(response=response, body=response.text() + '''
+                              const actualSpeakReply = VoiceControls.prototype.speakReply;
+                              VoiceControls.prototype.speakReply = function(...args) {
+                                (window.observedSpeechCalls ||= []).push(args[0]);
+                                return actualSpeakReply.apply(this, args);
+                              };
+                            ''')
+                        page.route('**/voice.js', spy_voice)
+                        page.goto('http://127.0.0.1:' + str(server.server_port))
+                        page.wait_for_function('currentState !== null && jarvis.sessionId !== null')
+                        capture = """() => {
+                          window.syntheticSpeech = [];
+                          voice.speakReply = async (text, generation, spokenReady, onHeard, track) => {
+                            syntheticSpeech.push(text);
+                            voice.presentReply(text);
+                            const player = {closed: false, stop() { this.closed = true; },
+                              track(callback) { callback({status: 'playing'}); }};
+                            track?.(player, {style: 'original', generation});
+                          };
+                        }"""
+                        page.evaluate(capture)
+                        page.locator('#phone-text').fill(request)
+                        page.locator('#phone-input [type=submit]').click()
+                        page.wait_for_function('(text) => jarvis.pending.size === 0 && speechRecords.some(item => item.text === text && item.availableReply)', arg=request)
+                        record = page.evaluate('(text) => speechRecords.find(item => item.text === text)', request)
+                        turn_id = record['reply']['turn_id']
+                        canonical = self.app.jarvis.snapshot()['turns'][turn_id]['result']['text']
+                        self.assertNotEqual(canonical, original)
+                        self.assertEqual(record['reply']['text'], canonical)
+                        self.assertEqual(record['availableReply']['text'], original)
+                        self.assertEqual(page.evaluate('syntheticSpeech'), [canonical])
+                        row = page.locator('#speech-records > p').filter(has_text=request).first
+                        self.assertIn('Dog Data · preserved original reply\n' + original, row.locator('pre').all_text_contents())
+                        self.assertEqual(row.locator('button', has_text='Read this reply').count(), 1)
+                        self.assertEqual(row.locator('b').count(), 0)
+                        page.wait_for_function('(id) => Object.values(jarvis.snapshot.playbacks).some(item => item.turn_id === id)', arg=turn_id)
+                        playbacks_before = self.app.jarvis.snapshot()['playbacks']
+                        own = [item for item in playbacks_before.values() if item['turn_id'] == turn_id]
+                        self.assertTrue(own)
+                        self.assertTrue(all(item['source_ref']['original'] == canonical for item in own))
+                        self.assertTrue(all(item['reply_ref'] is None for item in own))
+                        count_before_reload = len(playbacks_before)
+                        page.reload()
+                        page.wait_for_function('(id) => jarvis.snapshot?.turns[id] && speechRecords.some(item => item.reply?.turn_id === id && item.availableReply)', arg=turn_id)
+                        reloaded = page.evaluate('(id) => speechRecords.find(item => item.reply?.turn_id === id)', turn_id)
+                        self.assertEqual(reloaded['availableReply']['text'], original)
+                        self.assertEqual(reloaded['reply']['text'], canonical)
+                        page.wait_for_timeout(100)
+                        self.assertEqual(len(self.app.jarvis.snapshot()['playbacks']), count_before_reload)
+                        self.assertEqual(page.evaluate('window.observedSpeechCalls || []'), [])
+                        page.evaluate(capture)
+                        page.locator('#speech-history').evaluate('(element) => element.open = true')
+                        row = page.locator('#speech-records > p').filter(has_text=request).first
+                        row.locator('button', has_text='Read this reply').click()
+                        page.wait_for_function('syntheticSpeech.length === 1')
+                        self.assertEqual(page.evaluate('syntheticSpeech'), [canonical])
+                        page.wait_for_function('(count) => Object.keys(jarvis.snapshot.playbacks).length > count', arg=count_before_reload)
+                        latest = list(self.app.jarvis.snapshot()['playbacks'].values())[-1]
+                        self.assertEqual(latest['source_ref']['original'], canonical)
+                        self.assertNotEqual(latest['source_ref']['original'], original)
+                        self.assertEqual(self.app.observe()['selected'], self.targets['Notes']['tab'])
+                        actions = [item for item in self.app.jarvis.snapshot()['actions'].values() if item['turn_id'] == turn_id]
+                        self.assertEqual(len(actions), int(send))
+                        if send:
+                            self.assertEqual(actions[0]['status'], 'submitted')
+                            self.assertEqual(self.received('Dog Data').count(body.encode()), 1)
+                        outcomes.append({'send': send, 'canonical': canonical, 'original': original,
+                                         'reload_created_playback': False, 'manual_playback_source': 'canonical'})
+                        page.close()
+                browser.close()
+            self.assertEqual(errors, [])
+            output = Path(__file__).parent / '.run/jarvis-real-browser'
+            output.mkdir(parents=True, exist_ok=True)
+            (output / 'available-readback.json').write_text(json.dumps({'passed': True, 'cases': outcomes,
+                'scope': 'Actual Chromium/HTTP/server state, synthetic provider, disposable tmux; speech captured with controlled playback player, no physical device or provider.'}, indent=2) + '\n')
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
 if __name__ == '__main__':
     unittest.main()

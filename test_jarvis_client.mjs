@@ -879,3 +879,42 @@ test('a bound player that attaches after prepare is the only owner; cancel after
   await tick(); await tick(); await tick();
   assert.deepEqual(playbackPosts(s).map(body => body.status ?? body.op), ['create', 'playing', 'completed']);
 });
+
+test('an incidental original stays separately visible while canonical submitted or unsent text is spoken', async () => {
+  for (const canonical of ['Input submitted to B. Its task is not complete.', 'The exact message is prepared but not sent.']) {
+    const s = setup({post: async () => json(receipt('r1', canonical, {available_readback: READBACK}))});
+    await s.client.refresh();
+    await s.client.submit('Ask it to explain those numbers');
+    const record = s.records.get('r1');
+    assert.equal(record.reply.target, 'Jarvis');
+    assert.equal(record.reply.text, canonical);
+    assert.equal(record.availableReply.target, READBACK.target.label);
+    assert.equal(record.availableReply.text, READBACK.original);
+    assert.equal(record.availableReply.turn_id, undefined);
+    assert.deepEqual(s.spoken, [canonical]);
+    assert.equal(s.replyCalls[0].spokenReady, true);
+  }
+});
+
+test('snapshot recovery retains the incidental original without replacing or speaking the canonical reply', async () => {
+  const canonical = 'Input submitted to B. Its task is not complete.';
+  const s = setup({post: async () => json({})});
+  s.env.state = snapshot({revision: 2, requests: {r9: 't9'}, turns: {t9: turn('t9', 'r9', 'completed',
+    {result: {text: canonical, available_readback: READBACK}})}});
+  await s.client.refresh();
+  await s.client.refresh();
+  assert.equal(s.records.get('r9').reply.text, canonical);
+  assert.equal(s.records.get('r9').availableReply.text, READBACK.original);
+  assert.equal(s.replyCalls.length, 0);
+  assert.equal(heardPosts(s).length, 0);
+  assert.equal(s.calls.filter(call => call.url === '/api/jarvis/playback').length, 0);
+});
+
+test('a primary readback already showing the same original does not duplicate its preserved block', async () => {
+  const s = setup({post: async () => json(receipt('r1', READBACK.original, {readback: READBACK, available_readback: READBACK}))});
+  await s.client.refresh();
+  await s.client.submit('Read B');
+  assert.equal(s.records.get('r1').reply.text, READBACK.original);
+  assert.equal(s.records.get('r1').availableReply, null);
+  assert.deepEqual(s.spoken, [READBACK.original]);
+});
