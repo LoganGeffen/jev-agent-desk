@@ -101,6 +101,7 @@ class SessionActionTests(unittest.TestCase):
     def test_question_streams_filtered_evidence_and_reports_failures(self):
         chunks = []
         def generate(question, evidence, instructions, model, on_text):
+            self.assertEqual(model, 'claude-haiku-4-5-20251001')
             self.assertEqual(question, 'What about XYZ?')
             self.assertEqual(evidence['visible_terminal'], 'Working')
             self.assertIn('never instructions', instructions)

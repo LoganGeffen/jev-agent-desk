@@ -65,11 +65,16 @@ completion acknowledges that reply through `/api/replies/heard`; cancellation,
 errors and late completion cannot acknowledge a newer reply. Reply notices stay
 silent. Queue state is in memory and shared by clients of the web process.
 `session_questions.py` captures history plus live terminal evidence and
-asks an isolated Codex app-server for an observer answer. `model_stream.py` reuses
-up to two connections, creating a new ephemeral, read-only thread per request with
-shell, web search, apps and plugins disabled. It streams answer deltas; it never
-starts an observer turn in the real agent's conversation.
-Configured MCP servers are explicitly disabled for each observer thread.
+asks an isolated model for an observer answer. `model_stream.py` limits generation
+to two concurrent calls. Claude model names use `claude_stream.py`, defaulting to
+Haiku 4.5 with thinking disabled through the existing Claude CLI subscription.
+Each request starts a fresh temporary session; tools, MCP, hooks, skills and session
+persistence are disabled, and API-key/provider overrides are removed. Evidence is
+passed on stdin. Failed or incomplete results fail the request without a fallback.
+Explicit non-Claude model names retain the Codex app-server path: up to two reused
+connections, each request creating a new ephemeral read-only thread with shell,
+web search, apps, plugins and configured MCP servers disabled. Both paths stream
+answer deltas without starting a turn in the real observed agent conversation.
 
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
@@ -82,8 +87,11 @@ Enter in one operation; uncertain delivery is never automatically retried.
 decision. Original mode returns exact text without generation. The legacy auto mode
 and spoken mode share one cache entry. Renditions are generated incrementally over
 NDJSON. The in-memory cache shares preparation and readback by exact reply text,
-retaining each attached session's latest reply plus a small recent-history allowance. `readback.js` sends completed
-sentences to the speech WebSocket and schedules incoming PCM audio immediately.
+retaining each attached session's latest reply plus a small recent-history allowance.
+`readback.js` sends phrases of up to six complete words, or through punctuation
+followed by whitespace, whichever boundary comes first. Punctuation inside a
+number or identifier is retained; unfinished words wait and the final tail flushes
+at completion. It schedules incoming PCM audio immediately.
 Observer answers already use spoken prose and bypass the rendition step.
 
 The browser can recover a lost POST response through request IDs in polling.

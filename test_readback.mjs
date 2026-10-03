@@ -30,6 +30,43 @@ function setup() {
 }
 const audio = JSON.stringify({audio: Buffer.alloc(4800).toString('base64')});
 
+test('streams a complete short phrase before a sentence and flushes a partial tail', () => {
+  const s = setup();
+  s.player.write('There are two ready chats:');
+  assert.equal(s.socket.messages.length, 0);
+  s.player.write(' Dog Da');
+  assert.equal(s.socket.messages[0].text, 'There are two ready chats: ');
+  s.player.write('ta is waiting for your ');
+  assert.equal(s.socket.messages[1].text, 'Dog Data is waiting for your ');
+  s.player.write('input');
+  s.player.end();
+  assert.equal(s.socket.messages[2].text, 'input ');
+  assert.equal(s.socket.messages[3].text, '');
+  s.player.stop();
+});
+
+test('six-word threshold wins over later punctuation and preserves numbers and identifiers', () => {
+  const s = setup();
+  const text = 'Use https://example.test:8443 and sample_id=ABC_123 for 1,234 dogs, then wait.';
+  s.player.write(text);
+  assert.equal(s.socket.messages[0].text, 'Use https://example.test:8443 and sample_id=ABC_123 for 1,234 ');
+  assert.equal(s.socket.messages[1].text, 'dogs, ');
+  s.player.end();
+  assert.equal(s.socket.messages.map(m => m.text).join(''), text + ' ');
+  s.player.stop();
+});
+
+test('phrase buffering preserves text across every delta width', () => {
+  const text = 'Dog Data: 1,234 dogs; 40 have a trait. Ready? Final tail';
+  for (let width = 1; width <= text.length; width++) {
+    const s = setup();
+    for (let i = 0; i < text.length; i += width) s.player.write(text.slice(i, i + width));
+    s.player.end();
+    assert.equal(s.socket.messages.map(m => m.text).join(''), text + ' ');
+    s.player.stop();
+  }
+});
+
 test('plays first audio before text completion and waits for scheduled audio to end', () => {
   const s = setup();
   s.player.write('First sentence. Next');
