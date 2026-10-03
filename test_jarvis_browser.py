@@ -86,6 +86,135 @@ class RealBrowserTests(DisposableDesk):
             thread.join(2)
 
 
+    def test_actual_mobile_story_continues_while_observer_runs_and_completion_stays_quiet(self):
+        follow_up = 'Ask it to explain those numbers with an example'
+        message = 'explain those numbers with an example'
+        correction = 'Actually, tell Controller to pause the queue.'
+        self.allow(follow_up, body=message)
+        self.allow(correction, 'Controller', 'pause the queue.')
+        observer_started, observer_release = threading.Event(), threading.Event()
+        contexts, decisions, requests, errors = [], [], [], []
+        original_evaluate = self.app.evaluate
+        def evaluate(payload):
+            if 'decision' in payload['questions']:
+                text = payload['state']['transcript']
+                incomplete = text == 'Actually, tell Controller to'
+                decisions.append({'text': text, 'complete': not incomplete})
+                return {'answers': {'decision': {'choice': 'wait' if incomplete else 'complete'},
+                                    'correction': {'choice': 'yes' if text.startswith('Actually,') else 'no'}}}
+            return original_evaluate(payload)
+        self.app.evaluate = evaluate
+        def provider(context, specs, execute, **kwargs):
+            contexts.append(context)
+            text = context['current_turn']['user_text']
+            if text == 'Read Dog Data':
+                execute('read_reply', {'name': 'Dog Data'})
+            elif text in (follow_up, correction):
+                draft = execute('prepare_literal', {})
+                execute('send_draft', {'draft_id': draft['draft_id']})
+            elif text == 'What is Dog Data doing?':
+                execute('observer_job', {'name': 'Dog Data'})
+            elif text == 'While it runs what did the controller say?':
+                execute('read_reply', {'name': 'Controller'})
+            else:
+                execute('job_status', {'job_id': next(iter(self.app.jarvis.snapshot()['jobs']))})
+            return final('Untrusted model says everything was sent and finished.')
+        self.provider = provider
+        observer_original = 'Observer snapshot: Dog Data is waiting for review.'
+        def observe(*args, **kwargs):
+            observer_started.set()
+            if not observer_release.wait(15):
+                raise TimeoutError('Synthetic observer was not released')
+            return {'text': observer_original, 'snapshot': {'observed_at': 'synthetic'}}
+        self.app.focus(self.targets['Notes']['tab'])
+        server = make_server(self.app)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch('jarvis_tools.ask_session', side_effect=observe), sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page(viewport={'width': 390, 'height': 844})
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                page.on('request', lambda request: requests.append(request.post_data_json)
+                        if request.url.endswith('/api/jarvis/turn') else None)
+                page.goto('http://127.0.0.1:' + str(server.server_port))
+                page.wait_for_function('currentState !== null && jarvis.sessionId !== null')
+                page.evaluate("""() => {
+                    window.presented = []; window.spokenAttempts = [];
+                    const speak = voice.speak.bind(voice);
+                    voice.speak = (...args) => {spokenAttempts.push(args[0]); return speak(...args)};
+                    const present = voice.presentReply.bind(voice);
+                    voice.presentReply = text => {presented.push(text); return present(text)};
+                    voice.silenceMs = 20; voice.recheckMs = 10000;
+                }""")
+                def typed(text, count):
+                    page.locator('#phone-text').fill(text)
+                    page.locator('#phone-input [type=submit]').click()
+                    page.wait_for_function('(count) => jarvis.pending.size === 0 && speechRecords.length >= count', arg=count)
+                typed('Read Dog Data', 1)
+                typed(follow_up, 2)
+                typed('What is Dog Data doing?', 3)
+                self.assertTrue(observer_started.wait(1))
+                job_id = next(iter(self.app.jarvis.snapshot()['jobs']))
+                page.evaluate("voice.committed('While it runs what did the controller say?')")
+                page.wait_for_function('jarvis.pending.size === 0 && speechRecords.length >= 4 && voice.draft === null')
+                self.assertEqual(self.app.jarvis.snapshot()['jobs'][job_id]['status'], 'running')
+                self.assertFalse(observer_release.is_set())
+                page.wait_for_function("jarvis.snapshot.subject?.label === 'Controller'")
+                page.evaluate("voice.committed('Actually, tell Controller to')")
+                page.wait_for_function("voice.draft?.text === 'Actually, tell Controller to' && voice.draft.waiting")
+                self.assertEqual(len(requests), 4)
+                self.assertEqual(self.received('Controller'), b'')
+                page.evaluate("voice.committed('pause the queue.')")
+                page.wait_for_function('jarvis.pending.size === 0 && speechRecords.length >= 5 && voice.draft === null')
+                self.assertEqual(requests[-1]['text'], correction)
+                self.assertEqual(requests[-1]['source'], 'voice')
+                self.assertIn('decision_id', requests[-1])
+                self.assertFalse(requests[-1].get('explicit_send', False))
+                self.assertEqual(self.received('Dog Data').count(message.encode()), 1)
+                self.assertEqual(self.received('Controller').count(b'pause the queue.'), 1)
+                self.assertEqual(self.app.jarvis.snapshot()['subject'], self.targets['Controller'])
+                self.assertEqual(self.app.observe()['selected'], self.targets['Notes']['tab'])
+                before = page.evaluate('({presented:presented.length, speechAttempts:spokenAttempts.length, records:speechRecords.length, original:document.getElementById("reply-original").textContent})')
+                observer_release.set()
+                page.wait_for_function("""async (id) => {
+                    await jarvis.refresh();
+                    return jarvis.snapshot.jobs[id]?.status === 'completed';
+                }""", arg=job_id)
+                page.evaluate('refresh()')
+                after = page.evaluate('({presented:presented.length, speechAttempts:spokenAttempts.length, records:speechRecords.length, original:document.getElementById("reply-original").textContent})')
+                self.assertEqual(after, before)
+                self.assertEqual(self.app.jarvis.snapshot()['subject'], self.targets['Controller'])
+                self.assertEqual(self.app.jarvis.snapshot()['jobs'][job_id]['subject'], self.targets['Dog Data'])
+                self.assertEqual(len(page.evaluate('currentState.job_notices')), 1)
+                typed('What did that observation find?', 6)
+                self.assertEqual(page.locator('#reply-original').text_content(), observer_original)
+                self.assertTrue(next(iter(self.app.jarvis.snapshot()['notices'].values()))['consumed'])
+                self.assertEqual(contexts[1]['subject'], self.targets['Dog Data'])
+                self.assertTrue(any(item['text'] == 'Actually, tell Controller to' and not item['complete'] for item in decisions))
+                self.assertTrue(any(item['text'] == correction and item['complete'] for item in decisions))
+                originals = page.evaluate('speechRecords.filter(record => record.reply).map(record => record.reply.text)')
+                self.assertIn('Five of six samples passed; one needs review.', originals)
+                self.assertTrue(all('everything was sent and finished' not in text for text in page.evaluate('presented')))
+                self.assertEqual(errors, [])
+                output = Path(__file__).parent / '.run/jarvis-real-browser'
+                output.mkdir(parents=True, exist_ok=True)
+                page.locator('#speech-history > summary').click()
+                self.assertIn(message, page.locator('#speech-records').inner_text())
+                self.assertIn('pause the queue.', page.locator('#speech-records').inner_text())
+                page.screenshot(path=str(output / 'final-story-mobile.png'), full_page=True)
+                (output / 'final-story.json').write_text(json.dumps({'passed': True, 'turn_posts': requests,
+                    'semantic_decisions': decisions, 'quiet_completion': before == after,
+                    'job_subject': 'Dog Data', 'final_subject': 'Controller', 'visible_tab': 'Notes',
+                    'terminal_inputs': 2, 'page_errors': errors,
+                    'scope': 'Actual mobile-sized Chromium, VoiceControls semantic draft/continuation, JarvisClient, Python HTTP and disposable tmux; synthetic judgments/observer/provider, no microphone or audible playback. Actual aligned playback/stop uses the separate existing browser test.'}, indent=2) + '\n')
+                browser.close()
+        finally:
+            observer_release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
     def test_actual_voice_readback_interrupt_records_only_proven_unicode_prefix(self):
         original = 'An exact original reply whose unheard suffix must remain available.'
         for module in ('codex_actions.thread_read', 'server.reply_history'):
