@@ -1,9 +1,14 @@
 import json
+from pathlib import Path
+import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from attention import AttentionQueue
+from jarvis_state import JarvisState
+from jarvis_store import JarvisStore
 from reply_watch import ReplyWatch
 from test_attention import agent, judge, tab
 from test_readback_preparation import turn
@@ -90,6 +95,86 @@ class DurableAttentionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AttentionQueue().restore({'entries': [{'key': ['only', 'two'], 'id': 'x', 'reply': None, 'heard': False,
                                                    'arrived': 0, 'decision': None, 'answered': False}]})
+
+
+class SlowFailure(AttentionQueue):
+    def emit(self, strict=False):
+        try:
+            super().emit(strict)
+        except Exception:
+            time.sleep(.3)
+            raise
+
+
+class StoredAttentionTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='jarvis-attention-')
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / 'state.sqlite3'
+        self.tabs = [tab('a'), tab('b')]
+        self.open()
+        self.queue.observe(agent('a'), {'turns': [turn('a1', 'All tests passed.')]})
+        self.queue.observe(agent('b'), {'turns': [turn('b1', 'Which option should I use?')]})
+        self.queue.classify(self.queue.view(self.tabs, include_heard=True), judge)
+
+    def open(self):
+        self.store = JarvisStore(self.path)
+        self.addCleanup(self.store.close)
+        self.state = JarvisState(store=self.store)
+        self.queue = AttentionQueue()
+        self.queue.restore(self.state.attention)
+        self.queue.on_change = self.state.set_attention
+
+    def reopen(self):
+        self.store.close()
+        self.open()
+        for name, reply in (('a', 'All tests passed.'), ('b', 'Which option should I use?')):
+            self.queue.observe(agent(name), {'turns': [turn(name + '1', reply)]})
+        return {item['tab']: item for item in self.queue.view(self.tabs, include_heard=True)}
+
+    def item(self, name):
+        return next(item for item in self.queue.view(self.tabs) if item['tab'] == '@' + name)
+
+    def test_acknowledgment_is_durable_only_after_the_real_checkpoint_commits(self):
+        item = self.item('a')
+        self.queue.heard(item['id'])
+        self.assertEqual([entry['tab'] for entry in self.reopen().values() if entry['tab'] == '@a'], ['@a'])
+        self.assertEqual([entry['tab'] for entry in self.queue.view(self.tabs)], ['@b'])
+
+    def test_failed_acknowledgment_stays_unheard_across_later_checkpoints_and_reopen(self):
+        item = self.item('a')
+        with patch.object(self.store, 'checkpoint', side_effect=RuntimeError('disk full')):
+            with self.assertRaisesRegex(RuntimeError, 'disk full'):
+                self.queue.heard(item['id'])
+        self.assertEqual(self.queue.persist_error, 'disk full')
+        self.assertFalse(next(entry for entry in self.state.snapshot()['attention']['entries'] if entry['id'] == item['id'])['heard'])
+        self.assertIn('@a', [entry['tab'] for entry in self.queue.view(self.tabs)])
+        self.state.record_notice({'id': 'later', 'kind': 'job_result'})
+        self.queue.observe(agent('b'), {'turns': [turn('b2', 'Newer reply.')]})
+        restored = self.reopen()
+        self.assertEqual(restored['@a']['id'], item['id'])
+        self.assertIn('@a', [entry['tab'] for entry in self.queue.view(self.tabs)])
+
+    def test_concurrent_checkpoint_during_a_failing_acknowledgment_cannot_commit_it(self):
+        item, calls = self.item('a'), []
+        self.queue.__class__ = SlowFailure
+        def callback(snapshot):
+            if not calls:
+                calls.append(threading.Thread(target=self.queue.observe, args=(agent('b'), {'turns': [turn('b2', 'Newer reply.')]})))
+                calls[0].start()
+                time.sleep(.1)
+                with patch.object(self.store, 'checkpoint', side_effect=RuntimeError('disk full')):
+                    self.state.set_attention(snapshot)
+            else:
+                self.state.set_attention(snapshot)
+        self.queue.on_change = callback
+        with self.assertRaisesRegex(RuntimeError, 'disk full'):
+            self.queue.heard(item['id'])
+        calls[0].join(3)
+        self.assertFalse(calls[0].is_alive())
+        restored = self.reopen()
+        self.assertIn('@a', [entry['tab'] for entry in self.queue.view(self.tabs)])
+        self.assertEqual(restored['@a']['id'], item['id'])
 
 
 class ReplyNoticeTests(unittest.TestCase):

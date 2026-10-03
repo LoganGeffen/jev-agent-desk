@@ -11,7 +11,7 @@ class AttentionQueue:
     def __init__(self, on_change=None):
         self.entries = {}
         self.lock = threading.Lock()
-        self.emit_lock = threading.Lock()
+        self.emit_lock = threading.RLock()
         self.on_change = on_change
         self.persist_error = None
 
@@ -152,11 +152,13 @@ class AttentionQueue:
         self.emit()
 
     def heard(self, id):
-        with self.lock:
-            marked = [entry for entry in self.entries.values() if entry['id'] == id and not entry['heard']]
-            for entry in marked:
-                entry['heard'] = True
-        if marked:
+        with self.emit_lock:
+            with self.lock:
+                marked = [entry for entry in self.entries.values() if entry['id'] == id and not entry['heard']]
+                for entry in marked:
+                    entry['heard'] = True
+            if not marked:
+                return
             try:
                 self.emit(strict=True)
             except Exception:

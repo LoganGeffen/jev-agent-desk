@@ -11,82 +11,8 @@ from unittest.mock import patch
 
 from codex_actions import tmux
 from jarvis_state import JarvisState
+from jarvis_store import JarvisStore
 from server import Playground
-
-
-def install_m4_state_helpers():
-    # Mirrors the frozen M4-API state helpers until the durability baseline provides them.
-    import copy
-    if hasattr(JarvisState, 'update_job'):
-        return
-    original_snapshot, original_init = JarvisState.snapshot, JarvisState.__init__
-
-    def init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        self.notices, self.attention = {}, None
-
-    def snapshot(self):
-        with self.lock:
-            return dict(original_snapshot(self), notices=copy.deepcopy(self.notices), attention=copy.deepcopy(self.attention))
-
-    def update_job(self, job_id, status, result=None):
-        with self.lock:
-            job = self.jobs[job_id]
-            if job['status'] in ('completed', 'failed', 'interrupted'):
-                return copy.deepcopy(job)
-            job.update(status=status, result=copy.deepcopy(result) if result is not None else job['result'])
-            self.changed()
-            return copy.deepcopy(job)
-
-    def record_notice(self, notice):
-        with self.lock:
-            self.notices.setdefault(notice['id'], copy.deepcopy(notice))
-            self.changed()
-            return copy.deepcopy(self.notices[notice['id']])
-
-    def set_attention(self, value):
-        with self.lock:
-            self.attention = copy.deepcopy(value)
-            self.changed()
-
-    def records(self, ids):
-        found = [self.drafts.get(item) or self.clarifications.get(item) for item in ids]
-        if any(record is None or record['status'] not in ('prepared', 'pending', 'needs_review') for record in found):
-            raise ValueError('Only unsent retained records can be offered')
-        return found
-
-    def offer_pending(self, turn_id, ids, question):
-        with self.lock:
-            for record in records(self, ids):
-                record.update(prompt_turn_id=turn_id, prompt=question)
-            self.changed()
-
-    def review_pending(self, turn_id, ids):
-        with self.lock:
-            records(self, ids)
-            self.changed()
-
-    def discard_pending(self, turn_id, ids):
-        with self.lock:
-            for record in records(self, ids):
-                record['status'] = 'discarded'
-            self.changed()
-
-    original_confirm = JarvisState.confirm_draft
-
-    def confirm_draft(self, turn_id, target, draft_id=None, clarification_id=None):
-        with self.lock:
-            record = self.drafts.get(draft_id) or self.clarifications.get(clarification_id)
-            turns = list(self.turns)
-            if record is None or record.get('prompt_turn_id') != turns[turns.index(turn_id) - 1]:
-                raise ValueError('Retained record was not offered by the immediately previous turn')
-            return original_confirm(self, turn_id, target, draft_id, clarification_id)
-
-    for function in (init, snapshot, update_job, record_notice, set_attention, offer_pending, review_pending, discard_pending, confirm_draft):
-        setattr(JarvisState, '__init__' if function is init else function.__name__, function)
-
-
-install_m4_state_helpers()
 
 
 def final(text='Untrusted model claims sent and done.'):
@@ -123,11 +49,9 @@ class DisposableDesk(unittest.TestCase):
             if time.monotonic() > deadline:
                 raise AssertionError('Disposable synthetic command did not start: ' + tmux(self.socket, 'list-panes', '-a', '-F', '#{pane_current_command}'))
             time.sleep(.02)
-        self.app = Playground(self.socket, self.root / 'events.jsonl', self.evaluate,
-                              independent_selection=True, jarvis_provider=lambda *args, **kwargs: self.provider(*args, **kwargs))
-        watcher = patch.object(self.app.reply_watch, 'start')
-        watcher.start()
-        self.addCleanup(watcher.stop)
+        self.stores = []
+        self.addCleanup(lambda: [store.close() for store in self.stores if not getattr(store, 'closed', False)])
+        self.open_app()
         self.targets = {item['label']: {key: value for key, value in item.items() if key != 'number'}
                         for item in self.app.jarvis_tools.sessions()}
         self.assertEqual(set(self.targets), {'Dog Data', 'Controller', 'Notes'})
@@ -139,6 +63,19 @@ class DisposableDesk(unittest.TestCase):
             mocked.start()
             self.addCleanup(mocked.stop)
         self.history = history
+
+    def open_app(self):
+        self.app = Playground(self.socket, self.root / 'events.jsonl', self.evaluate,
+                              independent_selection=True, jarvis_provider=lambda *args, **kwargs: self.provider(*args, **kwargs))
+        self.stores.append(self.app.jarvis_store)
+        watcher = patch.object(self.app.reply_watch, 'start')
+        watcher.start()
+        self.addCleanup(watcher.stop)
+
+    def reopen(self):
+        self.app.jarvis_store.close()
+        self.app.jarvis_store.closed = True
+        self.open_app()
 
     def evaluate(self, payload):
         if 'narrative_safety' in payload['questions']:
@@ -307,7 +244,7 @@ class ToolTests(DisposableDesk):
         self.provider = lambda context, specs, execute, **kwargs: results.append(execute('discard_pending', {'record_ids': [record_id]})) or final()
         self.app.jarvis.submit('Mention that draft', 'no-discard')
         self.assertEqual(results[-1]['status'], 'not_attempted')
-        self.assertEqual(self.app.jarvis.snapshot()['drafts'][record_id]['status'], 'prepared')
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'][record_id]['status'], 'needs_review')
         self.intents['Forget that unsent message'] = {'permission': 'allow'}
         self.app.jarvis.submit('Forget that unsent message', 'discard')
         self.assertEqual(results[-1]['status'], 'completed')
@@ -404,6 +341,34 @@ class ToolTests(DisposableDesk):
         self.assertNotIn('sent', first['text'])
 
 
+    def test_retained_draft_survives_reopen_as_review_only_and_bare_yes_cannot_send_until_reviewed(self):
+        _, draft_id = self.retain_draft('Tell Dog Data: keep  these\nexact words ', 'keep  these\nexact words ')
+        self.reopen()
+        stored = self.app.jarvis.snapshot()['drafts'][draft_id]
+        self.assertEqual((stored['status'], stored['text'], stored['source_text']), ('needs_review',) + ('keep  these\nexact words ',) * 2)
+        self.intents['yes'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
+        attempts = []
+        def attempt(context, specs, execute, **kwargs):
+            attempts.append(execute('confirm_draft', {'draft_id': draft_id}))
+            return final()
+        self.provider = attempt
+        bare = self.app.jarvis.submit('yes', 'bare-after-reopen')
+        self.assertEqual(attempts[-1]['status'], 'not_attempted')
+        self.assertEqual(bare['actions'], [])
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.provider = lambda context, specs, execute, **kwargs: execute('review_pending', {'record_id': draft_id}) and final()
+        review = self.app.jarvis.submit('Review that unsent message', 'review-after-reopen')
+        self.assertEqual(review['text'], 'Send this exact message to Dog Data? keep  these\nexact words ')
+        def confirmed(context, specs, execute, **kwargs):
+            draft = execute('confirm_draft', {'draft_id': draft_id})
+            execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        self.provider = confirmed
+        receipt = self.app.jarvis.submit('yes', 'confirm-after-reopen')
+        self.assertEqual(receipt['actions'][0]['payload'], 'keep  these\nexact words ')
+        self.assertEqual(self.received('Dog Data').count('keep  these\rexact words '.encode()), 1)
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'][draft_id]['status'], 'superseded')
+
     def test_post_submission_bookkeeping_failure_preserves_receipt_and_blocks_reprepared_resend(self):
         for failure in ('reply_watch', 'attention'):
             with self.subTest(failure=failure):
@@ -431,6 +396,71 @@ class ToolTests(DisposableDesk):
                 self.assertIn('Input submitted to Dog Data', receipt['text'])
                 self.assertNotIn('failed', receipt['text'])
                 self.assertEqual(self.received('Dog Data').count(body.encode()), 1)
+
+
+class PendingStateLifecycleTests(unittest.TestCase):
+    DOG = {'tab': '@dog', 'pane': '%dog', 'identity': 'dog-identity', 'provider': 'codex', 'thread_id': 'thread', 'process': '1:1', 'label': 'Dog Data'}
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(prefix='jarvis-pending-')
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / 'state.sqlite3'
+        self.open()
+
+    def open(self):
+        self.store = JarvisStore(self.path)
+        self.addCleanup(self.store.close)
+        self.state = JarvisState(store=self.store)
+
+    def turn(self, text, request_id):
+        return self.state.begin_turn(text, request_id)[0]['turn_id']
+
+    def retained(self, body='exact  body\n'):
+        first = self.turn('Tell Dog Data: ' + body, 'one')
+        self.state.set_subject(first, self.DOG)
+        draft = self.state.prepare_literal(first, 15, 15 + len(body), self.DOG)
+        self.state.finish_turn(first, {'text': 'Draft prepared.'})
+        return first, draft['draft_id'], body
+
+    def test_only_an_offer_in_the_immediately_previous_completed_turn_confirms_exact_source(self):
+        first, draft_id, body = self.retained()
+        self.assertEqual(self.state.snapshot()['drafts'][draft_id]['status'], 'needs_review')
+        bare = self.turn('yes', 'bare')
+        with self.assertRaisesRegex(ValueError, 'explicit current review'):
+            self.state.confirm_draft(bare, self.DOG, draft_id=draft_id)
+        self.state.finish_turn(bare, {'text': 'Nothing to confirm.'})
+        review = self.turn('Review the retained message', 'review')
+        self.state.review_pending(review, [draft_id])
+        self.state.finish_turn(review, {'text': 'Send this exact message?'})
+        stale = self.turn('What is two plus two?', 'unrelated')
+        self.state.finish_turn(stale, {'text': 'Four.'})
+        late = self.turn('yes', 'late-yes')
+        with self.assertRaisesRegex(ValueError, 'explicit current review'):
+            self.state.confirm_draft(late, self.DOG, draft_id=draft_id)
+        self.state.finish_turn(late, {'text': 'No.'})
+        self.assertEqual(self.state.snapshot()['drafts'][draft_id]['status'], 'needs_review')
+        again = self.turn('Review it once more', 'review-again')
+        self.state.review_pending(again, [draft_id])
+        self.state.finish_turn(again, {'text': 'Send this exact message?'})
+        yes = self.turn('yes', 'confirming-yes')
+        confirmed = self.state.confirm_draft(yes, self.DOG, draft_id=draft_id)
+        self.assertEqual((confirmed['text'], confirmed['source_text'], confirmed['source_turn_id'], confirmed['status']), (body, body, first, 'prepared'))
+        self.assertEqual(self.state.snapshot()['drafts'][draft_id]['status'], 'superseded')
+
+    def test_offer_pending_at_restart_becomes_review_and_yes_still_needs_new_review(self):
+        _, draft_id, body = self.retained()
+        review = self.turn('Review it', 'review')
+        self.state.review_pending(review, [draft_id])
+        self.state.finish_turn(review, {'text': 'Send this exact message?'})
+        self.store.close()
+        self.open()
+        restored = self.state.snapshot()['drafts'][draft_id]
+        self.assertEqual((restored['status'], restored['text']), ('needs_review', body))
+        yes = self.turn('yes', 'yes-after-restart')
+        with self.assertRaises(ValueError):
+            self.state.confirm_draft(yes, self.DOG, draft_id=draft_id)
+        self.assertEqual(self.state.snapshot()['actions'], {})
+
 
 if __name__ == '__main__':
     unittest.main()

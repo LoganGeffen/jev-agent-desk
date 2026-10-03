@@ -45,7 +45,6 @@ class JarvisTools:
         self.readbacks = {}
         self.jobs_limit = threading.BoundedSemaphore(2)
         self.denials = {}
-        self.consumed = set()
 
     @property
     def state(self):
@@ -347,17 +346,24 @@ class JarvisTools:
             self.jobs_limit.release()
         try:
             job = self.state.update_job(job_id, status, answer)
+        except Exception as error:
+            self.state.record_persistence_error('job_completion', job_id, error)
+            return
+        try:
             self.state.record_notice({'id': self.job_notice_id(job_id), 'kind': 'job_result', 'quiet': True,
                 'job_id': job_id, 'turn_id': job['turn_id'], 'subject': job['subject'], 'status': job['status'],
                 'label': (job['subject'] or {}).get('label', 'conversation'), 'result_ref': {'job_id': job_id},
                 'created_at': time.time()})
-        except Exception:
-            return
+        except Exception as error:
+            self.state.record_persistence_error('job_notice', job_id, error)
 
     def job_notices(self):
-        notices = self.state.snapshot().get('notices', {})
-        notices = notices.values() if isinstance(notices, dict) else notices
-        return [notice for notice in notices if notice.get('kind') == 'job_result' and notice['id'] not in self.consumed]
+        return [notice for notice in self.state.snapshot()['notices'].values()
+                if notice.get('kind') == 'job_result' and not notice.get('consumed')]
+
+    def job_diagnostics(self, snapshot, job_id=None):
+        return [error for error in snapshot['persistence_errors'].values()
+                if error['kind'].startswith('job_') and (job_id is None or error['record_id'] == job_id)]
 
     def execute(self, name, arguments, turn):
         if name == 'list_sessions':
@@ -371,7 +377,12 @@ class JarvisTools:
             notices = self.job_notices()
             parts = [item['label'] + (' needs your input' if item['needs_input'] else ' has a reply') for item in items]
             parts += [f"{notice['label']} observation {notice['status']}" for notice in notices]
+            snapshot = self.state.snapshot()
+            diagnostics = self.job_diagnostics(snapshot)
+            parts += [f"{((snapshot['jobs'].get(error['record_id']) or {}).get('subject') or {}).get('label', 'A')} observation "
+                      f"result was not saved durably: {error['error']}" for error in diagnostics]
             return {'ok': True, 'status': 'completed', 'ready': items, 'job_notices': notices,
+                    'persistence_errors': diagnostics,
                     'output': '; '.join(parts) or 'No unread completed replies are ready.'}
         if name == 'set_subject':
             return {'ok': True, 'status': 'completed', 'subject': self.validate(arguments['target'])}
@@ -394,9 +405,15 @@ class JarvisTools:
             else:
                 output = f"The observation of {label} is still running."
             if job['status'] not in ('queued', 'running'):
-                self.consumed.add(self.job_notice_id(job['job_id']))
+                try:
+                    self.state.consume_notice(self.job_notice_id(job['job_id']))
+                except Exception as error:
+                    self.state.record_persistence_error('job_notice_consume', job['job_id'], error)
+            diagnostics = self.job_diagnostics(self.state.snapshot(), job['job_id'])
+            if diagnostics:
+                output += ' Persistence problem recorded for this job: ' + '; '.join(item['error'] for item in diagnostics) + '.'
             return {'ok': True, 'status': 'completed', 'job_id': job['job_id'], 'job_status': job['status'],
-                    'job_subject': job.get('subject'), 'output': output}
+                    'job_subject': job.get('subject'), 'persistence_errors': diagnostics, 'output': output}
         if name == 'list_pending':
             return self.list_pending()
         if name == 'review_pending':

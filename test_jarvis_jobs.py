@@ -3,6 +3,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from jarvis_store import JarvisStore
 from test_jarvis_tools import DisposableDesk, final
 
 
@@ -86,6 +87,121 @@ class JobTests(DisposableDesk):
         self.app.jarvis.submit('Anything else ready?', 'ready-again')
         self.assertEqual(again['job_notices'], [])
         self.assertEqual(len(self.notices()), 1)
+
+    def wait_for(self, condition, what):
+        deadline = time.monotonic() + 3
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(.01)
+
+    def test_reopened_store_keeps_quiet_job_lifecycle_with_captured_identity_and_consumed_notice(self):
+        asked, entered, release = [], threading.Semaphore(0), threading.Event()
+        def observe(socket, agent, question):
+            asked.append(agent['window_id'])
+            if agent['window_id'] == self.targets['Controller']['tab']:
+                raise RuntimeError('Terminal disconnected')
+            if agent['window_id'] == self.targets['Notes']['tab']:
+                entered.release()
+                release.wait(5)
+            return {'text': 'Observer evidence', 'snapshot': {'observed_at': 'now'}}
+        with patch('jarvis_tools.ask_session', side_effect=observe):
+            self.queue('Dog Data', 'Observe Dog', 'dog')
+            self.queue('Controller', 'Observe Controller', 'controller')
+            dog_job, controller_job = self.job_ids()
+            self.wait_status(dog_job, 'completed')
+            self.wait_status(controller_job, 'failed')
+            self.wait_for(lambda: len(self.notices()) == 2, 'two quiet notices')
+            self.queue('Notes', 'Observe Notes', 'notes')
+            self.assertTrue(entered.acquire(timeout=1))
+            notes_job = self.job_ids()[-1]
+            self.provider = lambda context, specs, execute, **kwargs: execute('resolve_subject', {'name': 'Controller'}) and final()
+            self.app.jarvis.submit('Switch to Controller', 'foreground')
+            before, previous = self.app.jarvis.snapshot(), self.app
+            self.reopen()
+            release.set()
+            self.wait_for(lambda: 'job_completion:' + notes_job in previous.jarvis.snapshot()['persistence_errors'], 'orphan worker diagnostic')
+            after = self.app.jarvis.snapshot()
+            self.assertEqual({key: job['status'] for key, job in after['jobs'].items()},
+                             {dog_job: 'completed', controller_job: 'failed', notes_job: 'interrupted'})
+            self.assertEqual([after['jobs'][key]['subject'] for key in (dog_job, controller_job, notes_job)],
+                             [self.targets[name] for name in ('Dog Data', 'Controller', 'Notes')])
+            self.assertEqual(after['jobs'][controller_job]['result']['error'], 'Terminal disconnected')
+            self.assertEqual(after['subject'], self.targets['Controller'])
+            self.assertEqual(set(after['turns']), set(before['turns']))
+            self.assertEqual((after['playbacks'], after['persistence_errors']), ({}, {}))
+            self.assertEqual(set(after['notices']), {'job:' + dog_job, 'job:' + controller_job})
+            self.assertTrue(all(n['quiet'] and not n.get('consumed') for n in after['notices'].values()))
+            self.assertEqual(after['notices']['job:' + controller_job]['status'], 'failed')
+            self.app.reply_watch.start.assert_not_called()
+            self.assertEqual(self.received('Notes'), b'')
+            interrupted, receipt = self.job_status(notes_job, 'interrupted-after-reopen')
+            self.assertEqual(interrupted['job_status'], 'interrupted')
+            self.assertIn('not restarted', receipt['text'])
+            read, _ = self.job_status(dog_job, 'read-dog')
+            self.assertEqual((read['job_status'], read['output']), ('completed', 'Observer evidence'))
+            consumed = self.app.jarvis.snapshot()['notices']['job:' + dog_job]
+            self.assertTrue(consumed['consumed'] and isinstance(consumed['consumed_at'], float))
+            self.reopen()
+            kept = self.app.jarvis.snapshot()['notices']
+            self.assertEqual(kept['job:' + dog_job], consumed)
+            self.assertFalse(kept['job:' + controller_job].get('consumed'))
+            ready = {}
+            self.provider = lambda context, specs, execute, **kwargs: ready.update(execute('list_ready', {})) or final()
+            self.app.jarvis.submit('What is ready after restart?', 'ready-after-reopen')
+            self.assertEqual([item['job_id'] for item in ready['job_notices']], [controller_job])
+            self.assertEqual(len(asked), 3)
+            self.assertEqual(self.app.jarvis.snapshot()['subject'], self.targets['Controller'])
+
+    def test_completion_store_failure_is_visible_never_durable_and_never_replays_the_worker(self):
+        gate, slow = self.gated()
+        with patch('jarvis_tools.ask_session', side_effect=slow) as asked:
+            self.queue()
+            self.assertTrue(gate['entered'].acquire(timeout=1))
+            (job_id,) = self.job_ids()
+            with patch.object(self.app.jarvis_store, 'checkpoint', side_effect=RuntimeError('disk full')):
+                gate['release'].set()
+                key = 'job_completion:' + job_id
+                self.wait_for(lambda: key in self.app.jarvis.snapshot()['persistence_errors'], 'completion diagnostic')
+                snapshot = self.app.jarvis.snapshot()
+                disk = JarvisStore(self.root / 'jarvis.sqlite3')
+                durable = disk.load()
+                disk.close()
+            diagnostic = snapshot['persistence_errors'][key]
+            self.assertEqual((diagnostic['kind'], diagnostic['record_id'], diagnostic['persisted']), ('job_completion', job_id, False))
+            self.assertIn('disk full', diagnostic['error'])
+            self.assertEqual(snapshot['notices'], {})
+            self.assertEqual(durable['jobs'][job_id]['status'], 'running')
+            self.assertEqual((durable['notices'], durable['persistence_errors']), ({}, {}))
+            status, receipt = self.job_status(job_id, 'after-failed-completion')
+            self.assertEqual([item['record_id'] for item in status['persistence_errors']], [job_id])
+            self.assertIn('Persistence problem recorded', receipt['text'])
+            self.assertIn('disk full', receipt['text'])
+            ready = {}
+            self.provider = lambda context, specs, execute, **kwargs: ready.update(execute('list_ready', {})) or final()
+            listed = self.app.jarvis.submit('What is ready?', 'ready-after-failure')
+            self.assertIn('not saved durably', listed['text'])
+            self.assertEqual(ready['job_notices'], [])
+            self.assertEqual(asked.call_count, 1)
+            self.assertEqual(len(self.job_ids()), 1)
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.assertEqual(self.app.jarvis.snapshot()['playbacks'], {})
+
+    def test_notice_and_consumption_failures_keep_the_result_and_surface_diagnostics(self):
+        gate, slow = self.gated()
+        gate['release'].set()
+        with patch('jarvis_tools.ask_session', side_effect=slow) as asked:
+            with patch.object(self.app.jarvis.state, 'record_notice', side_effect=RuntimeError('notice store down')):
+                self.queue()
+                (job_id,) = self.job_ids()
+                self.wait_for(lambda: 'job_notice:' + job_id in self.app.jarvis.snapshot()['persistence_errors'], 'notice diagnostic')
+            self.assertEqual(self.app.jarvis.snapshot()['jobs'][job_id]['status'], 'completed')
+            self.assertEqual(self.notices(), [])
+            with patch.object(self.app.jarvis.state, 'consume_notice', side_effect=RuntimeError('consume store down')):
+                status, receipt = self.job_status(job_id, 'read-without-notice')
+            self.assertEqual(status['output'].split(' Persistence')[0], 'Observer evidence')
+            self.assertEqual({item['kind'] for item in status['persistence_errors']}, {'job_notice', 'job_notice_consume'})
+            self.assertIn('notice store down', receipt['text'])
+            self.assertEqual(asked.call_count, 1)
 
     def test_saturation_is_bounded_with_busy_receipt_and_new_foreground_stays_responsive(self):
         gate, slow = self.gated()
