@@ -44,10 +44,11 @@ def validate_arguments(value, schema):
 
 
 class JarvisController:
-    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None):
+    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None):
         self.provider = provider
         self.execute_tool = execute_tool
         self.state = state or JarvisState()
+        self.response_policy = response_policy
         self.literal_boundaries = literal_boundaries
         self.authorize = authorize or (lambda name, arguments, turn: False)
         self.effect_tools = set(effect_tools) | {'send_draft', 'interrupt_agent', 'close_session'}
@@ -81,6 +82,7 @@ class JarvisController:
                 'request_id': turn['request_id'], 'revision': snapshot['revision'],
                 'status': turn['status'], 'text': turn.get('result', {}).get('text', ''),
                 'actions': [action for action in snapshot['actions'].values() if action['turn_id'] == turn['turn_id']],
+                **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'raw_model_text') if key in turn.get('result', {})}),
                 **({'error': turn['error']} if 'error' in turn else {})}
 
     def submit(self, text, request_id, capture_target=None, on_text=None, source='typed', mode='jarvis'):
@@ -103,7 +105,7 @@ class JarvisController:
             if time.monotonic() > deadline:
                 raise TimeoutError('Controller inference exceeded 60 seconds')
 
-        def dispatch(name, arguments):
+        def perform(name, arguments):
             nonlocal calls
             guard()
             if name not in self.specs:
@@ -131,6 +133,8 @@ class JarvisController:
                             return {'ok': False, 'status': 'clarification', 'candidates': options}
                         span = {key: options[0][key] for key in ('start', 'end')}
                     draft = self.state.prepare_literal(turn['turn_id'], **span)
+                    if self.literal_boundaries and options[0].get('form') == 'indirect_question':
+                        draft = self.state.formulate_draft(turn['turn_id'], draft['draft_id'], options[0]['formulated_text'])
                     return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target']}
                 action = None
                 handler_arguments = copy.deepcopy(arguments)
@@ -183,6 +187,11 @@ class JarvisController:
                         self.state.finish_action(action['action_id'], {'ok': False, 'status': 'uncertain', 'error': str(error)})
                     raise
 
+        def dispatch(name, arguments):
+            result = perform(name, arguments)
+            self.state.tool_receipt(turn['turn_id'], name, result)
+            return result
+
         def stream(delta):
             with self.control_lock:
                 guard()
@@ -197,12 +206,16 @@ class JarvisController:
             guard()
             if not isinstance(result, dict) or not isinstance(result.get('text'), str):
                 raise ValueError('Controller provider returned no final text')
+            if self.response_policy:
+                result = self.response_policy(result, turn)
+                guard()
             return self.receipt(self.state.finish_turn(turn['turn_id'], result=result))
         except InterruptedError:
             self.state.cancel(turn['turn_id'])
             return self.receipt(self.state.snapshot()['turns'][turn['turn_id']])
         except Exception as error:
-            return self.receipt(self.state.finish_turn(turn['turn_id'], error=error))
+            result = self.response_policy({'text': ''}, turn) if self.response_policy else None
+            return self.receipt(self.state.finish_turn(turn['turn_id'], result=result, error=error))
         finally:
             with self.control_lock:
                 self.cancels.pop(turn['turn_id'], None)

@@ -89,7 +89,7 @@ class JarvisState:
                 turn['status'] = 'failed' if error else 'completed'
                 if error:
                     turn['error'] = str(error)
-                else:
+                if result is not None:
                     turn['result'] = copy.deepcopy(result)
                 self.changed()
             return copy.deepcopy(turn)
@@ -111,6 +111,9 @@ class JarvisState:
         for draft in self.drafts.values():
             if draft['turn_id'] == turn_id and draft['status'] == 'prepared':
                 draft['status'] = 'cancelled'
+        for pending in self.clarifications.values():
+            if pending.get('source_turn_id') == turn_id and pending.get('status') == 'pending':
+                pending['status'] = 'cancelled'
 
     def set_subject(self, turn_id, target):
         target = captured_target(target)
@@ -133,7 +136,12 @@ class JarvisState:
                 identifier, start, end = option.get('boundary_id'), option.get('start'), option.get('end')
                 if not isinstance(identifier, str) or not identifier or type(start) is not int or type(end) is not int or not 0 <= start < end <= len(source):
                     raise ValueError('Invalid application-owned literal boundary')
-                boundaries.append({'boundary_id': identifier, 'start': start, 'end': end, 'text': source[start:end]})
+                boundary = {'boundary_id': identifier, 'start': start, 'end': end, 'text': source[start:end]}
+                if option.get('form') == 'indirect_question':
+                    if not isinstance(option.get('formulated_text'), str) or not option['formulated_text'].strip():
+                        raise ValueError('Indirect formulation must be application-generated text')
+                    boundary.update(form='indirect_question', formulated_text=option['formulated_text'])
+                boundaries.append(boundary)
             if len({item['boundary_id'] for item in boundaries}) != len(boundaries):
                 raise ValueError('Duplicate literal boundary ID')
             self.turns[turn_id]['literal_boundaries'] = boundaries
@@ -153,13 +161,52 @@ class JarvisState:
                     raise ValueError('A dispatched draft cannot be replaced')
                 old['status'] = 'superseded'
             draft = {'draft_id': opaque_id(), 'turn_id': turn_id, 'request_id': turn['request_id'],
-                     'form': 'literal', 'source_turn_id': turn_id, 'start': start, 'end': end, 'source_span': [start, end], 'text': turn['user_text'][start:end],
+                     'form': 'literal', 'source_text': turn['user_text'][start:end], 'source_turn_id': turn_id, 'start': start, 'end': end, 'source_span': [start, end], 'text': turn['user_text'][start:end],
                      'target': recipient, 'status': 'prepared', 'supersedes': supersedes}
             self.drafts[draft['draft_id']] = draft
             if supersedes:
                 self.corrections.append({'turn_id': turn_id, 'draft_id': draft['draft_id'], 'supersedes': supersedes})
             self.changed()
             return copy.deepcopy(draft)
+
+    def formulate_draft(self, turn_id, draft_id, text):
+        with self.lock:
+            self.guard(turn_id)
+            draft = self.drafts[draft_id]
+            if draft['turn_id'] != turn_id or draft['status'] != 'prepared':
+                raise ValueError('Only a current prepared draft can be formulated')
+            draft.update(text=text, form='indirect_question')
+            self.changed()
+            return copy.deepcopy(draft)
+
+    def confirm_draft(self, turn_id, target, draft_id=None, clarification_id=None):
+        target = captured_target(target)
+        with self.lock:
+            self.guard(turn_id)
+            if bool(draft_id) == bool(clarification_id):
+                raise ValueError('Confirm exactly one pending draft or clarification')
+            if draft_id:
+                original = self.drafts[draft_id]
+                if original['status'] != 'prepared' or original['target'] != target:
+                    raise ValueError('Pending draft changed or was already dispatched')
+                original['status'] = 'superseded'
+                draft = copy.deepcopy(original)
+            else:
+                pending = self.clarifications[clarification_id]
+                if pending['status'] != 'pending':
+                    raise ValueError('Clarification already resolved')
+                draft = {key: copy.deepcopy(pending[key]) for key in ('source_turn_id', 'start', 'end', 'source_text', 'text', 'form')}
+                pending['status'] = 'confirmed'
+            draft.update(draft_id=opaque_id(), turn_id=turn_id, request_id=self.turns[turn_id]['request_id'],
+                         target=target, status='prepared', confirmed_by=turn_id, supersedes=draft_id)
+            self.drafts[draft['draft_id']] = draft
+            self.changed()
+            return copy.deepcopy(draft)
+
+    def tool_receipt(self, turn_id, name, result):
+        with self.lock:
+            self.turns[turn_id].setdefault('tool_results', []).append({'tool': name, 'result': copy.deepcopy(result)})
+            self.changed()
 
     def begin_action(self, turn_id, tool, arguments, draft_id=None):
         with self.lock:

@@ -13,6 +13,9 @@ import time
 import uuid
 
 import jev
+from jarvis_controller import JarvisController
+from jarvis_haiku import run_turn as jarvis_run_turn
+from jarvis_tools import JarvisTools, TOOLS as JARVIS_TOOLS
 from attention import AttentionQueue
 from codex_actions import focus, tmux
 from session_actions import interrupt_turn, read_reply, send_message
@@ -193,7 +196,7 @@ class TabGroups:
 
 class Playground:
     def __init__(self, socket, log, evaluate=jev.evaluate, source_session="tabs",
-                 view_session=None, redact_terminal_logs=False, independent_selection=False):
+                 view_session=None, redact_terminal_logs=False, independent_selection=False, jarvis_provider=None):
         self.socket = socket
         self.log = Path(log)
         self.evaluate = evaluate
@@ -209,6 +212,8 @@ class Playground:
             raise ValueError("The source and view sessions do not share a tmux session group")
         self.latest = latest_event(self.log)
         self.recent_requests = {}
+        self.direct_inputs = {}
+        self.direct_receipts = {}
         self.readbacks = ReadbackCache()
         self.reply_watch = ReplyWatch()
         self.attention = AttentionQueue()
@@ -220,6 +225,11 @@ class Playground:
         self.input_lock = threading.Lock()
         self.groups = TabGroups(self.log.parent / "groups.json")
         self.voice = Voice(self.log.parent / "voice.jsonl")
+        self.jarvis_tools = JarvisTools(self)
+        self.jarvis = JarvisController(jarvis_provider or jarvis_run_turn, self.jarvis_tools.execute, JARVIS_TOOLS,
+            authorize=self.jarvis_tools.authorize, literal_boundaries=self.jarvis_tools.boundaries,
+            response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"})
+        self.jarvis_tools.controller = self.jarvis
 
     def session_group(self, session):
         name, group = tmux(self.socket, "display-message", "-p", "-t", f"={session}:",
@@ -345,7 +355,16 @@ class Playground:
 
     def submit(self, request, source="typed", request_id=None, capture_target=None, on_text=None,
                attention_target=None):
+        if request_id is not None and (not isinstance(request_id, str) or not request_id):
+            raise ValueError("A nonempty request ID string is required")
         with self.lock:
+            if request_id:
+                fingerprint = copy.deepcopy((request, source, capture_target, attention_target))
+                if request_id in self.direct_inputs:
+                    if self.direct_inputs[request_id] != fingerprint:
+                        raise ValueError("Request ID already belongs to different submitted input")
+                    return copy.deepcopy(self.direct_receipts[request_id])
+                self.direct_inputs[request_id] = fingerprint
             self.pending_close = None
             started = time.monotonic()
             event = {"timestamp": datetime.now(timezone.utc).isoformat(), "request": request,
@@ -510,6 +529,8 @@ class Playground:
             except Exception as error:
                 event['observation_error'] = str(error)
             event["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+            if request_id:
+                self.direct_receipts[request_id] = copy.deepcopy(event)
             self.record_event(event)
             return event
 
@@ -869,12 +890,14 @@ def make_server(playground, port=0, public_origin=None):
             elif self.path == "/":
                 self.send(200, Path(__file__).with_name("index.html").read_bytes(),
                           "text/html; charset=utf-8")
+            elif self.path == "/api/jarvis/state":
+                self.send(200, playground.jarvis.snapshot())
             elif self.path == "/api/state":
                 try:
                     self.send(200, playground.state())
                 except Exception as error:
                     self.send(503, {"error": str(error)})
-            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js"):
+            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
             elif self.path == "/favicon.ico":
                 self.send(204, b"")
@@ -885,7 +908,7 @@ def make_server(playground, port=0, public_origin=None):
             if not self.local_request():
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
                 return
-            if self.path not in ("/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
+            if self.path not in ("/api/jarvis/turn", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move",
                                  "/api/tabs/close", "/api/panes/close",
@@ -894,10 +917,45 @@ def make_server(playground, port=0, public_origin=None):
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/spoken-version") else 8192
+                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/jarvis/turn", "/api/spoken-version") else 8192
                 if self.headers.get_content_type() != "application/json" or not 0 < size <= limit:
                     raise ValueError(f"Send a JSON request up to {limit} bytes")
                 body = json.loads(self.rfile.read(size))
+                if self.path.startswith('/api/jarvis/'):
+                    if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
+                        raise ValueError('Jarvis session changed; refresh before acting')
+                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream'},
+                               '/api/jarvis/cancel': {'session_id', 'turn_id', 'request_id'},
+                               '/api/jarvis/playback': {'session_id', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases'}}[self.path]
+                    if set(body) - allowed:
+                        raise ValueError('Unknown Jarvis request field')
+                    if self.path == '/api/jarvis/cancel':
+                        if bool(body.get('turn_id')) == bool(body.get('request_id')):
+                            raise ValueError('Cancel exactly one captured turn or request ID')
+                        turn_id = body.get('turn_id') or playground.jarvis.snapshot()['requests'].get(body['request_id'])
+                        self.send(200, (playground.jarvis.cancel(turn_id) if turn_id else None) or {'status': 'not_attempted'})
+                        return
+                    if self.path == '/api/jarvis/playback':
+                        result = playground.jarvis.state.update_playback(body['playback_id'], body['client_id'], body['epoch'],
+                                    body['status'], body.get('completed_phrases', []))
+                        self.send(200, result)
+                        return
+                    streaming = body.get('stream', False)
+                    if type(streaming) is not bool:
+                        raise ValueError('stream must be a boolean')
+                    result = playground.jarvis.submit(body['text'], body['request_id'], capture_target=body.get('capture_target'),
+                                                       source=body.get('source', 'typed'))
+                    if streaming:
+                        self.start_stream()
+                        try:
+                            if result['status'] == 'completed' and result['text'] and not result.get('readback'):
+                                self.stream_event('text', text=result['text'])
+                            self.stream_event('result', result=result)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                    else:
+                        self.send(200, result)
+                    return
                 if self.path == '/api/spoken-version':
                     if body.get('stream'):
                         self.start_stream()
@@ -985,10 +1043,17 @@ def make_server(playground, port=0, public_origin=None):
             streaming = body.get('stream', False)
             if streaming:
                 self.start_stream()
-            event = playground.submit(request, "voice" if body.get("source") == "voice" else "typed",
-                                      request_id=body.get("request_id"), capture_target=body.get('capture_target'),
-                                      attention_target=body.get('attention_target'),
-                                      on_text=(lambda text: self.stream_event('text', text=text)) if streaming else None)
+            try:
+                event = playground.submit(request, "voice" if body.get("source") == "voice" else "typed",
+                                          request_id=body.get("request_id"), capture_target=body.get('capture_target'),
+                                          attention_target=body.get('attention_target'),
+                                          on_text=(lambda text: self.stream_event('text', text=text)) if streaming else None)
+            except ValueError as error:
+                if streaming:
+                    self.stream_event('error', error=str(error))
+                else:
+                    self.send(400, {'error': str(error)})
+                return
             if streaming:
                 try:
                     self.stream_event('result', result=event)
