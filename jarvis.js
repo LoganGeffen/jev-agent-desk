@@ -78,6 +78,7 @@ class JarvisClient {
       revision: snapshot.revision, status: turn.status, text: turn.result?.text || '',
       actions: Object.values(snapshot.actions || {}).filter(action => action.turn_id === turn.turn_id),
       ...(turn.result?.readback ? {readback: turn.result.readback} : {}),
+      ...(turn.interrupted ? {interrupted: true} : {}),
       ...(turn.error ? {error: turn.error} : {})};
   }
   reconcile(entry, startedAt) {
@@ -205,6 +206,8 @@ class JarvisClient {
       if (receipt.status === 'failed' && current) {
         const canonical = receipt.actions.length && typeof receipt.text === 'string' ? receipt.text.trim() : '';
         this.voice.speak(canonical || 'Jarvis could not complete that request. The details are on screen.', entry.generation);
+      } else if (receipt.status === 'cancelled' && receipt.interrupted === true && current && typeof receipt.text === 'string' && receipt.text.trim()) {
+        this.voice.speak(receipt.text.trim(), entry.generation);
       }
     }
   }
