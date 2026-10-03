@@ -211,7 +211,7 @@ class JarvisController:
 
         try:
             if self.continuity_classifier:
-                self.state.compact_continuity(self.continuity_classifier)
+                self.state.compact_continuity(self.continuity_classifier, turn['turn_id'])
             guard()
             result = self.provider(self.state.context(turn['turn_id']), self.tool_specs, dispatch,
                                    on_text=stream, cancel=cancel)

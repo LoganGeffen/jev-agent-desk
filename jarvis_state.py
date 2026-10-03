@@ -495,7 +495,7 @@ class JarvisState:
             self.changed()
             return copy.deepcopy(records)
 
-    def compact_continuity(self, classify):
+    def compact_continuity(self, classify, turn_id=None):
         with self.lock:
             older = list(self.turns.values())[:-24]
             through = self.continuity.get('through_turn_id')
@@ -527,10 +527,16 @@ class JarvisState:
                     valid_supersedes.add(identifier)
         except Exception as error:
             with self.lock:
+                if turn_id is not None:
+                    self.guard(turn_id)
                 self.continuity.update(status='failed', error=str(error), unsummarized_count=len(older) - offset)
                 self.changed()
             return
         with self.lock:
+            if turn_id is not None:
+                self.guard(turn_id)
+            previous_decisions = copy.deepcopy(self.decisions)
+            previous_continuity = copy.deepcopy(self.continuity)
             for result in classified:
                 turn = by_id[result['source_turn_id']]
                 if result['category'] != 'other':
@@ -540,7 +546,12 @@ class JarvisState:
                     self.decisions[turn['turn_id']] = {'source_turn_id': turn['turn_id'], 'category': result['category'],
                         'user_text': turn['user_text'], 'trust': 'explicit_user_source', 'status': 'active', 'supersedes': old}
             self.continuity.update(status='ready', error=None, through_turn_id=candidates[-1]['turn_id'], unsummarized_count=max(0, len(older) - offset - len(candidates)))
-            self.changed()
+            try:
+                self.changed()
+            except Exception as error:
+                self.decisions = previous_decisions
+                self.continuity = dict(previous_continuity, status='failed', error=str(error), unsummarized_count=len(older) - offset)
+                self.record_persistence_error('continuity', candidates[-1]['turn_id'], error)
 
     def read_user_source(self, source_turn_id, offset=0):
         with self.lock:
