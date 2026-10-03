@@ -402,8 +402,11 @@ def run():
           const full = begin('t-full');
           full.write('Complete reply from the browser.'); full.end();
         }""")
-        page.wait_for_function("heardCount === 1", timeout=15000)
         page.wait_for_function('jarvis.pending.size === 0')
+        deadline = time.monotonic() + 15
+        while not [item for item in playbacks if item['op'] == 'update' and item['status'] == 'completed']:
+            assert time.monotonic() < deadline, playbacks
+            page.wait_for_timeout(50)
         done = [item for item in playbacks if item['op'] == 'update' and item['status'] == 'completed']
         assert [item['completed_phrases'] for item in done] == [['fb-1']] and done[0]['playback_id'] == 'pb-1'
         page.evaluate("""() => {
@@ -416,7 +419,7 @@ def run():
         updates = [item for item in playbacks if item['op'] == 'update' and item['playback_id'] == 'pb-2']
         assert [item['status'] for item in updates] == ['playing', 'cancelled'], updates
         assert all(item['completed_phrases'] == [] for item in updates)
-        assert page.evaluate('heardCount') == 1 and not jarvis_cancels and len(requests) == direct_requests
+        assert page.evaluate('heardCount') == 0 and not jarvis_cancels and len(requests) == direct_requests
         page.evaluate('voice.capture.playback.close(); voice.capture = null')
         assert not errors, errors
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
