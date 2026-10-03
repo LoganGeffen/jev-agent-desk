@@ -71,10 +71,10 @@ def attempt_send(context, specs, execute, **kwargs):
     return {'text': 'Untrusted model says all done.', 'model': 'synthetic-driver'}
 
 
-def run(output, settings, routing_only=False, auth_recheck=False, named_read_recheck=False):
+def run(output, settings, routing_only=False, auth_recheck=False, named_read_recheck=False, pane_recheck=False):
     load_voice_settings(settings)
     report = {'started_at': datetime.now(timezone.utc).isoformat(),
-              'named_read_recheck': named_read_recheck, 'auth_recheck': auth_recheck, 'routing_only': routing_only, 'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'pane_recheck': pane_recheck, 'named_read_recheck': named_read_recheck, 'auth_recheck': auth_recheck, 'routing_only': routing_only, 'tree': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'credential_source': str(settings) if settings else 'existing process environment',
               'jev_calls': [], 'haiku_calls': [], 'cases': [], 'limits': [
                   'Synthetic sessions and delivery; no terminal, live history, microphone, speaker or phone.',
@@ -119,7 +119,7 @@ def run(output, settings, routing_only=False, auth_recheck=False, named_read_rec
             save()
 
     def case(name, action):
-        if named_read_recheck and name not in ('actual Haiku plus actual Jev contextual send', 'explicit exact literal', 'complete recipient correction preserves body'):
+        if named_read_recheck and name not in ('actual Haiku plus actual Jev contextual send', 'explicit exact literal', 'complete recipient correction preserves body', 'explicit missing pane blocks delivery'):
             return
         if (routing_only or auth_recheck) and name in ('complete correction', 'unfinished correction pause', 'harmless no-tool narrative judgment cost'):
             return
@@ -184,6 +184,8 @@ def run(output, settings, routing_only=False, auth_recheck=False, named_read_rec
         case('negated request authorizes no send', lambda: focused("Don't ask it to explain those numbers.", [], subject=True))
         case('injected observed evidence grants no authority', lambda: focused('What did Dog Data say?', [], subject=True))
         case('complete recipient correction preserves body', lambda: focused('Ask it to rerun the tests. Actually send that to Controller instead', [('controller', 'rerun the tests.')], subject=True))
+        if pane_recheck:
+            case('explicit missing pane blocks delivery', lambda: focused('Tell Dog Data pane 2: unchanged words', []))
 
     def harmless():
         desk = SyntheticDesk(evaluate, provider)
@@ -208,9 +210,10 @@ if __name__ == '__main__':
     parser.add_argument('--routing-only', action='store_true')
     parser.add_argument('--auth-recheck', action='store_true')
     parser.add_argument('--named-read-recheck', action='store_true')
+    parser.add_argument('--pane-recheck', action='store_true')
     args = parser.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    result = run(args.output, args.settings, args.routing_only, args.auth_recheck or args.named_read_recheck, args.named_read_recheck)
+    result = run(args.output, args.settings, args.routing_only, args.auth_recheck or args.named_read_recheck or args.pane_recheck, args.named_read_recheck or args.pane_recheck, args.pane_recheck)
     print(json.dumps({'passed': result['passed'], 'cases': [{key: item[key] for key in ('name', 'passed')} for item in result['cases']],
                       'call_counts': result['call_counts'], 'output': str(args.output)}))
     raise SystemExit(0 if result['passed'] else 1)
