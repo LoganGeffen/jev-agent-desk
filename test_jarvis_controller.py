@@ -226,11 +226,19 @@ class ControllerTests(unittest.TestCase):
         worker = threading.Thread(target=lambda: app.submit('Slow read', 'slow'))
         worker.start()
         self.assertTrue(entered.wait(2))
-        result = app.submit('Fast read', 'fast')
-        self.assertEqual(result['text'], 'Fast read')
-        self.assertFalse(release.is_set())
-        release.set()
-        worker.join(2)
+        fast_done, fast_results = threading.Event(), []
+        def fast_read():
+            fast_results.append(app.submit('Fast read', 'fast'))
+            fast_done.set()
+        fast_worker = threading.Thread(target=fast_read)
+        fast_worker.start()
+        try:
+            self.assertTrue(fast_done.wait(0.5), 'New read blocked behind superseded slow read')
+            self.assertEqual(fast_results[0]['text'], 'Fast read')
+        finally:
+            release.set()
+            worker.join(2)
+            fast_worker.join(2)
 
     def test_old_prepared_draft_cannot_send_without_current_turn_confirmation(self):
         draft_ids, deliveries = [], []
