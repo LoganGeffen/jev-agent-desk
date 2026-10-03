@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
 const submit = html.slice(html.indexOf('    async function submitRequest'), html.indexOf("    $('terminal-toggle').onclick"));
+const router = html.slice(html.indexOf('    async function submitInput'), html.indexOf("    $('terminal-toggle').onclick"));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(fetch, refresh = () => new Promise(() => {})) {
   const elements = new Map(['transcript', 'result'].map(id => [id, {}]));
@@ -141,4 +142,43 @@ test('stale attention references speak the recovery instruction without opening 
   assert.deepEqual(s.restored, []);
   assert.equal(spoken[0], event.error);
   assert.equal(s.context.busy(), false);
+});
+
+function routerSetup(mode) {
+  const fetched = [], jarvisCalls = [], cancelled = [];
+  const context = vm.createContext({
+    fetch: async (url, options) => { fetched.push({url, body: JSON.parse(options.body)}); return {ok: true, json: async () => success}; },
+    AbortController, setTimeout, clearTimeout, readJSONStream: response => response.json(),
+    crypto: {randomUUID: () => 'id'}, retainSpeech() {}, requestOutcome: () => 'ok', retainOutcome() {}, targetName: () => 'fixture',
+    refresh: () => new Promise(() => {}), currentState: null, attentionTarget: null, $: () => ({}),
+    voice: {stopReadback: () => 1, speak() {}},
+    jarvis: {submit: async (...args) => { jarvisCalls.push(args); }, supersedeForDirect: async () => { cancelled.push(true); }},
+  });
+  vm.runInContext(`let inputMode = ${JSON.stringify(mode)}; let submitting = false; let pendingRequest = null;
+    function setSubmitting(value) { submitting = value; }
+    function showError() {}
+    ${router}
+    globalThis.submitInput = submitInput;
+  `, context);
+  return {context, fetched, jarvisCalls, cancelled};
+}
+
+test('default mode sends natural-language input to Jarvis and never to the direct request endpoint', async () => {
+  const s = routerSetup('jarvis');
+  await s.context.submitInput('Ask Dog Data about it', {tab: '@a', pane: '%a', identity: 'x'}, 'typed');
+  assert.deepEqual(s.jarvisCalls, [['Ask Dog Data about it', 'typed']]);
+  assert.deepEqual(s.fetched, []);
+  assert.deepEqual(s.cancelled, []);
+});
+
+test('explicit direct mode keeps the old request endpoint with the captured identity and cancels pending Jarvis inference', async () => {
+  const s = routerSetup('direct');
+  const target = {tab: '@a', pane: '%a', identity: 'conversation-a'};
+  await s.context.submitInput('Exact words.', target, 'voice');
+  assert.deepEqual(s.jarvisCalls, []);
+  assert.equal(s.fetched.length, 1);
+  assert.equal(s.fetched[0].url, '/api/request');
+  assert.equal(s.fetched[0].body.request, 'Exact words.');
+  assert.deepEqual(s.fetched[0].body.capture_target, target);
+  assert.deepEqual(s.cancelled, [true]);
 });
