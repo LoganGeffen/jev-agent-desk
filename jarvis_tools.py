@@ -220,6 +220,8 @@ class JarvisTools:
                 else:
                     phrases.append('The requested action was not completed: ' + str(action.get('result', {}).get('error', status)))
             result['text'] = ' '.join(phrases)
+        elif any(p['source_turn_id'] == turn['turn_id'] and p['status'] == 'pending' for p in snapshot['clarifications'].values()):
+            result['text'] = 'Which conversation should receive this message? Its exact wording is retained.'
         elif any(item['result']['status'] in ('blocked', 'failed', 'not_attempted', 'clarification') for item in receipts):
             result['text'] = 'No message was submitted. ' + str(next(item['result'].get('error', 'Clarify the pending request.') for item in reversed(receipts)
                                    if item['result']['status'] in ('blocked', 'failed', 'not_attempted', 'clarification')))
@@ -294,6 +296,10 @@ class JarvisTools:
                 with self.app.input_lock:
                     self.app.deliver(agent, arguments['text'], event)
             except Exception as error:
+                if event['delivery'] == 'submitted':
+                    return {'ok': True, 'status': 'submitted',
+                            'output': 'Input submitted to ' + target['label'] + '; its task is not complete.',
+                            'warning': 'Post-submission bookkeeping failed: ' + str(error)}
                 return {'ok': False, 'status': event['delivery'] if event['delivery'] == 'uncertain' else 'failed', 'error': str(error)}
             return {'ok': True, 'status': 'submitted', 'output': 'Input submitted to ' + target['label'] + '; its task is not complete.'}
         if name == 'interrupt_agent':

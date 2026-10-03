@@ -182,7 +182,9 @@ class ToolTests(DisposableDesk):
         request = 'Tell it: retained words'
         self.allow(request, target='missing', body='retained words')
         self.provider = self.send_provider
-        self.app.jarvis.submit(request, 'pending')
+        initial = self.app.jarvis.submit(request, 'pending')
+        self.assertIn('Which conversation', initial['text'])
+        self.assertNotIn('unauthorized', initial['text'])
         pending = next(iter(self.app.jarvis.snapshot()['clarifications'].values()))
         self.assertEqual(pending['text'], 'retained words')
         self.intents['yes, Dog Data'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
@@ -242,6 +244,34 @@ class ToolTests(DisposableDesk):
             release.set()
         self.assertNotIn('sent', first['text'])
 
+
+    def test_post_submission_bookkeeping_failure_preserves_receipt_and_blocks_reprepared_resend(self):
+        for failure in ('reply_watch', 'attention'):
+            with self.subTest(failure=failure):
+                request, body = 'Tell Dog Data: only once ' + failure, 'only once ' + failure
+                self.allow(request, body=body)
+                results = []
+                def provider(context, specs, execute, **kwargs):
+                    first = execute('prepare_literal', {})
+                    results.append(execute('send_draft', {'draft_id': first['draft_id']}))
+                    boundary = self.app.jarvis.snapshot()['turns'][context['current_turn']['turn_id']]['literal_boundaries'][0]['boundary_id']
+                    again = execute('prepare_literal', {'boundary_id': boundary})
+                    results.append(execute('send_draft', {'draft_id': again['draft_id']}))
+                    return final('Submission failed. Try sending again.')
+                self.provider = provider
+                target = self.app.reply_watch if failure == 'reply_watch' else self.app.attention
+                method = 'start' if failure == 'reply_watch' else 'answered'
+                with patch.object(target, method, side_effect=RuntimeError('Synthetic bookkeeping failure')):
+                    receipt = self.app.jarvis.submit(request, failure)
+                self.assertEqual([result['status'] for result in results], ['submitted', 'submitted'])
+                self.assertTrue(results[-1]['replayed'])
+                self.assertIn('Post-submission bookkeeping failed', results[0]['warning'])
+                self.assertEqual(results[-1]['warning'], results[0]['warning'])
+                self.assertEqual(len(receipt['actions']), 1)
+                self.assertEqual(receipt['actions'][0]['status'], 'submitted')
+                self.assertIn('Input submitted to Dog Data', receipt['text'])
+                self.assertNotIn('failed', receipt['text'])
+                self.assertEqual(self.received('Dog Data').count(body.encode()), 1)
 
 if __name__ == '__main__':
     unittest.main()
