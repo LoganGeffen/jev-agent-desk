@@ -8,14 +8,52 @@ def session_key(agent):
 
 
 class AttentionQueue:
-    def __init__(self):
+    def __init__(self, on_change=None):
         self.entries = {}
         self.lock = threading.Lock()
+        self.emit_lock = threading.Lock()
+        self.on_change = on_change
+        self.persist_error = None
+
+    def snapshot(self):
+        with self.lock:
+            return {'version': 1, 'entries': [
+                {'key': list(key), 'id': entry['id'], 'reply': list(entry['reply']) if entry['reply'] else None,
+                 'heard': entry['heard'], 'arrived': entry['arrived'], 'decision': entry['decision'],
+                 'answered': bool(entry.get('answered'))} for key, entry in self.entries.items()]}
+
+    def restore(self, snapshot):
+        entries = {}
+        for item in snapshot['entries']:
+            key = tuple(item['key'])
+            if len(key) != 5 or not all(isinstance(part, str) for part in key):
+                raise ValueError('Invalid attention snapshot key')
+            entries[key] = {'id': item['id'], 'reply': tuple(item['reply']) if item['reply'] else None,
+                            'heard': bool(item['heard']), 'arrived': item['arrived'], 'decision': item['decision'],
+                            'answered': item['answered'], 'available': False, 'current': False}
+        with self.lock:
+            self.entries = entries
+
+    def emit(self, strict=False):
+        if not self.on_change:
+            return
+        with self.emit_lock:
+            try:
+                self.on_change(self.snapshot())
+                self.persist_error = None
+            except Exception as error:
+                self.persist_error = str(error)
+                if strict:
+                    raise
 
     def retain(self, agents):
         keys = {session_key(agent) for agent in agents}
         with self.lock:
-            self.entries = {key: value for key, value in self.entries.items() if key in keys}
+            kept = {key: value for key, value in self.entries.items() if key in keys}
+            changed = len(kept) != len(self.entries)
+            self.entries = kept
+        if changed:
+            self.emit()
 
     def unavailable(self, agent):
         with self.lock:
@@ -36,19 +74,25 @@ class AttentionQueue:
         with self.lock:
             key = session_key(agent)
             entry = self.entries.get(key)
-            if not entry or entry['reply'] != reply:
+            changed = not entry or entry['reply'] != reply
+            if changed:
                 entry = self.entries[key] = {
                     'id': uuid.uuid4().hex, 'reply': reply, 'heard': False,
-                    'arrived': time.monotonic(), 'decision': None,
+                    'arrived': time.time(), 'decision': None,
                 }
             entry['available'] = True
             entry['current'] = bool(reply and turns and turns[-1]['id'] == reply[0]
                                     and not entry.get('answered'))
+        if changed:
+            self.emit()
 
     def answered(self, agent):
         with self.lock:
-            if entry := self.entries.get(session_key(agent)):
+            entry = self.entries.get(session_key(agent))
+            if entry:
                 entry.update(answered=True, current=False)
+        if entry:
+            self.emit()
 
     def view(self, tabs, include_heard=False):
         result = []
@@ -105,12 +149,21 @@ class AttentionQueue:
             for entry in self.entries.values():
                 if entry['id'] in decisions:
                     entry['decision'] = decisions[entry['id']]
+        self.emit()
 
     def heard(self, id):
         with self.lock:
-            for entry in self.entries.values():
-                if entry['id'] == id:
-                    entry['heard'] = True
+            marked = [entry for entry in self.entries.values() if entry['id'] == id and not entry['heard']]
+            for entry in marked:
+                entry['heard'] = True
+        if marked:
+            try:
+                self.emit(strict=True)
+            except Exception:
+                with self.lock:
+                    for entry in marked:
+                        entry['heard'] = False
+                raise
 
     @staticmethod
     def reference(item):

@@ -10,7 +10,83 @@ import unittest
 from unittest.mock import patch
 
 from codex_actions import tmux
+from jarvis_state import JarvisState
 from server import Playground
+
+
+def install_m4_state_helpers():
+    # Mirrors the frozen M4-API state helpers until the durability baseline provides them.
+    import copy
+    if hasattr(JarvisState, 'update_job'):
+        return
+    original_snapshot, original_init = JarvisState.snapshot, JarvisState.__init__
+
+    def init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.notices, self.attention = {}, None
+
+    def snapshot(self):
+        with self.lock:
+            return dict(original_snapshot(self), notices=copy.deepcopy(self.notices), attention=copy.deepcopy(self.attention))
+
+    def update_job(self, job_id, status, result=None):
+        with self.lock:
+            job = self.jobs[job_id]
+            if job['status'] in ('completed', 'failed', 'interrupted'):
+                return copy.deepcopy(job)
+            job.update(status=status, result=copy.deepcopy(result) if result is not None else job['result'])
+            self.changed()
+            return copy.deepcopy(job)
+
+    def record_notice(self, notice):
+        with self.lock:
+            self.notices.setdefault(notice['id'], copy.deepcopy(notice))
+            self.changed()
+            return copy.deepcopy(self.notices[notice['id']])
+
+    def set_attention(self, value):
+        with self.lock:
+            self.attention = copy.deepcopy(value)
+            self.changed()
+
+    def records(self, ids):
+        found = [self.drafts.get(item) or self.clarifications.get(item) for item in ids]
+        if any(record is None or record['status'] not in ('prepared', 'pending', 'needs_review') for record in found):
+            raise ValueError('Only unsent retained records can be offered')
+        return found
+
+    def offer_pending(self, turn_id, ids, question):
+        with self.lock:
+            for record in records(self, ids):
+                record.update(prompt_turn_id=turn_id, prompt=question)
+            self.changed()
+
+    def review_pending(self, turn_id, ids):
+        with self.lock:
+            records(self, ids)
+            self.changed()
+
+    def discard_pending(self, turn_id, ids):
+        with self.lock:
+            for record in records(self, ids):
+                record['status'] = 'discarded'
+            self.changed()
+
+    original_confirm = JarvisState.confirm_draft
+
+    def confirm_draft(self, turn_id, target, draft_id=None, clarification_id=None):
+        with self.lock:
+            record = self.drafts.get(draft_id) or self.clarifications.get(clarification_id)
+            turns = list(self.turns)
+            if record is None or record.get('prompt_turn_id') != turns[turns.index(turn_id) - 1]:
+                raise ValueError('Retained record was not offered by the immediately previous turn')
+            return original_confirm(self, turn_id, target, draft_id, clarification_id)
+
+    for function in (init, snapshot, update_job, record_notice, set_attention, offer_pending, review_pending, discard_pending, confirm_draft):
+        setattr(JarvisState, '__init__' if function is init else function.__name__, function)
+
+
+install_m4_state_helpers()
 
 
 def final(text='Untrusted model claims sent and done.'):
@@ -156,18 +232,29 @@ class ToolTests(DisposableDesk):
         receipt = self.app.jarvis.submit(request, 'changed')
         self.assertEqual(receipt['status'], 'completed')
         self.assertIn('No message was submitted', receipt['text'])
+        self.assertIn('Conversation replaced', receipt['text'])
+        self.assertNotIn('not authorized', receipt['text'])
         self.assertEqual(self.received('Dog Data'), b'')
 
-    def test_retained_draft_requires_explicit_confirmation_and_preserves_source(self):
-        request = 'Tell Dog Data: preserve this exact body'
-        self.allow(request, body='preserve this exact body')
+    def retain_draft(self, request='Tell Dog Data: preserve this exact body', body='preserve this exact body'):
+        self.allow(request, body=body)
         drafts = []
         self.provider = lambda context, specs, execute, **kwargs: drafts.append(execute('prepare_literal', {})['draft_id']) or final('Draft prepared.')
-        first = self.app.jarvis.submit(request, 'draft')
+        return self.app.jarvis.submit(request, 'draft-' + body), drafts[0]
+
+    def test_retained_draft_requires_explicit_review_then_confirmation_and_preserves_source(self):
+        first, draft_id = self.retain_draft()
         source_turn = first['turn_id']
+        self.provider = lambda context, specs, execute, **kwargs: execute('review_pending', {'record_id': draft_id}) and final('Reviewed.')
+        review = self.app.jarvis.submit('Go back to that Dog Data message', 'review-2')
+        self.assertEqual(review['text'], 'Send this exact message to Dog Data? preserve this exact body')
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'][draft_id]['prompt_turn_id'], review['turn_id'])
+        payloads = []
+        evaluate = self.app.evaluate
+        self.app.evaluate = lambda payload: payloads.append(payload) or evaluate(payload)
         self.intents['yes, Dog Data'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
         def confirmed(context, specs, execute, **kwargs):
-            draft = execute('confirm_draft', {'draft_id': drafts[0]})
+            draft = execute('confirm_draft', {'draft_id': draft_id})
             execute('send_draft', {'draft_id': draft['draft_id']})
             return final()
         self.provider = confirmed
@@ -177,6 +264,77 @@ class ToolTests(DisposableDesk):
         sent_draft = self.app.jarvis.snapshot()['drafts'][receipt['actions'][0]['draft_id']]
         self.assertEqual(sent_draft['source_turn_id'], source_turn)
         self.assertIn(b'preserve this exact body', self.received('Dog Data'))
+        offer = next(payload['state']['offer'] for payload in payloads if 'offer' in payload.get('state', {}))
+        self.assertEqual(offer['prompt'], review['text'])
+        self.assertTrue(offer['prompt_was_immediately_previous_turn'])
+        self.assertEqual(offer['source_user_text'], 'Tell Dog Data: preserve this exact body')
+
+    def test_unrelated_bare_yes_cannot_resurrect_forgotten_or_stale_offered_draft(self):
+        _, draft_id = self.retain_draft()
+        calls = []
+        def attempt(context, specs, execute, **kwargs):
+            result = execute('confirm_draft', {'draft_id': draft_id})
+            calls.append(result)
+            return final()
+        self.intents['yes'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
+        self.provider = attempt
+        forgotten = self.app.jarvis.submit('yes', 'forgotten')
+        self.assertEqual(calls[-1]['status'], 'not_attempted')
+        self.assertIn('not offered', forgotten['text'])
+        self.provider = lambda context, specs, execute, **kwargs: execute('review_pending', {'record_id': draft_id}) and final()
+        self.app.jarvis.submit('Show me that unsent message', 'offer')
+        self.provider = lambda *args, **kwargs: final('Unrelated.')
+        self.app.jarvis.submit('What is two plus two?', 'intervening')
+        payloads = []
+        evaluate = self.app.evaluate
+        self.app.evaluate = lambda payload: payloads.append(payload) or evaluate(payload)
+        self.provider = attempt
+        stale = self.app.jarvis.submit('yes', 'stale-yes')
+        self.assertNotEqual(self.app.jarvis.snapshot()['drafts'][draft_id]['status'], 'submitted')
+        self.assertEqual(self.app.jarvis.snapshot()['actions'], {})
+        self.assertEqual(stale['actions'], [])
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.assertFalse(any(payload['state']['offer']['prompt_was_immediately_previous_turn'] for payload in payloads if 'offer' in payload.get('state', {})))
+
+    def test_pending_list_is_bounded_and_discard_requires_explicit_user_request_and_keeps_sent_records(self):
+        self.retain_draft()
+        listed = {}
+        self.provider = lambda context, specs, execute, **kwargs: listed.update(execute('list_pending', {})) or final('Listed.')
+        self.app.jarvis.submit('What is unsent?', 'list')
+        self.assertEqual([item['text'] for item in listed['pending']], ['preserve this exact body'])
+        record_id = listed['pending'][0]['record_id']
+        results = []
+        self.provider = lambda context, specs, execute, **kwargs: results.append(execute('discard_pending', {'record_ids': [record_id]})) or final()
+        self.app.jarvis.submit('Mention that draft', 'no-discard')
+        self.assertEqual(results[-1]['status'], 'not_attempted')
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'][record_id]['status'], 'prepared')
+        self.intents['Forget that unsent message'] = {'permission': 'allow'}
+        self.app.jarvis.submit('Forget that unsent message', 'discard')
+        self.assertEqual(results[-1]['status'], 'completed')
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'][record_id]['status'], 'discarded')
+        self.assertEqual(self.received('Dog Data'), b'')
+
+    def test_tool_evidence_allows_checked_harmless_synthesis_but_blocks_false_claims(self):
+        self.provider = lambda context, specs, execute, **kwargs: execute('list_sessions', {}) and final('Three conversations are open: Dog Data, Controller and Notes.')
+        payloads = []
+        evaluate = self.app.evaluate
+        self.app.evaluate = lambda payload: payloads.append(payload) or evaluate(payload)
+        self.narrative_safe = True
+        receipt = self.app.jarvis.submit('Which chats are open?', 'harmless')
+        self.assertEqual(receipt['text'], 'Three conversations are open: Dog Data, Controller and Notes.')
+        evidence = payloads[-1]['state']['observed_evidence']
+        self.assertEqual(evidence[0]['tool'], 'list_sessions')
+        self.assertIn('Dog Data', evidence[0]['output'])
+        self.assertEqual(payloads[-1]['state']['proven_actions'], [])
+        self.narrative_safe = False
+        self.provider = lambda context, specs, execute, **kwargs: execute('list_sessions', {}) and final('I sent it to Dog Data and it is done.')
+        claimed = self.app.jarvis.submit('Which chats are open now?', 'claim')
+        self.assertNotIn('sent', claimed['text'])
+        self.assertIn('Dog Data', claimed['text'])
+        self.narrative_safe = True
+        with patch.object(self.app, 'evaluate', side_effect=RuntimeError('Synthetic judgment unavailable')):
+            held = self.app.jarvis.submit('And again?', 'unavailable')
+        self.assertIn('Dog Data', held['text'])
 
     def test_unresolved_recipient_clarification_retains_exact_body(self):
         request = 'Tell it: retained words'
@@ -187,6 +345,7 @@ class ToolTests(DisposableDesk):
         self.assertNotIn('unauthorized', initial['text'])
         pending = next(iter(self.app.jarvis.snapshot()['clarifications'].values()))
         self.assertEqual(pending['text'], 'retained words')
+        self.assertEqual((pending['prompt_turn_id'], pending['prompt']), (initial['turn_id'], initial['text']))
         self.intents['yes, Dog Data'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
         def confirmed(context, specs, execute, **kwargs):
             draft = execute('confirm_draft', {'clarification_id': pending['clarification_id']})

@@ -1,6 +1,6 @@
+import hashlib
 import threading
 import time
-import uuid
 
 import claude_actions
 import codex_actions
@@ -61,12 +61,16 @@ class ReplyWatch:
                 time.sleep(3)
             else:
                 notice = {'error': 'Reply observation expired without a confirmed completed reply.'}
+            identity = f"{agent['process']}:{agent.get('provider', 'codex')}:{agent['thread_id']}"
+            key = '\0'.join(str(part) for part in (request_id, agent['window_id'], agent['pane_id'], identity,
+                                                  notice.get('turn_id') or notice.get('error')))
+            notice_id = hashlib.sha256(key.encode()).hexdigest()[:32]
             with self.lock:
-                self.notices.append({'id': uuid.uuid4().hex, 'request_id': request_id,
-                                     'tab': agent['window_id'], 'pane': agent['pane_id'],
-                                     'identity': f"{agent['process']}:{agent.get('provider', 'codex')}:{agent['thread_id']}",
-                                     'thread_id': agent['thread_id'], 'target': label, **notice})
-                self.notices = self.notices[-50:]
+                if all(item['id'] != notice_id for item in self.notices):
+                    self.notices.append({'id': notice_id, 'request_id': request_id,
+                                         'tab': agent['window_id'], 'pane': agent['pane_id'],
+                                         'identity': identity, 'thread_id': agent['thread_id'], 'target': label, **notice})
+                    self.notices = self.notices[-50:]
         threading.Thread(target=observe, daemon=True).start()
 
 
