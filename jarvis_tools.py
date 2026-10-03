@@ -196,6 +196,27 @@ class JarvisTools:
                 'workspace': pane['workspace'], 'run_dir': str(self.app.log.parent),
                 'view_session': self.app.view_session, 'preserve_focus': True}
 
+    def validate_binding(self, target, turn, offer=False):
+        subject = self.state.snapshot()['turns'][turn['turn_id']]['subject']
+        if subject and (subject['tab'], subject['pane']) == (target['tab'], target['pane']):
+            target = subject
+        try:
+            return self.validate(target)
+        except ValueError:
+            if offer and subject and target == subject:
+                replacement = next(({key: value for key, value in item.items() if key != 'number'} for item in self.sessions()
+                                    if (item['tab'], item['pane']) == (subject['tab'], subject['pane'])), None)
+                with self.state.lock:
+                    self.state.guard(turn['turn_id'])
+                    identifier = uuid.uuid4().hex
+                    self.state.clarifications[identifier] = {'clarification_id': identifier, 'status': 'pending',
+                        'operation': 'resolve', 'source_turn_id': turn['turn_id'], 'start': 0, 'end': len(turn['user_text']),
+                        'source_text': turn['user_text'], 'text': turn['user_text'], 'form': 'subject_resolution',
+                        'target': copy.deepcopy(subject), 'rebind_required': True,
+                        'replacement_target': replacement}
+                    self.state.changed()
+            raise
+
     def semantic(self, turn, operation):
         key = (turn['turn_id'], operation)
         if key in self.decisions:
@@ -218,7 +239,12 @@ class JarvisTools:
             pane_id = response['answers'].get('pane:' + tab_id, {}).get('choice')
             candidate = next((item for item in self.sessions() if item['tab'] == tab_id and item['pane'] == pane_id), None)
             if candidate:
-                decision['target'] = self.validate(candidate)
+                try:
+                    decision['target'] = self.validate_binding(candidate, turn)
+                except ValueError as error:
+                    decision.update(error=str(error), captured_target=copy.deepcopy(subject),
+                                    replacement_target={key: value for key, value in candidate.items() if key != 'number'})
+                    self.denials[turn['turn_id']] = str(error)
             if operation == 'send':
                 response['answers']['action'] = {'choice': 'send_message'}
                 jev.refine_boundaries(payload, response, self.app.evaluate)
@@ -245,7 +271,10 @@ class JarvisTools:
                 self.state.clarifications[pending_id] = {'clarification_id': pending_id, 'status': 'pending',
                     'source_turn_id': turn['turn_id'], 'start': decision['start'], 'end': decision['end'],
                     'source_text': decision['source_text'], 'text': decision['delivery']['text'],
-                    'form': 'literal' if decision['form'] == 'verbatim' else 'indirect_question'}
+                    'form': 'literal' if decision['form'] == 'verbatim' else 'indirect_question', 'operation': 'send',
+                    **({'target': decision['captured_target'], 'rebind_required': True,
+                        'replacement_target': decision['replacement_target']}
+                       if decision.get('captured_target') else {})}
                 self.state.changed()
             return []
         self.state.set_subject(turn['turn_id'], decision['target'])
@@ -304,11 +333,13 @@ class JarvisTools:
         if provenance is None:
             return {'ok': False, 'status': 'not_attempted',
                     'error': 'That retained message was not offered for confirmation. Review it first; a bare yes cannot revive it.'}
+        resolution = original.get('operation') == 'resolve'
         targets = self.sessions()
         payload = {'model': 'jev-latest', 'state': {'request': turn['user_text'], 'pending_message': original['text'],
+                   'pending_operation': 'resolve' if resolution else 'send',
                    'captured_recipient': original.get('target'), 'recipients': targets, 'offer': provenance}, 'questions': {
-            'permission': {'type': 'choice', 'instructions': 'Does the current user explicitly confirm sending this retained exact draft? The confirmation must answer the application prompt in `offer.prompt`, given in the immediately following user turn with no unrelated intervening topic. Reading, listing, a new request, a mere topic mention or a bare yes to something else cannot confirm it.',
-                           'criteria': {'allow': 'Explicitly confirm this pending send in answer to the offered prompt, including yes, Dog Data.', 'deny': 'No confirmation, changed content, cancellation, unrelated or ambiguous response, or the offer was not the immediate prompt.'}},
+            'permission': {'type': 'choice', 'instructions': ('Does the current user explicitly confirm using the named CURRENT conversation after its captured identity changed? This only resolves the subject, never sends the retained read/resolve command. The confirmation must answer the immediately previous application prompt in offer.prompt, with no unrelated intervening topic.' if resolution else 'Does the current user explicitly confirm sending this retained exact draft? The confirmation must answer the application prompt in `offer.prompt`, given in the immediately following user turn with no unrelated intervening topic. Reading, listing, a new request, a mere topic mention or a bare yes to something else cannot confirm it.'),
+                           'criteria': {'allow': 'Explicitly confirm the offered subject resolution; no delivery authority.' if resolution else 'Explicitly confirm this pending send in answer to the offered prompt, including yes, Dog Data.', 'deny': 'No confirmation, changed content, cancellation, unrelated or ambiguous response, or the offer was not the immediate prompt.'}},
             'target': {'type': 'choice', 'instructions': 'Choose the explicitly confirmed recipient; if unnamed use captured_recipient only. An exact name wins. Never pick the visible pane.',
                        'criteria': {**{item['identity']: item for item in targets}, 'none': 'Recipient unresolved'}}}}
         response = self.app.evaluate(payload)
@@ -318,6 +349,24 @@ class JarvisTools:
         if not selected:
             return {'ok': False, 'status': 'blocked', 'error': 'Confirmed recipient unresolved'}
         target = self.validate(selected)
+        if original.get('rebind_required') and (target['tab'], target['pane']) == (original['target']['tab'], original['target']['pane']) and target != original.get('replacement_target'):
+            question = (f"The current {target['label']} conversation changed again. " +
+                        ('Use this current conversation? This will not send a message.' if resolution else
+                         'Send the exact retained words to this current conversation?'))
+            with self.state.lock:
+                self.state.guard(turn['turn_id'])
+                self.state.clarifications[original['clarification_id']]['replacement_target'] = copy.deepcopy(target)
+                self.state.offer_pending(turn['turn_id'], [original['clarification_id']], question)
+            return {'ok': False, 'status': 'clarification', 'record_id': original['clarification_id'], 'prompt': question}
+        if resolution:
+            with self.state.lock:
+                self.state.guard(turn['turn_id'])
+                if original['status'] != 'pending' or self.state.turns[turn['turn_id']].get('previous_turn_id') != original.get('prompt_turn_id') or self.state.turns.get(original.get('prompt_turn_id'), {}).get('status') != 'completed':
+                    return {'ok': False, 'status': 'not_attempted', 'error': 'Subject resolution needs a current application offer'}
+                self.state.clarifications[original['clarification_id']].update(status='resolved', resolved_by=turn['turn_id'])
+                self.state.set_subject(turn['turn_id'], target)
+            return {'ok': True, 'status': 'completed', 'subject': target, 'operation': 'resolve',
+                    'output': 'Using the current ' + target['label'] + ' conversation. No message was submitted.'}
         draft = self.state.confirm_draft(turn['turn_id'], target, **arguments)
         self.state.set_subject(turn['turn_id'], target)
         self.decisions[(turn['turn_id'], 'confirmed')] = draft
@@ -339,8 +388,17 @@ class JarvisTools:
         if record is None:
             return {'ok': False, 'status': 'not_attempted', 'error': 'No such retained unsent message'}
         original = record['record']
+        if original.get('rebind_required'):
+            captured = original['target']
+            current = next(({key: value for key, value in item.items() if key != 'number'} for item in self.sessions()
+                            if (item['tab'], item['pane']) == (captured['tab'], captured['pane'])), None)
+            with self.state.lock:
+                self.state.guard(turn['turn_id'])
+                self.state.clarifications[original['clarification_id']]['replacement_target'] = current
+                self.state.changed()
         label = (original.get('target') or {}).get('label')
-        prompt = (f"Send this exact message to {label}? {original['text']}" if label else
+        prompt = (f"Use the current {label} conversation? This will not send a message." if original.get('operation') == 'resolve' else
+                  f"Send this exact message to {label}? {original['text']}" if label else
                   f"Which conversation should receive this exact message? {original['text']}")
         self.state.review_pending(turn['turn_id'], [arguments['record_id']])
         return {'ok': True, 'status': 'completed', 'record_id': arguments['record_id'], 'prompt': prompt, 'output': prompt}
@@ -397,7 +455,16 @@ class JarvisTools:
             result['text'] = ' '.join(phrases)
         elif offered := [p['clarification_id'] for p in snapshot['clarifications'].values()
                          if p['source_turn_id'] == turn['turn_id'] and p['status'] == 'pending']:
-            result['text'] = 'Which conversation should receive this message? Its exact wording is retained.'
+            sends = [identifier for identifier in offered if snapshot['clarifications'][identifier].get('operation', 'send') == 'send']
+            offered = sends or offered
+            replaced = [snapshot['clarifications'][identifier] for identifier in offered
+                        if snapshot['clarifications'][identifier].get('rebind_required')]
+            if replaced:
+                question = ('Which current conversation should receive these exact retained words?' if sends else
+                            'Which current conversation should I use? This will not send a message.')
+                result['text'] = f"The captured {(replaced[0]['target'] or {}).get('label', 'agent')} conversation changed. " + question
+            else:
+                result['text'] = 'Which conversation should receive this message? Its exact wording is retained.'
             self.state.offer_pending(turn['turn_id'], offered, result['text'])
         elif prompts := [item['result'] for item in receipts if item['result'].get('prompt')]:
             result['text'] = prompts[-1]['prompt']
@@ -474,10 +541,13 @@ class JarvisTools:
             return {'ok': True, 'status': 'completed', 'ready': items, 'job_notices': notices,
                     'persistence_errors': diagnostics,
                     'output': '; '.join(parts) or 'No unread completed replies are ready.'}
-        if name == 'set_subject':
-            return {'ok': True, 'status': 'completed', 'subject': self.validate(arguments['target'])}
-        if name == 'resolve_subject':
-            return {'ok': True, 'status': 'completed', 'subject': self.target(arguments['name'])}
+        if name in ('set_subject', 'resolve_subject'):
+            try:
+                target = arguments['target'] if name == 'set_subject' else self.target(arguments['name'])
+                target = self.validate_binding(target, turn, offer=True)
+            except ValueError as error:
+                return {'ok': False, 'status': 'blocked', 'error': str(error)}
+            return {'ok': True, 'status': 'completed', 'subject': target}
         if name == 'confirm_draft':
             return self.confirm(arguments, turn)
         if name == 'job_status':
@@ -511,6 +581,11 @@ class JarvisTools:
         if name == 'discard_pending':
             return self.discard_pending(arguments, turn)
         target = self.validate(arguments['target']) if name == 'send_draft' else self.target(arguments.get('name'))
+        if name != 'send_draft':
+            try:
+                target = self.validate_binding(target, turn, offer=name in ('read_reply', 'select_session', 'observer_job'))
+            except ValueError as error:
+                return {'ok': False, 'status': 'blocked', 'error': str(error)}
         if name == 'select_session':
             self.app.focus(target['tab'], target['pane'])
             return {'ok': True, 'status': 'completed', 'output': 'Selected ' + target['label'] + '.'}

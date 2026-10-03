@@ -612,5 +612,164 @@ class PendingStateLifecycleTests(unittest.TestCase):
         self.assertEqual(self.state.snapshot()['actions'], {})
 
 
+
+
+class CapturedSubjectIdentityTests(DisposableDesk):
+    REQUEST = 'Tell it: rerun the tests  '
+    BODY = 'rerun the tests  '
+
+    def capture_subject(self, restart=False):
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final()
+        self.app.jarvis.submit('Read Dog Data', 'read')
+        captured = self.app.jarvis.snapshot()['subject']
+        if restart:
+            self.reopen()
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], captured)
+        return captured
+
+    def replace_dog(self):
+        command = 'exec -a codex ' + shlex.join([sys.executable, str(self.root / 'fixture.py'), str(self.root / 'Dog-Data.input')])
+        previous = self.app.jarvis_tools.sessions()[0]['identity']
+        tmux(self.socket, 'respawn-pane', '-k', '-t', self.targets['Dog Data']['pane'], command)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            found = next((item for item in self.app.jarvis_tools.sessions() if item['label'] == 'Dog Data' and item['identity'] != previous), None)
+            if found:
+                fresh = {key: value for key, value in found.items() if key != 'number'}
+                self.targets['Dog Data'] = fresh
+                return fresh
+            time.sleep(.02)
+        self.fail('Replacement synthetic conversation did not appear')
+
+    def held_send(self, restart=False, metadata=False):
+        captured = self.capture_subject(restart)
+        fresh = self.replace_dog()
+        self.allow(self.REQUEST, body=self.BODY)
+        results = []
+        def provider(context, specs, execute, **kwargs):
+            if metadata:
+                results.append(execute('set_subject', {'target': fresh}))
+                results.append(execute('resolve_subject', {'name': 'Dog Data'}))
+                results.append(execute('read_reply', {'name': 'Dog Data'}))
+            draft = execute('prepare_literal', {})
+            if draft.get('draft_id'):
+                execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        self.provider = provider
+        receipt = self.app.jarvis.submit(self.REQUEST, 'held')
+        self.assertEqual(receipt['actions'], [])
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], captured)
+        sends = [record for record in self.app.jarvis.snapshot()['clarifications'].values() if record.get('operation') == 'send']
+        self.assertTrue(sends, {'receipt': receipt, 'results': results, 'clarifications': self.app.jarvis.snapshot()['clarifications']})
+        pending = sends[0]
+        self.assertEqual(pending['text'], self.BODY)
+        self.assertEqual(pending['source_text'], self.BODY)
+        self.assertEqual(pending['target'], captured)
+        self.assertEqual(pending['replacement_target'], fresh)
+        self.assertIn('conversation changed', receipt['text'])
+        if metadata:
+            self.assertTrue(all(not result['ok'] for result in results), results)
+        return pending, captured, fresh
+
+    def test_changed_subject_identity_holds_pronoun_send(self):
+        self.held_send()
+
+    def test_restored_changed_subject_identity_holds_pronoun_send(self):
+        self.held_send(restart=True)
+
+    def test_model_set_resolve_and_read_cannot_launder_replacement_before_send(self):
+        self.held_send(metadata=True)
+
+    def same_identity_control(self, restart):
+        captured = self.capture_subject(restart)
+        self.allow(self.REQUEST, body=self.BODY)
+        self.provider = self.send_provider
+        receipt = self.app.jarvis.submit(self.REQUEST, 'same-identity')
+        self.assertEqual(receipt['actions'][0]['target'], captured)
+        self.assertEqual(receipt['actions'][0]['status'], 'submitted')
+        self.assertEqual(self.received('Dog Data').count(self.BODY.encode()), 1)
+
+    def test_original_identity_control_still_sends_once(self):
+        self.same_identity_control(False)
+
+    def test_restored_original_identity_control_still_sends_once(self):
+        self.same_identity_control(True)
+
+    def test_explicit_next_turn_confirmation_rebinds_only_exact_held_send_body(self):
+        pending, captured, fresh = self.held_send()
+        request = 'Yes, send those exact retained words to the current Dog Data conversation.'
+        self.allow(request)
+        def provider(context, specs, execute, **kwargs):
+            draft = execute('confirm_draft', {'clarification_id': pending['clarification_id']})
+            execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        self.provider = provider
+        receipt = self.app.jarvis.submit(request, 'confirm')
+        self.assertEqual(receipt['actions'][0]['status'], 'submitted')
+        self.assertEqual(receipt['actions'][0]['target'], fresh)
+        self.assertEqual(receipt['actions'][0]['payload'], self.BODY)
+        self.assertEqual(self.received('Dog Data').count(self.BODY.encode()), 1)
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], fresh)
+
+    def test_second_replacement_after_offer_requires_another_explicit_confirmation(self):
+        pending, captured, offered = self.held_send()
+        newest = self.replace_dog()
+        request = 'Yes, send those exact retained words to the current Dog Data conversation.'
+        self.allow(request)
+        def provider(context, specs, execute, **kwargs):
+            draft = execute('confirm_draft', {'clarification_id': pending['clarification_id']})
+            if draft.get('draft_id'):
+                execute('send_draft', {'draft_id': draft['draft_id']})
+            return final()
+        self.provider = provider
+        held = self.app.jarvis.submit(request, 'changed-again')
+        self.assertEqual(held['actions'], [])
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.assertIn('changed again', held['text'])
+        renewed = self.app.jarvis.snapshot()['clarifications'][pending['clarification_id']]
+        self.assertEqual(renewed['replacement_target'], newest)
+        self.assertEqual(renewed['target'], captured)
+        self.assertEqual(renewed['text'], self.BODY)
+        receipt = self.app.jarvis.submit(request, 'new-confirm')
+        self.assertEqual(receipt['actions'][0]['target'], newest)
+        self.assertEqual(receipt['actions'][0]['payload'], self.BODY)
+        self.assertEqual(self.received('Dog Data').count(self.BODY.encode()), 1)
+
+    def test_read_identity_hold_confirmation_resolves_subject_without_a_message(self):
+        captured = self.capture_subject()
+        fresh = self.replace_dog()
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final()
+        held = self.app.jarvis.submit('Read Dog Data', 'read-replacement')
+        self.assertEqual(held['actions'], [])
+        pending = next(iter(self.app.jarvis.snapshot()['clarifications'].values()))
+        self.assertEqual(pending['operation'], 'resolve')
+        self.assertEqual(pending['source_text'], 'Read Dog Data')
+        self.assertEqual(pending['target'], captured)
+        self.assertIn('will not send a message', held['text'])
+        request = 'Use the current Dog Data conversation.'
+        original_evaluate = self.app.evaluate
+        def evaluate(payload):
+            if payload['state'].get('pending_operation') == 'resolve':
+                return {'answers': {'permission': {'choice': 'allow'}, 'target': {'choice': fresh['identity']}}}
+            return original_evaluate(payload)
+        self.app.evaluate = evaluate
+        results = []
+        def provider(context, specs, execute, **kwargs):
+            results.append(execute('confirm_draft', {'clarification_id': pending['clarification_id']}))
+            results.append(execute('prepare_literal', {}))
+            return final()
+        self.provider = provider
+        receipt = self.app.jarvis.submit(request, 'resolve-current')
+        self.assertEqual(receipt['actions'], [])
+        self.assertNotIn('draft_id', results[0])
+        self.assertIn('operation', results[0], results)
+        self.assertEqual(results[0]['operation'], 'resolve')
+        self.assertNotIn('draft_id', results[1])
+        self.assertEqual(self.app.jarvis.snapshot()['drafts'], {})
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], fresh)
+        self.assertEqual(self.received('Dog Data'), b'')
+
+
 if __name__ == '__main__':
     unittest.main()
