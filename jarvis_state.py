@@ -197,10 +197,10 @@ class JarvisState:
                 if not isinstance(identifier, str) or not identifier or type(start) is not int or type(end) is not int or not 0 <= start < end <= len(source):
                     raise ValueError('Invalid application-owned literal boundary')
                 boundary = {'boundary_id': identifier, 'start': start, 'end': end, 'text': source[start:end]}
-                if option.get('form') == 'indirect_question':
+                if option.get('form') in ('indirect_question', 'composition'):
                     if not isinstance(option.get('formulated_text'), str) or not option['formulated_text'].strip():
-                        raise ValueError('Indirect formulation must be application-generated text')
-                    boundary.update(form='indirect_question', formulated_text=option['formulated_text'])
+                        raise ValueError('Formulation must be application-generated text')
+                    boundary.update(form=option['form'], formulated_text=option['formulated_text'])
                 boundaries.append(boundary)
             if len({item['boundary_id'] for item in boundaries}) != len(boundaries):
                 raise ValueError('Duplicate literal boundary ID')
@@ -232,13 +232,15 @@ class JarvisState:
             self.changed()
             return copy.deepcopy(draft)
 
-    def formulate_draft(self, turn_id, draft_id, text):
+    def formulate_draft(self, turn_id, draft_id, text, form='indirect_question'):
         with self.lock:
             self.guard(turn_id)
             draft = self.drafts[draft_id]
             if draft['turn_id'] != turn_id or draft['status'] != 'prepared':
                 raise ValueError('Only a current prepared draft can be formulated')
-            draft.update(text=text, form='indirect_question')
+            if form not in ('indirect_question', 'composition') or not isinstance(text, str) or not text.strip():
+                raise ValueError('Invalid application formulation')
+            draft.update(text=text, form=form)
             self.changed()
             return copy.deepcopy(draft)
 

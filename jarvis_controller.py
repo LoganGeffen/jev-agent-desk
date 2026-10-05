@@ -150,8 +150,9 @@ class JarvisController:
                             return {'ok': False, 'status': 'clarification', 'candidates': options}
                         span = {key: options[0][key] for key in ('start', 'end')}
                     draft = self.state.prepare_literal(turn['turn_id'], **span)
-                    if self.literal_boundaries and options[0].get('form') == 'indirect_question':
-                        draft = self.state.formulate_draft(turn['turn_id'], draft['draft_id'], options[0]['formulated_text'])
+                    if self.literal_boundaries and options[0].get('form') in ('indirect_question', 'composition'):
+                        draft = self.state.formulate_draft(turn['turn_id'], draft['draft_id'],
+                                                          options[0]['formulated_text'], options[0]['form'])
                     return {'ok': True, 'status': 'prepared', 'draft_id': draft['draft_id'], 'target': draft['target'],
                             **{key: copy.deepcopy(draft[key]) for key in ('text', 'source_turn_id', 'source_span', 'form')}}
                 action = None

@@ -6,7 +6,7 @@ import uuid
 
 import jev
 from jarvis_state import captured_target
-from message_delivery import prepare_message
+from message_delivery import compose_message, prepare_message
 from session_actions import interrupt_turn, read_reply
 from session_questions import ask_session, session_snapshot
 
@@ -37,7 +37,7 @@ TOOLS = [
     spec('resolve_subject', 'Resolve an exact conversation name and remember its validated identity.', {'name': NAME}, ['name']),
     spec('read_reply', 'Read the latest completed original with current-turn freshness; summaries and current-status requests use the fresh snapshot, not an old final as live status.', {'name': NAME}),
     spec('observe_session', 'Capture bounded live terminal and newest-turn evidence to answer current status in this same turn; no agent input or background job.', {'name': NAME}),
-    spec('select_session', 'Explicitly change visible selection; retain the conversational subject.', {'name': NAME}),
+    spec('select_session', 'Explicitly select a conversation and establish it as the conversational subject.', {'name': NAME}),
     spec('interrupt_agent', 'Interrupt the named conversation or subject only when the current user explicitly asks; never stop audio implicitly.', {'name': NAME}),
     spec('observer_job', 'Queue an explanation of existing agent evidence; return promptly and keep completion quiet.', {'name': NAME, 'question': NAME}),
     spec('job_status', 'Retrieve an application-owned quiet background result.', {'job_id': NAME}, ['job_id']),
@@ -146,13 +146,14 @@ def authorization_question(request, tabs, subject, operation):
             'token': 'End of captured message including trailing whitespace', 'preceding': request[-100:], 'following': ''}
         questions['message_form'] = {'type': 'choice',
             'instructions': {'task': 'Classify the selected content after excluding outer routing. indirect_question only when the OUTER request asks the '
-                                     'recipient and the unquoted content begins who/what/when/where/why/how/whether/if. Choose clarify_composition when the user asks to assemble or rewrite multiple fragments and no single exact span is the authorized message. Ordinary quoted words inside a complete message and multiple literal sentences remain verbatim.',
+                                     'recipient and the unquoted content begins who/what/when/where/why/how/whether/if. Choose composition when the user asks for a message that basically asks something, or to assemble or lightly rewrite fragments without dictating one exact body. Choose clarify_composition only when material ambiguity prevents a faithful message. Exact dictation, fully quoted messages, ordinary quoted words inside a complete message, and multiple literal sentences remain verbatim.',
                              'examples': [{'request': 'Ask Luna what its favorite color is', 'form': 'indirect_question'},
                                           {'request': 'Ask Luna to rerun the tests', 'form': 'verbatim'},
                                           {'request': 'Ask Luna: "What is its favorite color?"', 'form': 'verbatim'},
                                           {'request': 'Tell Nova: Ask Luna whether she ran tests', 'form': 'verbatim'}]},
-            'criteria': {'clarify_composition': 'Composition instructions or fragmented quotations without one unambiguous exact message; retain the request and ask for its exact wording, never invent it.',
-                         'verbatim': 'Quoted, exact, after a colon, a direct question, or a command/imperative for the recipient; copy unchanged.',
+            'criteria': {'composition': 'User authorizes light composition of a message rather than dictating one exact body; preserve all substantive content and uncertainty.',
+                         'clarify_composition': 'Material ambiguity makes a faithful recipient message impossible without guessing.',
+                         'verbatim': 'Exact dictation, a fully quoted body, a direct question, or a complete command/imperative for the recipient; copy unchanged. A colon alone does not make composition instructions a dictated body.',
                          'indirect_question': 'Unquoted dependent who/what/when/where/why/how/whether/if clause the outer request asks the recipient.'}}
     return jev.bound_questions({'model': 'jev-latest', 'state': state, 'questions': questions})
 
@@ -178,6 +179,23 @@ class JarvisTools:
         response = self.app.evaluate(question)
         self.trace('jev_result', request_id=turn['request_id'], turn_id=turn['turn_id'], response=response)
         return response
+
+    def composition_fidelity(self, turn, candidate, recipient):
+        question = {'model': 'jev-latest', 'state': {'request': turn['user_text'], 'candidate': candidate,
+                    'recipient': recipient}, 'questions': {
+            'meaning': {'type': 'choice', 'instructions': 'Does candidate preserve the intended recipient-directed meaning, including negation, who does what, and uncertainty? Treat outer routing as separate from message content.',
+                        'criteria': {'pass': 'Same intended meaning and strength of claims.', 'fail': 'Changed meaning, polarity, actor, or certainty.'}},
+            'details': {'type': 'choice', 'instructions': 'Does candidate retain every substantive detail, requirement, constraint, qualifier, number, path, and quoted content from the intended message? Outer routing and abandoned openings may be removed.',
+                        'criteria': {'pass': 'All substantive content is retained.', 'fail': 'Any substantive content is omitted or weakened.'}},
+            'grounding': {'type': 'choice', 'instructions': 'Does candidate avoid inventing facts, requests, commitments, names, or detail absent from the user request?',
+                          'criteria': {'pass': 'No substantive invention.', 'fail': 'One or more substantive additions are unsupported.'}},
+            'references': {'type': 'choice', 'instructions': 'Are all references needed to understand candidate resolved from the request and named recipient without materially guessing? A retained pronoun is acceptable only when its referent is clear.',
+                           'criteria': {'pass': 'No materially unresolved or guessed reference.', 'fail': 'A material reference is unclear or guessed.'}}}}
+        result = self.evaluate(question, turn)
+        passed = all(result['answers'][name]['choice'] == 'pass' for name in question['questions'])
+        self.trace('composition_fidelity', request_id=turn['request_id'], turn_id=turn['turn_id'],
+                   source=turn['user_text'], candidate=candidate, recipient=recipient, result=result, passed=passed)
+        return passed
 
     @property
     def state(self):
@@ -288,7 +306,30 @@ class JarvisTools:
                                 end=int(response['answers']['message_end']['choice']), source_text=source,
                                 form=response['answers']['message_form']['choice'])
                 recipient = (decision['target'] or {}).get('label', 'unresolved recipient')
-                if decision['form'] == 'clarify_composition' or not consistent_quote_span(turn['user_text'], decision['start'], decision['end']):
+                quoted = (decision['start'] > 0 and decision['end'] < len(turn['user_text'])
+                          and turn['user_text'][decision['start'] - 1] in ('"', '“')
+                          and turn['user_text'][decision['end']] in ('"', '”'))
+                outer_prefix = turn['user_text'].split(':', 1)[0]
+                exact_requested = bool(re.search(r'\b(?:exactly|verbatim|word for word)\b', outer_prefix, re.I))
+                if decision['form'] == 'composition' and (quoted or exact_requested):
+                    decision['form'] = 'verbatim'
+                if decision['form'] == 'composition':
+                    decision.update(start=0, end=len(turn['user_text']), source_text=turn['user_text'])
+                    if decision['target']:
+                        try:
+                            candidate = compose_message(turn['user_text'], recipient)
+                            self.trace('composition_candidate', request_id=turn['request_id'], turn_id=turn['turn_id'],
+                                       source=turn['user_text'], candidate=candidate, target=decision['target'])
+                            if candidate and self.composition_fidelity(turn, candidate, recipient):
+                                decision['delivery'] = {'source_text': turn['user_text'], 'text': candidate, 'form': 'composition'}
+                            else:
+                                decision.update(allowed=False, composition=True)
+                        except Exception as error:
+                            self.trace('composition_failure', request_id=turn['request_id'], turn_id=turn['turn_id'], error=str(error))
+                            decision.update(allowed=False, composition=True)
+                    else:
+                        decision.update(allowed=False, composition=True)
+                elif decision['form'] == 'clarify_composition' or not consistent_quote_span(turn['user_text'], decision['start'], decision['end']):
                     decision.update(allowed=False, composition=True)
                 else:
                     decision['delivery'] = prepare_message(turn['user_text'], source, decision['form'], recipient)
@@ -326,8 +367,8 @@ class JarvisTools:
             return []
         self.state.set_subject(turn['turn_id'], decision['target'])
         option = {'boundary_id': uuid.uuid4().hex, 'start': decision['start'], 'end': decision['end']}
-        if decision['form'] == 'indirect_question':
-            option.update(form='indirect_question', formulated_text=decision['delivery']['text'])
+        if decision['form'] in ('indirect_question', 'composition'):
+            option.update(form=decision['form'], formulated_text=decision['delivery']['text'])
         return [option]
 
     def authorize(self, name, arguments, turn):
@@ -651,7 +692,8 @@ class JarvisTools:
                 return {'ok': False, 'status': 'blocked', 'error': str(error)}
         if name == 'select_session':
             self.app.focus(target['tab'], target['pane'])
-            return {'ok': True, 'status': 'completed', 'output': 'Selected ' + target['label'] + '.'}
+            return {'ok': True, 'status': 'completed', 'subject': target,
+                    'output': 'Selected ' + target['label'] + '.'}
         if name == 'observe_session':
             evidence = session_snapshot(self.app.socket, self.agent(target))
             self.trace('current_observation', request_id=turn['request_id'], turn_id=turn['turn_id'], target=target, snapshot=evidence)

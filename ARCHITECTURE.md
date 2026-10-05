@@ -63,7 +63,9 @@ literal send works this way:
 1. The app records source boundaries over the user's own message
    (`set_literal_boundaries`); the model may only choose an offered `boundary_id`
    through `prepare_literal`, producing an immutable draft that carries
-   current-turn provenance.
+   current-turn provenance. An explicitly classified composition uses the entire
+   original request as source and an app-generated candidate that passes four
+   focused fidelity judgments. Haiku cannot provide draft text.
 2. `send_draft` runs under the effect lock. `authorize` first validates the target
    identity again, then compares the target and exact text with the semantic
    decision for this turn (below). A confirmed pending draft instead requires the
@@ -97,8 +99,9 @@ general prompt:
 A Jev failure is a hold or a block. It never becomes a send.
 
 **Subject and selection.** The conversational subject is stored in `JarvisState`
-and changes only through a tool result that resolves a chat. The visible selected
-pane is passed as a `capture_target`, independent of the subject. An absent subject
+and changes through a successful validated resolve, read or explicit Jarvis
+`select_session` tool result. Passive browser selection is only a `capture_target`
+and leaves the subject unchanged. An absent subject
 produces a clarification question, never a selected-pane fallback.
 
 **Semantic pause (voice).** `voice.js` commits a transcript, waits `silenceMs`
@@ -323,9 +326,12 @@ The completion watcher's `latest_reply` semantics are unchanged. Summaries retai
 checked model prose and expose originals separately; rejected/failed narrative
 verification does not fall back to a historical original for present status.
 
-Message preparation additionally rejects spans crossing a paired quote wrapper.
-The existing semantic form judgment can hold composition without a single exact
-body. Such a clarification retains the full source with operation `compose`,
-which cannot be confirmed into a send. No generated composition gains delivery
-authority. Unmatched literal quote/code data and full multi-sentence literals
-remain supported.
+Literal message preparation rejects spans crossing a paired quote wrapper.
+The semantic form judgment separates exact, indirect and lightly composed forms.
+Composition generation receives the full current request and validated recipient;
+focused Jev judgments reject changed meaning, omitted details, invention and
+unresolved references. A passing candidate is stored with its exact source in an
+immutable current-turn draft. Failed generation or fidelity retains an unsendable
+`compose` clarification; older such records cannot become sendable. Diagnostics
+retain the form, source, candidate and judgment. Unmatched literal quote/code data
+and full multi-sentence literals remain supported.

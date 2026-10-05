@@ -169,9 +169,10 @@ What Jarvis can do: list and read chats, set the conversational subject, switch 
 visible pane, deliver a message to a chat, interrupt a chat, and queue a background
 explanation of a chat's output. Things to know:
 
-- **The subject is not the selected pane.** "It", "that" and "those" refer to the
-  app's conversational subject, which changes only when a tool resolves a chat.
-  Switching the visible pane does not change it. With no subject, Jarvis asks which
+- **The subject is not passive pane focus.** "It", "that" and "those" refer to the
+  app's conversational subject. An explicit successful Jarvis switch establishes
+  the validated conversation as subject; a passive browser tab change does not.
+  With no subject, Jarvis asks which
   chat you mean rather than falling back to the selected pane.
 - **Exact words and recipient.** Delivery uses your wording, cut from your own
   message at boundaries the app offers; the model only picks an offered boundary
@@ -194,11 +195,12 @@ explanation of a chat's output. Things to know:
   submitted." plus the reason. A reply from Haiku that claims no action passes a
   model-based narrative check. A rejected status or summary gives a brief inability to verify, rather than reading an older reply as a fallback. That check is a
   safety judgment, not deterministic proof that the sentence is true.
-- **Composition can need clarification.** A message assembled from separate quoted
-  fragments or rewrite instructions is held when no single exact authorized body
-  is established. A span that crosses a paired quote wrapper is rejected. Jarvis
-  retains the request and asks for the exact message; a bare yes cannot send the
-  composition instructions. Ordinary quoted words and multi-sentence literals stay exact.
+- **Literal and composed messages.** Exact dictation and fully quoted messages use
+  the original source bytes. When you ask Jarvis to lightly assemble a message,
+  the app generates a draft from the full request and checks its meaning, details,
+  grounding and references before sending. A generation or fidelity failure asks
+  for exact wording and sends nothing. Old unresolved composition requests remain
+  unsendable. Literal spans crossing a paired quote wrapper are rejected.
 - **Current status differs from exact reading.** Current-status questions use a
   bounded live terminal and newest-turn snapshot in the same response. A completed
   earlier reply remains historical while newer work is active. Summaries and

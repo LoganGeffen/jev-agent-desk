@@ -80,6 +80,9 @@ class DisposableDesk(unittest.TestCase):
         self.open_app()
 
     def evaluate(self, payload):
+        if 'meaning' in payload['questions'] and 'details' in payload['questions']:
+            return {'answers': {name: {'choice': 'fail' if getattr(self, 'fidelity_failure', None) == name else 'pass'}
+                                for name in payload['questions']}}
         if 'read_intent' in payload['questions']:
             return {'answers': {'read_intent': {'choice': getattr(self, 'read_mode', 'literal')}}}
         if 'narrative_safety' in payload['questions']:
@@ -510,7 +513,8 @@ class AuthorizationQuestionTests(unittest.TestCase):
         ends = questions['message_end']['criteria']
         self.assertEqual(request[:int(max(ends, key=int))], request)
         self.assertIn('trailing whitespace', ends[str(len(request))]['token'])
-        self.assertEqual(set(questions['message_form']['criteria']), {'verbatim', 'indirect_question', 'clarify_composition'})
+        self.assertEqual(set(questions['message_form']['criteria']), {'verbatim', 'indirect_question', 'composition', 'clarify_composition'})
+        self.assertIn('colon alone', questions['message_form']['criteria']['verbatim'])
 
     def test_routing_rule_is_general_and_never_names_the_observed_fixture(self):
         payload = self.build('Ask it to explain those numbers with an example')
@@ -678,6 +682,32 @@ class CapturedSubjectIdentityTests(DisposableDesk):
                 return fresh
             time.sleep(.02)
         self.fail('Replacement synthetic conversation did not appear')
+
+    def test_explicit_selection_sets_subject_for_pronoun_send_but_passive_focus_does_not(self):
+        self.provider = lambda context, specs, execute, **kwargs: execute('select_session', {'name': 'Dog Data'}) and final()
+        selected = self.app.jarvis.submit('Switch to Dog Data', 'select-dog')
+        self.assertEqual(selected['actions'], [])
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], self.targets['Dog Data'])
+        self.app.focus(self.targets['Notes']['tab'])
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], self.targets['Dog Data'])
+        self.allow(self.REQUEST, body=self.BODY)
+        self.provider = self.send_provider
+        sent = self.app.jarvis.submit(self.REQUEST, 'after-select', capture_target=self.targets['Notes'])
+        self.assertEqual(sent['actions'][0]['payload'], self.BODY)
+        self.assertEqual(self.received('Notes'), b'')
+
+    def test_failed_stale_selection_keeps_subject(self):
+        self.capture_subject()
+        captured = self.app.jarvis.snapshot()['subject']
+        self.replace_dog()
+        results = []
+        def provider(context, specs, execute, **kwargs):
+            results.append(execute('select_session', {'name': 'Dog Data'}))
+            return final()
+        self.provider = provider
+        self.app.jarvis.submit('Switch to Dog Data', 'stale-select')
+        self.assertFalse(results[0]['ok'])
+        self.assertEqual(self.app.jarvis.snapshot()['subject'], captured)
 
     def held_send(self, restart=False, metadata=False):
         captured = self.capture_subject(restart)
@@ -884,18 +914,30 @@ class CurrentEvidenceTests(DisposableDesk):
 
 
 class CompositionTests(DisposableDesk):
-    def test_straddled_fragment_is_retained_but_not_confirmable(self):
+    def test_light_composition_sends_app_draft_and_retains_source(self):
         request = 'Tell Dog Data: "check the queue" and then add "explain the result". So just say that politely.'
         body = request[request.index('check'):]
         self.allow(request, body=body)
+        self.intents[request]['form'] = 'composition'
         self.provider = self.send_provider
-        receipt = self.app.jarvis.submit(request, 'composition')
+        candidate = 'Please check the queue and explain the result.'
+        with patch('jarvis_tools.compose_message', return_value=candidate):
+            receipt = self.app.jarvis.submit(request, 'composition')
+        self.assertEqual(receipt['actions'][0]['payload'], candidate)
+        draft = next(iter(self.app.jarvis.snapshot()['drafts'].values()))
+        self.assertEqual((draft['form'], draft['source_text'], draft['text']), ('composition', request, candidate))
+        self.assertEqual(draft['source_span'], [0, len(request)])
+        self.assertFalse(self.app.jarvis.snapshot()['clarifications'])
+
+    def test_old_composition_hold_cannot_be_confirmed(self):
+        request = 'Tell Dog Data something combining these ideas.'
+        self.allow(request)
+        self.intents[request]['form'] = 'clarify_composition'
+        self.provider = self.send_provider
+        receipt = self.app.jarvis.submit(request, 'old-hold')
         self.assertEqual(receipt['actions'], [])
-        self.assertIn('What exact message', receipt['text'])
         pending = next(iter(self.app.jarvis.snapshot()['clarifications'].values()))
-        self.assertEqual(pending['text'], request)
-        self.assertEqual(pending['operation'], 'compose')
-        self.assertFalse(self.app.jarvis.snapshot()['drafts'])
+        self.assertEqual((pending['text'], pending['operation']), (request, 'compose'))
         self.intents['yes'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
         results = []
         def confirm(context, specs, execute, **kwargs):
@@ -905,13 +947,9 @@ class CompositionTests(DisposableDesk):
         yes = self.app.jarvis.submit('yes', 'bare-confirm')
         self.assertEqual(yes['actions'], [])
         self.assertFalse(results[0]['ok'])
-        explicit = 'Tell Dog Data: Check the queue and explain the result.'
-        self.allow(explicit, body='Check the queue and explain the result.')
-        self.provider = self.send_provider
-        sent = self.app.jarvis.submit(explicit, 'explicit-body')
-        self.assertEqual(sent['actions'][0]['payload'], 'Check the queue and explain the result.')
+        self.assertFalse(self.app.jarvis.snapshot()['drafts'])
 
-    def test_semantic_composition_without_quotes_never_generates_message(self):
+    def test_materially_ambiguous_composition_holds(self):
         request = 'Tell Dog Data something combining the first two ideas, but make it more polite.'
         self.allow(request)
         self.intents[request]['form'] = 'clarify_composition'
@@ -920,6 +958,43 @@ class CompositionTests(DisposableDesk):
             result = self.app.jarvis.submit(request, 'compose-unquoted')
         self.assertEqual(result['actions'], [])
         self.assertIn('What exact message', result['text'])
+
+    def test_composition_fidelity_rejects_omission_invention_ambiguity_and_generation_failure(self):
+        request = 'Send Dog Data something that basically asks whether /tmp/results has 12 rows, but do not call it final yet.'
+        self.allow(request)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        for failure in ('meaning', 'details', 'grounding', 'references'):
+            with self.subTest(failure=failure):
+                self.fidelity_failure = failure
+                with patch('jarvis_tools.compose_message', return_value='Check the results.'):
+                    result = self.app.jarvis.submit(request, 'bad-' + failure)
+                self.assertEqual(result['actions'], [])
+                self.assertIn('What exact message', result['text'])
+        self.fidelity_failure = None
+        with patch('jarvis_tools.compose_message', side_effect=RuntimeError('generation failed')):
+            result = self.app.jarvis.submit(request, 'generation-failed')
+        self.assertEqual(result['actions'], [])
+
+    def test_exact_quoted_payload_overrides_erroneous_composition_classification(self):
+        request = 'Tell Dog Data: “Keep 12 rows in /tmp/results; do not call them final.”'
+        body = 'Keep 12 rows in /tmp/results; do not call them final.'
+        self.allow(request, body=body)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'quoted-exact')
+        self.assertEqual(receipt['actions'][0]['payload'], body)
+
+    def test_exact_instruction_overrides_erroneous_composition_classification(self):
+        request = 'Tell Dog Data exactly: Keep 12 rows; do not call them final.  '
+        body = 'Keep 12 rows; do not call them final.  '
+        self.allow(request, body=body)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'dictated-exact')
+        self.assertEqual(receipt['actions'][0]['payload'], body)
 
     def test_complete_literal_preserves_quoted_words_and_multiple_sentences(self):
         for number, (request, body) in enumerate([
