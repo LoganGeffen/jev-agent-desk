@@ -25,8 +25,19 @@ class VoiceControls {
     this.speechCache = new Map();
     this.listenAfter = 0;
     this.config = {};
+    this.wakeIdleMs = 12000;
+    this.wakeSessionMs = 60000;
     this.loudFrames = 0;
     document.getElementById('voice-toggle').onclick = () => this.capture ? this.stop() : this.start();
+    const wakeOption = document.getElementById('wake-mode');
+    if (wakeOption) {
+      try { wakeOption.checked = localStorage.getItem('jev-local-wake') === 'true'; } catch {}
+      wakeOption.onchange = () => {
+        try { localStorage.setItem('jev-local-wake', String(wakeOption.checked)); } catch {}
+        this.stop();
+        this.status(wakeOption.checked ? 'On-device wake selected · enable microphone once' : 'Manual voice selected · enable microphone');
+      };
+    }
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.stop(); });
     window.addEventListener('pagehide', () => this.stop());
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
@@ -123,7 +134,7 @@ class VoiceControls {
     clearTimeout(this.draftTimer);
     clearTimeout(this.recognitionTimer);
     this.cancelEvaluation();
-    if (this.draft) this.draft.held = true;
+    if (this.draft) { this.draft.held = true; this.draft.wakeResume = false; }
     this.renderDraft();
   }
   restoreDraft(text, target, reason = '') {
@@ -162,6 +173,7 @@ class VoiceControls {
     this.draft = null;
     this.onsetTarget = undefined;
     this.renderDraft();
+    if (this.capture?.wake) this.waitForWake(this.capture);
     const transcript = {transcript_id: this.identify(draft).transcriptId, transcript_revision: draft.revision};
     await this.submit(draft.text, draft.target, draft.source || 'voice',
       decision ? {...transcript, decision_id: decision.decision_id} : {...transcript, explicit_send: manual});
@@ -200,7 +212,8 @@ class VoiceControls {
     this.draft = null;
     this.onsetTarget = undefined;
     this.renderDraft();
-    this.status('Discarded unsent words');
+    if (this.capture?.wake) this.waitForWake(this.capture);
+    else this.status('Discarded unsent words');
     this.onDiscard?.(draft);
   }
   ensureDraft() {
@@ -449,6 +462,7 @@ class VoiceControls {
       }});
       if (this.capture !== capture) { stream.getTracks().forEach(track => track.stop()); return; }
       capture.stream = stream;
+      stream.getTracks().forEach(track => { track.onended = () => this.fail(capture, 'Microphone disconnected'); });
       if (capture.context.sampleRate !== 16000) throw new Error('This browser cannot capture at 16 kHz');
       await capture.context.audioWorklet.addModule('/microphone.js');
       if (this.capture !== capture) return;
@@ -456,51 +470,163 @@ class VoiceControls {
       capture.processor = new AudioWorkletNode(capture.context, 'microphone');
       capture.input.connect(capture.processor);
       capture.processor.connect(capture.context.destination);
-      capture.ws = new WebSocket(this.config.websocket_url);
-      capture.timer = setTimeout(() => this.fail(capture, 'Speech connection timed out'), 15000);
-      capture.processor.port.onmessage = ({data}) => {
-        if (capture !== this.capture || !capture.ready) return;
-        const paused = this.recognitionPaused();
-        this.loudFrames = !paused && data.rms > 0.025 ? this.loudFrames + 1 : 0;
-        if (this.loudFrames === 2) {
-          this.speechOnset();
-          this.stopReadback('microphone speech onset');
-          this.log('speech_detected');
-        }
-        if (capture.ws.readyState === WebSocket.OPEN) {
-          if (capture.ws.bufferedAmount > 64000) { this.fail(capture, 'Audio connection is too slow'); return; }
-          const bytes = paused ? new Uint8Array(data.pcm.byteLength) : new Uint8Array(data.pcm.buffer);
-          capture.ws.send(JSON.stringify({message_type: 'input_audio_chunk',
-            audio_base_64: btoa(String.fromCharCode(...bytes))}));
-        }
-      };
-      capture.ws.onmessage = ({data}) => {
-        if (capture !== this.capture) return;
-        const message = JSON.parse(data);
-        if (message.message_type === 'session_started') {
-          clearTimeout(capture.timer);
-          capture.ready = true;
-          this.status(this.semantic ? 'Listening · Jarvis decides when you are done' : 'Listening · pause about 4 seconds to send');
-          this.log('mic_started');
-        } else if (message.message_type === 'partial_transcript') {
-          if (!this.recognitionPaused() && message.text?.trim()) {
-            this.speechOnset(true);
-            this.ensureDraft();
-            this.draft.partial = message.text;
-            this.renderDraft();
-            this.stopReadback('recognized speech');
-          }
-        } else if (message.message_type === 'committed_transcript' && !this.recognitionPaused() && message.text?.trim()) {
-          document.getElementById('transcript').textContent = '';
-          this.committed(message.text);
-        } else if (message.message_type === 'error') this.fail(capture, message.error);
-      };
-      capture.ws.onerror = () => this.fail(capture, 'Local speech relay connection failed');
-      capture.ws.onclose = () => this.fail(capture, 'Speech connection closed; enable voice to reconnect');
-      stream.getTracks().forEach(track => { track.onended = () => this.fail(capture, 'Microphone disconnected'); });
+      capture.wakeMode = !!document.getElementById('wake-mode')?.checked;
+      capture.processor.port.onmessage = ({data}) => this.microphonePacket(capture, data);
+      if (capture.wakeMode) {
+        this.status('Loading on-device Hey Jarvis…');
+        const wake = await LocalWakeDetector.create();
+        if (this.capture !== capture) { wake.close(); return; }
+        capture.wake = wake;
+        capture.ready = true;
+        this.waitForWake(capture);
+      } else this.openRecognition(capture);
     } catch (error) {
       this.fail(capture, error.name === 'NotAllowedError' ? 'Microphone permission denied' : error.message);
     }
+  }
+  microphonePacket(capture, data) {
+    if (capture !== this.capture || (!capture.ready && !capture.wakeMode)) return;
+    try {
+      if (capture.wake) {
+        const detected = capture.wake.feed(data.pcm);
+        if (capture.wakeState === 'waiting' || capture.wakeState === 'connecting') {
+          capture.buffer.push(data.pcm.slice());
+          capture.bufferSamples += data.pcm.length;
+          if (capture.wakeState === 'waiting') {
+            while (capture.bufferSamples > 48000) capture.bufferSamples -= capture.buffer.shift().length;
+            if (detected) this.wakeDetected(capture);
+          } else if (capture.bufferSamples > 128000) this.fail(capture, 'Speech connection too slow; command audio was not sent');
+          return;
+        }
+      }
+      if (!capture.cloudReady) return;
+      const paused = this.recognitionPaused();
+      this.loudFrames = !paused && data.rms > 0.025 ? this.loudFrames + 1 : 0;
+      if (this.loudFrames === 2) {
+        this.speechOnset();
+        this.stopReadback('microphone speech onset');
+        this.log('speech_detected');
+      }
+      if (capture.ws.bufferedAmount > 64000) { this.fail(capture, 'Audio connection is too slow'); return; }
+      this.sendAudio(capture, paused ? new Int16Array(data.pcm.length) : data.pcm);
+    } catch (error) { this.fail(capture, error.message); }
+  }
+  sendAudio(capture, pcm) {
+    if (capture !== this.capture || !capture.cloudReady || capture.ws?.readyState !== WebSocket.OPEN) return;
+    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+    capture.ws.send(JSON.stringify({message_type: 'input_audio_chunk', audio_base_64: btoa(String.fromCharCode(...bytes))}));
+  }
+  wakeDetected(capture) {
+    if (capture !== this.capture || capture.wakeState !== 'waiting') return;
+    this.stopReadback('Hey Jarvis');
+    const resume = this.draft?.wakeResume && !this.draft.unfinalized &&
+      JSON.stringify(this.draft.target) === JSON.stringify(this.target());
+    if (this.draft && !resume) {
+      this.holdDraft();
+      this.status('Review or discard the retained speech draft before a new wake request');
+      return;
+    }
+    if (resume) { this.draft.held = false; this.draft.wakeResume = false; }
+    this.listenAfter = 0;
+    this.onsetTarget = this.draft?.target ?? this.target();
+    capture.wakeState = 'connecting';
+    capture.prefixConsumed = false;
+    capture.boundaryPending = '';
+    this.status('Hey Jarvis heard · opening request recognition…');
+    const cue = capture.playback.createOscillator?.();
+    if (cue) {
+      const gain = capture.playback.createGain();
+      gain.gain.value = 0.05;
+      cue.frequency.value = 660;
+      cue.connect(gain); gain.connect(capture.playback.destination);
+      cue.onended = () => { cue.disconnect(); gain.disconnect(); };
+      cue.start(); cue.stop(capture.playback.currentTime + 0.08);
+    }
+    this.openRecognition(capture);
+    const epoch = capture.wakeEpoch;
+    capture.wakeMaximum = setTimeout(() => this.wakeTimeout(capture, epoch), this.wakeSessionMs);
+  }
+  wakeText(capture, text, committed) {
+    this.wakeActivity(capture);
+    if (capture.prefixConsumed) return text;
+    const pending = capture.boundaryPending || '';
+    const joined = pending ? pending + ' ' + text : text;
+    const prefix = /(?:^|\b)hey[\s,]+jarvis\b[\s.,!?;:]*/i.exec(joined);
+    if (prefix) {
+      if (committed) { capture.prefixConsumed = true; capture.boundaryPending = ''; }
+      return text.slice(Math.max(0, prefix.index + prefix[0].length - (pending ? pending.length + 1 : 0)));
+    }
+    if (committed) capture.boundaryPending = /(?:^|\b)hey[\s,]*$/i.test(text) ? 'Hey' : '';
+    this.status('Wake detected locally · waiting for recognized Hey Jarvis boundary');
+    return '';
+  }
+  wakeActivity(capture) {
+    clearTimeout(capture.wakeIdle);
+    const epoch = capture.wakeEpoch;
+    capture.wakeIdle = setTimeout(() => this.wakeTimeout(capture, epoch), this.wakeIdleMs);
+  }
+  wakeTimeout(capture, epoch) {
+    if (capture !== this.capture || capture.wakeState === 'waiting' || capture.wakeEpoch !== epoch) return;
+    const resumable = this.draft && !this.draft.held && !this.draft.partial && !this.draft.unfinalized;
+    this.preservePartial();
+    this.holdDraft();
+    if (resumable) this.draft.wakeResume = true;
+    this.waitForWake(capture);
+    if (resumable) this.status('Request paused locally · say Hey Jarvis to continue the same request');
+  }
+  waitForWake(capture) {
+    if (capture !== this.capture || !capture.wake) return;
+    clearTimeout(capture.timer);
+    clearTimeout(capture.wakeIdle);
+    clearTimeout(capture.wakeMaximum);
+    const socket = capture.ws;
+    capture.ws = null;
+    if (socket) { socket.onmessage = socket.onerror = socket.onclose = null; socket.close(); }
+    capture.cloudReady = false;
+    capture.wakeEpoch = (capture.wakeEpoch || 0) + 1;
+    capture.wakeState = 'waiting';
+    capture.buffer = [];
+    capture.bufferSamples = 0;
+    this.loudFrames = 0;
+    this.status('Waiting locally · say Hey Jarvis');
+  }
+  openRecognition(capture) {
+    if (capture !== this.capture) return;
+    const socket = capture.ws = new WebSocket(this.config.websocket_url);
+    capture.cloudReady = false;
+    capture.timer = setTimeout(() => this.fail(capture, 'Speech connection timed out'), 15000);
+    capture.ws.onmessage = ({data}) => {
+      if (capture !== this.capture || capture.ws !== socket) return;
+      const message = JSON.parse(data);
+      if (capture.wake && message.text) message.text = this.wakeText(capture, message.text, message.message_type === 'committed_transcript');
+      if (message.message_type === 'session_started') {
+        clearTimeout(capture.timer);
+        capture.ready = true;
+        capture.cloudReady = true;
+        if (capture.wake) {
+          capture.wakeState = 'listening';
+          for (const pcm of capture.buffer) this.sendAudio(capture, pcm);
+          capture.buffer = [];
+          capture.bufferSamples = 0;
+          this.wakeActivity(capture);
+        }
+        this.status(this.semantic ? 'Listening · Jarvis decides when you are done' : 'Listening · pause about 4 seconds to send');
+        this.log('mic_started');
+      } else if (message.message_type === 'partial_transcript') {
+        if (!this.recognitionPaused() && message.text?.trim()) {
+          this.speechOnset(true);
+          this.ensureDraft();
+          this.draft.partial = message.text;
+          this.renderDraft();
+          this.stopReadback('recognized speech');
+        }
+      } else if (message.message_type === 'committed_transcript' && !this.recognitionPaused() && message.text?.trim()) {
+        document.getElementById('transcript').textContent = '';
+        this.committed(message.text);
+      } else if (message.message_type === 'error') this.fail(capture, message.error);
+    };
+    capture.ws.onerror = () => { if (capture.ws === socket) this.fail(capture, 'Local speech relay connection failed'); };
+    capture.ws.onclose = () => { if (capture.ws === socket) this.fail(capture, 'Speech connection closed; enable voice to reconnect'); };
   }
   fail(capture, message) {
     if (capture !== this.capture) return;
@@ -518,6 +644,9 @@ class VoiceControls {
     this.stopReadback('voice disabled');
     if (capture) {
       clearTimeout(capture.timer);
+      clearTimeout(capture.wakeIdle);
+      clearTimeout(capture.wakeMaximum);
+      capture.wake?.close();
       capture.ws?.close();
       capture.stream?.getTracks().forEach(track => track.stop());
       capture.input?.disconnect();

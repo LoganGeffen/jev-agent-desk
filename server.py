@@ -933,8 +933,17 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.state())
                 except Exception as error:
                     self.send(503, {"error": str(error)})
-            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js"):
+            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
+            elif self.path.startswith("/wake-assets/"):
+                relative = self.path[len("/wake-assets/"):]
+                assets = Path(__file__).with_name("wake-assets")
+                allowed = {str(path.relative_to(assets)): path for path in assets.rglob("*") if path.is_file()}
+                if relative not in allowed:
+                    self.send(404, {"error": "Not found"})
+                else:
+                    types = {".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json"}
+                    self.send(200, allowed[relative].read_bytes(), types.get(allowed[relative].suffix, "application/octet-stream"))
             elif self.path == "/favicon.ico":
                 self.send(204, b"")
             else:

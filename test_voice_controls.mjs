@@ -933,3 +933,160 @@ test('a late text-to-speech fetch after stop never plays or marks heard', async 
   assert.equal(s.heard(), 0);
   s.voice.stop();
 });
+
+async function localWaiting(s) {
+  const detector = {trigger: false, closed: false,
+    feed() { const fired = this.trigger; this.trigger = false; return fired; },
+    close() { this.closed = true; }};
+  s.context.LocalWakeDetector = {create: async () => detector};
+  s.document.getElementById('wake-mode').checked = true;
+  await s.voice.start();
+  return detector;
+}
+function microphonePacket(s, value = 7) {
+  s.voice.capture.processor.port.onmessage({data: {pcm: new Int16Array(2048).fill(value), rms: .1}});
+}
+function recognitionMessage(socket, text, type = 'committed_transcript') {
+  socket.onmessage({data: JSON.stringify({message_type: type, text})});
+}
+
+test('local wake keeps idle audio local and background RMS cannot interrupt playback', async () => {
+  const s = setup({clock: fakeClock()});
+  const detector = await localWaiting(s);
+  await s.voice.speak('response', s.voice.generation);
+  const source = s.sources[0];
+  for (let i = 0; i < 50; i++) microphonePacket(s);
+  assert.equal(s.sockets.length, 0);
+  assert.equal(source.stopped, undefined);
+  assert.ok(s.voice.capture.bufferSamples <= 48000);
+  detector.trigger = true;
+  microphonePacket(s, 42);
+  assert.equal(source.stopped, true);
+  assert.equal(s.sockets.length, 1);
+  const socket = s.sockets[0];
+  recognitionMessage(socket, undefined, 'session_started');
+  assert.ok(socket.messages.length > 0);
+  assert.equal(new Int16Array(Uint8Array.from(atob(socket.messages.at(-1).audio_base_64), x => x.charCodeAt(0)).buffer)[0], 42);
+  s.voice.stop();
+  assert.equal(detector.closed, true);
+});
+
+test('wake boundary rejects earlier pre-roll commits and preserves only the exact command suffix', async () => {
+  const s = setup({clock: fakeClock()});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  const socket = s.sockets[0];
+  recognitionMessage(socket, undefined, 'session_started');
+  recognitionMessage(socket, 'Tell Controller to stop.');
+  recognitionMessage(socket, 'Tell Controller to stop.', 'partial_transcript');
+  assert.equal(s.voice.draft, null);
+  assert.equal(s.voice.capture.prefixConsumed, false);
+  recognitionMessage(socket, 'Tell Controller to stop. Hey Jarvis, read Dog Data exactly.');
+  assert.equal(s.voice.draft.text, 'read Dog Data exactly.');
+  await s.voice.finishDraft(true);
+  assert.deepEqual(s.submitted, ['read Dog Data exactly.']);
+  assert.equal(socket.closed, true);
+  assert.equal(s.voice.capture.wakeState, 'waiting');
+  assert.equal(s.voice.capture.ready, true);
+  await s.voice.speak('verified response', s.voice.generation);
+  assert.equal(s.sources.at(-1).started, true);
+  s.voice.stop();
+});
+
+test('split wake boundary and wake alone never submit and the following command keeps its beginning', async () => {
+  const s = setup({clock: fakeClock()});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  const socket = s.sockets[0];
+  recognitionMessage(socket, undefined, 'session_started');
+  recognitionMessage(socket, 'background Hey');
+  recognitionMessage(socket, 'Jarvis.');
+  assert.equal(s.voice.draft, null);
+  assert.deepEqual(s.submitted, []);
+  recognitionMessage(socket, 'Explain Café 🐕 numbers.');
+  assert.equal(s.voice.draft.text, 'Explain Café 🐕 numbers.');
+  await s.voice.finishDraft(true);
+  assert.deepEqual(s.submitted, ['Explain Café 🐕 numbers.']);
+  s.voice.stop();
+});
+
+test('wake timeout returns locally and stale recognition callbacks cannot cross a new wake', async () => {
+  const clock = fakeClock(), s = setup({clock});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  const old = s.sockets[0], late = old.onmessage;
+  recognitionMessage(old, undefined, 'session_started');
+  await clock.advance(s.voice.wakeIdleMs);
+  assert.equal(old.closed, true);
+  assert.equal(s.voice.capture.wakeState, 'waiting');
+  detector.trigger = true; microphonePacket(s);
+  const fresh = s.sockets[1];
+  late({data: JSON.stringify({message_type: 'committed_transcript', text: 'Hey Jarvis, stale command'})});
+  assert.equal(s.voice.draft, null);
+  recognitionMessage(fresh, undefined, 'session_started');
+  recognitionMessage(fresh, 'Hey Jarvis.');
+  assert.deepEqual(s.submitted, []);
+  s.voice.stop();
+});
+
+test('microphone loss during model load disposes late initialization and cannot restore capture', async () => {
+  const s = setup({clock: fakeClock()});
+  let finish;
+  s.context.LocalWakeDetector = {create: () => new Promise(resolve => { finish = resolve; })};
+  s.document.getElementById('wake-mode').checked = true;
+  const starting = s.voice.start();
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+  assert.equal(typeof s.tracks[0].onended, 'function');
+  s.tracks[0].onended();
+  const detector = {closed: false, close() { this.closed = true; }};
+  finish(detector); await starting;
+  assert.equal(s.voice.capture, null);
+  assert.equal(detector.closed, true);
+  assert.equal(s.sockets.length, 0);
+});
+
+test('changing wake mode closes continuous cloud capture and requires explicit re-enable', async () => {
+  const s = setup({clock: fakeClock()});
+  await listening(s);
+  const old = s.sockets[0];
+  const option = s.document.getElementById('wake-mode');
+  option.checked = true; option.onchange();
+  assert.equal(old.closed, true);
+  assert.equal(s.voice.capture, null);
+  assert.equal(s.tracks[0].stopped, true);
+  assert.equal(s.sockets.length, 1);
+});
+
+test('wake idle can resume only its own finalized paused voice draft without another mic tap', async () => {
+  const clock = fakeClock(), s = setup({clock});
+  s.voice.semantic = {invalidate() {}, decide: async () => ({decision: 'wait'})};
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  recognitionMessage(s.sockets[0], undefined, 'session_started');
+  recognitionMessage(s.sockets[0], 'Hey Jarvis, explain those numbers');
+  await clock.advance(s.voice.wakeIdleMs);
+  assert.equal(s.voice.draft.wakeResume, true);
+  detector.trigger = true; microphonePacket(s);
+  assert.equal(s.sockets.length, 2);
+  recognitionMessage(s.sockets[1], undefined, 'session_started');
+  recognitionMessage(s.sockets[1], 'Hey Jarvis, with an example.');
+  assert.equal(s.voice.draft.text, 'explain those numbers with an example.');
+  assert.deepEqual(s.submitted, []);
+  s.voice.stop();
+  assert.equal(s.voice.draft.wakeResume, false);
+});
+
+test('wake cannot merge a restored draft and a failed model never falls back to cloud capture', async () => {
+  const s = setup({clock: fakeClock()});
+  const detector = await localWaiting(s);
+  s.voice.restoreDraft('retained unrelated words', null);
+  detector.trigger = true; microphonePacket(s);
+  assert.equal(s.sockets.length, 0);
+  assert.equal(s.voice.draft.text, 'retained unrelated words');
+  s.voice.stop();
+  s.context.LocalWakeDetector = {create: async () => { throw new Error('Local model unavailable'); }};
+  await s.voice.start();
+  assert.equal(s.voice.capture, null);
+  assert.equal(s.sockets.length, 0);
+  assert.equal(s.document.getElementById('voice-status').textContent, 'Local model unavailable');
+});

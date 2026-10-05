@@ -336,6 +336,33 @@ queue and its heard state are checkpointed in the Jarvis store and restored on
 restart; a reply is heard only if its full-completion acknowledgment was stored.
 There are no closed-app alerts.
 
+For hands-free requests, select **Hey Jarvis · on-device wake** under Options,
+then enable the microphone once. Wait for **Waiting locally · say Hey Jarvis**.
+Say “Hey Jarvis, read Dog Data” or say the wake phrase, pause, then speak your
+request. A short local tone confirms wake. Wake alone sends no agent command;
+wake during readback stops only the audio. Ordinary background volume does not
+stop readback while waiting for wake.
+
+Waiting opens no recognition connection. After wake, a bounded buffer of about
+three seconds, including the wake phrase and possibly immediately preceding
+sound, plus your request goes to ElevenLabs. Recognized words before the wake
+phrase are excluded from the command. If transcription misses the wake boundary,
+the request stays unsent. There is no browser speech-recognition or cloud wake
+fallback. Model/runtime files are pinned and served from this app; see
+[wake-assets/PROVENANCE.json](wake-assets/PROVENANCE.json) for licenses and rebuild.
+
+After sending or cancelling, recognition closes and local waiting continues.
+A 12-second recognition idle timeout or 60-second request bound also closes it.
+A finalized voice draft paused solely by that timeout can continue after another
+wake, with its original recipient. Unfinalized words and manually held drafts
+still require review; they never merge silently with a new request. Changing the
+mode stops capture and requires explicit re-enable. The preference is remembered,
+but refresh never opens the microphone automatically. Stop, page hiding and
+microphone loss release capture; closed/background pages do not listen. Browsers
+must support 16 kHz capture. Physical phone, accents, noise and speaker echo are
+not established by the synthetic-speaker Chromium tests; headphones are useful.
+
+Leave wake mode unchecked for the existing continuous/manual voice behavior.
 Allow microphone access and wait for Listening. Speech and typing share a draft
 bound to the conversation where composition began. When to send depends on the
 mode:

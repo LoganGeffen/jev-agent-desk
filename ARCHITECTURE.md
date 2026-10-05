@@ -255,6 +255,15 @@ answer deltas without starting a turn in the real observed agent conversation.
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
 manages drafts per pane, recognition pauses, readback cancellation and audio caches.
+Optional `wake.js` uses the same mono 16 kHz PCM through a pinned local microWakeWord
+pipeline, with all WASM/model assets under `/wake-assets/`. Idle detection opens
+no recognition socket. The bounded three-second pre-roll plus request is sent
+only after wake, and transcript authority begins only after a recognized wake
+boundary. Playback readiness is separate from cloud-recognition readiness, so
+closing STT after dispatch leaves response audio available. Capture and wake-epoch
+checks fence late initialization, socket callbacks and timeouts. Stop/hide/error
+disposes the detector and both audio contexts. The official model threshold is
+unchanged. This path has no backend wake classifier or browser SpeechRecognition.
 An identity change stops automatic sending; pressing Send explicitly accepts the
 reviewed draft for the current conversation in that same pane. Backend validation
 still rejects any identity change after that click. Delivery pastes and presses

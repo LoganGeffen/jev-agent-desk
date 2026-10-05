@@ -1,0 +1,168 @@
+{
+  "runtime": {
+    "package": "uww.js",
+    "version": "0.2.1",
+    "gitHead": "7d6bbab",
+    "license": "MIT",
+    "build": "cd tools/wake-build && npm ci --ignore-scripts && node build.mjs",
+    "packaging_changes": [
+      "Alias broken tfjs-tflite module entry to upstream FESM",
+      "One import-time WASM probe changed to explicit same-origin path; load also uses same-origin wasmPath"
+    ]
+  },
+  "model": {
+    "repository": "https://github.com/esphome/micro-wake-word-models",
+    "commit": "40ff33f57f8fc6ad71a75ef085abbf742495b225",
+    "path": "models/v2/hey_jarvis.tflite",
+    "license": "Apache-2.0",
+    "license_scope": "Upstream README explicitly includes trained weights and manifests",
+    "threshold": 0.97,
+    "window": 5
+  },
+  "dependencies": [
+    {
+      "name": "@tensorflow/tfjs-backend-cpu",
+      "version": "4.9.0",
+      "license": "Apache-2.0",
+      "license_files": []
+    },
+    {
+      "name": "@tensorflow/tfjs-core",
+      "version": "4.9.0",
+      "license": "Apache-2.0",
+      "license_files": []
+    },
+    {
+      "name": "@tensorflow/tfjs-tflite",
+      "version": "0.0.1-alpha.10",
+      "license": "Apache-2.0",
+      "license_files": []
+    },
+    {
+      "name": "@types/long",
+      "version": "4.0.2",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/@types_long-LICENSE"
+      ]
+    },
+    {
+      "name": "@types/offscreencanvas",
+      "version": "2019.7.3",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/@types_offscreencanvas-LICENSE"
+      ]
+    },
+    {
+      "name": "@types/seedrandom",
+      "version": "2.4.34",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/@types_seedrandom-LICENSE"
+      ]
+    },
+    {
+      "name": "@types/webgl-ext",
+      "version": "0.0.30",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/@types_webgl-ext-LICENSE"
+      ]
+    },
+    {
+      "name": "@webgpu/types",
+      "version": "0.1.30",
+      "license": "BSD-3-Clause",
+      "license_files": [
+        "dependency-licenses/@webgpu_types-LICENSE"
+      ]
+    },
+    {
+      "name": "long",
+      "version": "4.0.0",
+      "license": "Apache-2.0",
+      "license_files": [
+        "dependency-licenses/long-LICENSE"
+      ]
+    },
+    {
+      "name": "node-fetch",
+      "version": "2.6.13",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/node-fetch-LICENSE.md"
+      ]
+    },
+    {
+      "name": "seedrandom",
+      "version": "3.0.5",
+      "license": "MIT",
+      "license_files": []
+    },
+    {
+      "name": "tr46",
+      "version": "0.0.3",
+      "license": "MIT",
+      "license_files": []
+    },
+    {
+      "name": "uww.js",
+      "version": "0.2.1",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/uww.js-LICENSE",
+        "dependency-licenses/uww.js-NOTICE"
+      ]
+    },
+    {
+      "name": "webidl-conversions",
+      "version": "3.0.1",
+      "license": "BSD-2-Clause",
+      "license_files": [
+        "dependency-licenses/webidl-conversions-LICENSE.md"
+      ]
+    },
+    {
+      "name": "whatwg-url",
+      "version": "5.0.0",
+      "license": "MIT",
+      "license_files": [
+        "dependency-licenses/whatwg-url-LICENSE.txt"
+      ]
+    }
+  ],
+  "assets": {
+    "LICENSE-APACHE-2.0": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "LICENSE-UWW-MIT": "19d8e28f573a949caff6f6b1baed8681ce8dccfe91f93959cc38c9bd00d2a0f4",
+    "NOTICE-MODEL": "bf6c416d88749af557faecbaf874861c6a808c5d45f4c28a2e25f9f613ce91ad",
+    "NOTICE-UWW": "45909a761acb9fbc09d3a55a029add14fbfd0aa694c4dbe7211bbe7ff51753b1",
+    "THIRD-PARTY.md": "6cf77562d377ac2aab0f2d7b503a740b060f8bb7a47a889e2c8863ea2eeb5cac",
+    "dependency-licenses/@types_long-LICENSE": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+    "dependency-licenses/@types_offscreencanvas-LICENSE": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+    "dependency-licenses/@types_seedrandom-LICENSE": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383",
+    "dependency-licenses/@types_webgl-ext-LICENSE": "dea9265341829002e2c23a7372393eb2ed6e26085fb623f38a4ba0af833f30a6",
+    "dependency-licenses/@webgpu_types-LICENSE": "ad88400fc55c2871ba2ed33930dc13001ef01907c2ddcbfa3caa8656e9142f05",
+    "dependency-licenses/long-LICENSE": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5",
+    "dependency-licenses/node-fetch-LICENSE.md": "84eaa985e1ef71b8c630e8aba73404c219ff425c6fdb45c62e998b58d4fbdc8e",
+    "dependency-licenses/seedrandom-LICENSE": "00a535a10988a76c7d5f7f0c9d04e7995cf85591a6623566ef2dcb46aeac4038",
+    "dependency-licenses/uww.js-LICENSE": "19d8e28f573a949caff6f6b1baed8681ce8dccfe91f93959cc38c9bd00d2a0f4",
+    "dependency-licenses/uww.js-NOTICE": "45909a761acb9fbc09d3a55a029add14fbfd0aa694c4dbe7211bbe7ff51753b1",
+    "dependency-licenses/webidl-conversions-LICENSE.md": "a889cc4dbee2ae172c179856b25d75b0b7a5a136e1b97109b9b590b2ff1a879c",
+    "dependency-licenses/whatwg-url-LICENSE.txt": "6b7a1792144374d84dc5ed3655b8bbe2754d06f4f1f64a9fb8b9de2d6f448b85",
+    "hey_jarvis.json": "b153867d818675d8abcc9dace474afe7f83551ae0d5a9b1d71a98681320185af",
+    "hey_jarvis.tflite": "21a7976add39ee24ec96c63d96b7aaa18e24d1d9824b963e451da8feb4b78b77",
+    "runtime.js": "6768fa7aa74c9c926434217b5c9ea6b02148aebd1067eaba7c752196ad6213fc",
+    "wasm/tflite_web_api_cc.js": "08e963fcde11dc041feeac97ff711b3a157614edc98ff8bfa309557189b7368d",
+    "wasm/tflite_web_api_cc.wasm": "f1eb42f96ae91e5ef34e2f833f011373ca1c40fdc9d4062ec21eb07b886ea54f",
+    "wasm/tflite_web_api_cc_simd.js": "d5c71816525140d7a35b59a908d3b07d42741576630e647d246c19c6fa72d63d",
+    "wasm/tflite_web_api_cc_simd.wasm": "40f49cc2d458ec09bb43db160e9e55f4b3c790a4c1d1fa280f8a61796296cf8e",
+    "wasm/tflite_web_api_cc_simd_threaded.js": "c6cbb6a47fb2b1fb663951d16f10c5f4a4445e521d53dc4f5d50a6d6ca8e3f63",
+    "wasm/tflite_web_api_cc_simd_threaded.wasm": "6f7aa370b3fd3660ffa50c5028b95283640f6e6f0c79381f456f35c83b40903f",
+    "wasm/tflite_web_api_cc_simd_threaded.worker.js": "9ace3794b3e648b9c3f89f9af44d44708425fd20c3417466a9a98696fa6d1603",
+    "wasm/tflite_web_api_cc_threaded.js": "93eddbbe9abc2d7f9785a7314e36639b6c2479396fa18e07067f874c3db39558",
+    "wasm/tflite_web_api_cc_threaded.wasm": "e1d4ceaa44a28336d46b30317d23cc3a26ed788bb7c5b2ca70e41bff4f83d57e",
+    "wasm/tflite_web_api_cc_threaded.worker.js": "9ace3794b3e648b9c3f89f9af44d44708425fd20c3417466a9a98696fa6d1603",
+    "wasm/tflite_web_api_client.js": "6947ba68a8c42399b3275d7fe3c01bd92fdc1f4ccf46ffb9d40846e1a62c7d1d"
+  }
+}
