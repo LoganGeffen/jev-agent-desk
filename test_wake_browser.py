@@ -3,6 +3,10 @@ import http.server
 from pathlib import Path
 import threading
 import unittest
+import urllib.error
+import urllib.request
+
+from server import make_server
 
 from playwright.sync_api import sync_playwright
 
@@ -99,11 +103,43 @@ class WakeBrowserTests(unittest.TestCase):
                 self.assertTrue(result['ready'])
                 self.assertEqual(result['waiting'], 'waiting')
                 self.assertEqual(result['permissions'], 1)
+                page.wait_for_timeout(2100)
+                page.evaluate("feed('positive')")
+                self.assertEqual(page.evaluate('cloudSockets.length'), 2)
+                self.assertEqual(page.evaluate('permissions'), 1)
+                page.evaluate("cloudSockets[1].onmessage({data:JSON.stringify({message_type:'session_started'})}); cloudSockets[1].onmessage({data:JSON.stringify({message_type:'committed_transcript',text:'Hey Jarvis.'})});")
+                self.assertEqual(page.evaluate('commands'), ['read Dog Data.'])
                 self.assertEqual(errors, [])
                 self.assertTrue(all(url.startswith(origin) for url in requests))
                 self.assertTrue(any(url.endswith('.wasm') for url in requests))
                 page.evaluate('voice.stop()')
                 browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
+
+    def test_production_server_serves_exact_local_wake_assets_and_rejects_traversal(self):
+        server = make_server(None)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = 'http://127.0.0.1:' + str(server.server_port)
+        root = Path(__file__).parent
+        try:
+            assets = [root / 'wake.js', *[p for p in (root / 'wake-assets').rglob('*') if p.is_file()]]
+            types = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json'}
+            for path in assets:
+                with self.subTest(path=str(path.relative_to(root))):
+                    with urllib.request.urlopen(origin + '/' + str(path.relative_to(root))) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers['Content-Type'], types.get(path.suffix, 'application/octet-stream'))
+                        self.assertEqual(response.read(), path.read_bytes())
+            for path in ('/wake-assets/missing.wasm', '/wake-assets/../server.py',
+                         '/wake-assets/%2e%2e/server.py', '/wake-assets/wasm/../../server.py'):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(origin + path)
+                self.assertEqual(raised.exception.code, 404)
         finally:
             server.shutdown()
             server.server_close()
