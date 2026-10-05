@@ -56,9 +56,10 @@ jarvis_state.JarvisState  <-> jarvis_store.JarvisStore (SQLite)
 - `jarvis_turns.py`: HTTP-facing turn decisions and the playback ledger.
 
 **Control flow and authority.** The current user text is the only authoritative
-input. Replies, tool output and chat titles reach the model as untrusted evidence
-in a separate part of its context. Model text is never delivered to an agent. A
-literal send works this way:
+input. Replies, tool output and chat titles reach the controller model as untrusted
+evidence in a separate part of its context. Arbitrary controller prose is never
+delivered to an agent. The application may deliver a verified generated draft when
+the user authorizes composition. A send works this way:
 
 1. The app records source boundaries over the user's own message
    (`set_literal_boundaries`); the model may only choose an offered `boundary_id`

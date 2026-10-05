@@ -996,6 +996,88 @@ class CompositionTests(DisposableDesk):
             receipt = self.app.jarvis.submit(request, 'dictated-exact')
         self.assertEqual(receipt['actions'][0]['payload'], body)
 
+    def test_non_colon_exact_routing_preserves_body(self):
+        body = 'Keep 12 rows; do not call them final.'
+        request = 'Tell Dog Data verbatim ' + body
+        self.allow(request, body=body)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'non-colon-exact')
+        self.assertEqual(receipt['actions'][0]['payload'], body)
+
+    def test_quoted_payload_retains_whitespace_when_model_trims_span(self):
+        request = 'Tell Dog Data: “  Keep 12 rows; do not call them final.  ”'
+        selected = 'Keep 12 rows; do not call them final.'
+        self.allow(request, body=selected)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'quoted-whitespace')
+        self.assertEqual(receipt['actions'][0]['payload'], '  ' + selected + '  ')
+
+    def test_quoted_payload_after_to_say_retains_whitespace(self):
+        selected = 'Keep 12 rows; do not call them final.'
+        request = 'Tell Dog Data to say “  ' + selected + '  ”'
+        self.allow(request, body=selected)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'quoted-to-say')
+        self.assertEqual(receipt['actions'][0]['payload'], '  ' + selected + '  ')
+
+    def test_trailing_outer_exact_instruction_preserves_selected_body(self):
+        body = 'Keep 12 rows; do not call them final.'
+        request = 'Tell Dog Data: ' + body + ' Send those exact words verbatim.'
+        self.allow(request, body=body)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'trailing-exact')
+        self.assertEqual(receipt['actions'][0]['payload'], body)
+
+    def test_trailing_exact_instruction_inside_selected_span_holds(self):
+        request = 'Tell Dog Data: Keep 12 rows; do not call them final. Send those exact words verbatim.'
+        self.allow(request, body='Keep 12 rows; do not call them final. Send those exact words verbatim.')
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'swallowed-exact')
+        self.assertEqual(receipt['actions'], [])
+        self.assertIn('What exact message', receipt['text'])
+
+    def test_quoted_payload_with_outer_exact_instruction_preserves_whitespace(self):
+        selected = 'Keep 12 rows; do not call them final.'
+        request = 'Tell Dog Data: “  ' + selected + '  ” Send those exact words verbatim.'
+        self.allow(request, body=selected)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'quoted-trailing-exact')
+        self.assertEqual(receipt['actions'][0]['payload'], '  ' + selected + '  ')
+
+    def test_incidental_quotes_and_exact_words_keep_composition(self):
+        request = 'Tell Dog Data: “check the exact count” and add “explain verbatim labels”. Say it politely.'
+        self.allow(request, body='“check the exact count” and add “explain verbatim labels”. Say it politely.')
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        candidate = 'Please check the exact count and explain verbatim labels.'
+        with patch('jarvis_tools.compose_message', return_value=candidate) as composer:
+            receipt = self.app.jarvis.submit(request, 'incidental-exact')
+        composer.assert_called_once()
+        self.assertEqual(receipt['actions'][0]['payload'], candidate)
+
+    def test_two_quoted_fragments_do_not_masquerade_as_full_wrapper(self):
+        request = 'Tell Dog Data: “check count” and add “explain result”'
+        self.allow(request, body='check count” and add “explain result')
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        candidate = 'Please check the count and explain the result.'
+        with patch('jarvis_tools.compose_message', return_value=candidate) as composer:
+            receipt = self.app.jarvis.submit(request, 'two-fragments')
+        composer.assert_called_once()
+        self.assertEqual(receipt['actions'][0]['payload'], candidate)
+
     def test_complete_literal_preserves_quoted_words_and_multiple_sentences(self):
         for number, (request, body) in enumerate([
             ('Tell Dog Data: The broken command is echo "hello', 'The broken command is echo "hello'),

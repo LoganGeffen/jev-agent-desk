@@ -25,6 +25,39 @@ def consistent_quote_span(text, start, end):
     return all((left < start <= right) == (left < end <= right) for left, right in pairs)
 
 
+def quoted_literal_span(text, start, end):
+    before, after = text[:start], text[end:]
+    opening = before.rstrip()
+    closing = after.lstrip()
+    if not opening or not closing or (opening[-1], closing[0]) not in (('"', '"'), ('“', '”')):
+        return None
+    quote_start = len(opening) - 1
+    quote_end = len(text) - len(closing)
+    routing = text[:quote_start]
+    outer_routing = r'\s*(?:tell|ask|message|send)\b(?:[^:]*:\s*|.+\bto\s+(?:say|send)\s*)'
+    if routing.strip() and not re.fullmatch(outer_routing, routing, re.I):
+        return None
+    tail = text[quote_end + 1:]
+    if tail.strip() and not trailing_exact_instruction(tail):
+        return None
+    span = quote_start + 1, quote_end
+    return span if consistent_quote_span(text, *span) else None
+
+
+TRAILING_EXACT = re.compile(
+    r'\s*(?:please\s+)?(?:send|use)\s+(?:those|these|that|the)\s+'
+    r'(?:exact\s+)?(?:words|wording|text|message)\s*'
+    r'(?:exactly|verbatim|word\s+for\s+word)?[.!?]?\s*', re.I)
+
+
+def trailing_exact_instruction(text):
+    return bool(TRAILING_EXACT.fullmatch(text) and re.search(r'\b(?:exact|exactly|verbatim|word\s+for\s+word)\b', text, re.I))
+
+
+def trailing_exact_inside_body(text):
+    return any(trailing_exact_instruction(text[match.end():]) for match in re.finditer(r'[.!?]\s+', text))
+
+
 def spec(name, description, properties=None, required=()):
     return {'name': name, 'description': description, 'inputSchema': {'type': 'object',
             'properties': properties or {}, 'required': list(required), 'additionalProperties': False}}
@@ -306,13 +339,23 @@ class JarvisTools:
                                 end=int(response['answers']['message_end']['choice']), source_text=source,
                                 form=response['answers']['message_form']['choice'])
                 recipient = (decision['target'] or {}).get('label', 'unresolved recipient')
-                quoted = (decision['start'] > 0 and decision['end'] < len(turn['user_text'])
-                          and turn['user_text'][decision['start'] - 1] in ('"', '“')
-                          and turn['user_text'][decision['end']] in ('"', '”'))
-                outer_prefix = turn['user_text'].split(':', 1)[0]
-                exact_requested = bool(re.search(r'\b(?:exactly|verbatim|word for word)\b', outer_prefix, re.I))
-                if decision['form'] == 'composition' and (quoted or exact_requested):
-                    decision['form'] = 'verbatim'
+                if decision['form'] == 'composition':
+                    request = turn['user_text']
+                    quote_span = quoted_literal_span(request, decision['start'], decision['end'])
+                    routing = request[:decision['start']]
+                    colon_exact = ':' in routing and bool(re.search(
+                        r'\b(?:exactly|verbatim|word for word)\b', routing.split(':', 1)[0], re.I))
+                    bare_exact = ':' not in routing and bool(re.fullmatch(
+                        r'\s*(?:please\s+)?(?:tell|ask|message|send)\b.+\b(?:exactly|verbatim|word for word)\s+', routing, re.I))
+                    exact_prefix = colon_exact or bare_exact
+                    exact_suffix = trailing_exact_instruction(request[decision['end']:])
+                    if quote_span or exact_prefix or exact_suffix:
+                        decision['form'] = 'verbatim'
+                        if quote_span:
+                            decision['start'], decision['end'] = quote_span
+                        decision['source_text'] = request[decision['start']:decision['end']]
+                    elif trailing_exact_inside_body(decision['source_text']):
+                        decision['form'] = 'clarify_composition'
                 if decision['form'] == 'composition':
                     decision.update(start=0, end=len(turn['user_text']), source_text=turn['user_text'])
                     if decision['target']:
@@ -332,7 +375,7 @@ class JarvisTools:
                 elif decision['form'] == 'clarify_composition' or not consistent_quote_span(turn['user_text'], decision['start'], decision['end']):
                     decision.update(allowed=False, composition=True)
                 else:
-                    decision['delivery'] = prepare_message(turn['user_text'], source, decision['form'], recipient)
+                    decision['delivery'] = prepare_message(turn['user_text'], decision['source_text'], decision['form'], recipient)
         self.trace('authorization_result', request_id=turn['request_id'], turn_id=turn['turn_id'], operation=operation, decision=decision)
         self.decisions[key] = decision
         return decision

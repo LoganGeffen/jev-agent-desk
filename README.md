@@ -174,10 +174,11 @@ explanation of a chat's output. Things to know:
   the validated conversation as subject; a passive browser tab change does not.
   With no subject, Jarvis asks which
   chat you mean rather than falling back to the selected pane.
-- **Exact words and recipient.** Delivery uses your wording, cut from your own
-  message at boundaries the app offers; the model only picks an offered boundary
-  and never supplies message text. The only generated text is the
-  indirect-question rewording the existing delivery path already uses.
+- **Exact words and recipient.** Exact dictation uses your wording, cut from your
+  own message at boundaries the app offers. The controller model only picks an
+  offered boundary and never supplies message text. Indirect questions can be
+  reworded, and an explicitly requested composition can use an app-generated
+  draft after fidelity checks; both retain the original source.
   Recipient identity is captured and checked again at send. A replaced conversation
   blocks a follow-up even if it has the same name and pane. Jarvis retains the exact
   intended body and asks you to confirm the offered current conversation; another
