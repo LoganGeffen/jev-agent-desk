@@ -151,6 +151,8 @@ async function desk({style = 'original', server = backend()} = {}) {
     TextDecoder, TextEncoder, btoa, atob, fetch, crypto: webcrypto});
   vm.runInContext(read('readback.js') + read('voice.js') + read('jarvis.js') + '\nglobalThis.Controls = VoiceControls; globalThis.JarvisClient = JarvisClient;', context);
   const voice = new context.Controls(async () => {});
+  voice.localWake = false;
+  voice.autoAttempted = true;
   voice.configure({configured: true, websocket_url: 'ws://test'});
   document.getElementById('speech-style').value = style;
   await voice.start();
