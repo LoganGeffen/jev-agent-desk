@@ -1,3 +1,4 @@
+from diagnostics import Diagnostics
 import base64
 from datetime import datetime, timezone
 import json
@@ -57,15 +58,23 @@ def forwarded_alignment(data):
 
 
 class Voice:
-    def __init__(self, log):
+    def __init__(self, log, trace=None):
         self.log = Path(log)
+        self.diagnostics = Diagnostics(self.log)
+        self.trace = trace
         self.lock = threading.Lock()
         self.url = None
 
     def record(self, kind, **fields):
-        event = {"timestamp": datetime.now(timezone.utc).isoformat(), "kind": kind, **fields}
-        with self.lock, self.log.open("a") as stream:
-            stream.write(json.dumps(event) + "\n")
+        try:
+            self.diagnostics.record(kind, kind=kind, **fields)
+        except Exception:
+            pass
+        try:
+            if self.trace:
+                self.trace('voice_provider', kind=kind, **fields)
+        except Exception:
+            pass
 
     def config(self):
         return {"configured": bool(os.environ.get("ELEVENLABS_API_KEY") and os.environ.get("ELEVENLABS_VOICE_ID")),
@@ -97,7 +106,8 @@ class Voice:
                     elapsed_ms=round((time.monotonic() - started) * 1000))
         return audio
 
-    def speech_relay(self, browser, profile):
+    def speech_relay(self, browser, profile, correlation=None):
+        correlation = correlation or {}
         models = {'current': 'eleven_flash_v2_5', 'alternate': 'eleven_multilingual_v2'}
         if profile not in models or not self.config()['configured']:
             browser.send(json.dumps({'error': 'Speech is unavailable'}))
@@ -122,6 +132,7 @@ class Voice:
                             size += len(text)
                             if size > 24000:
                                 raise ValueError('Speech text is too long')
+                            self.record('tts_text_chunk', **correlation, text=text, total_chars=size)
                             provider.send(json.dumps({'text': text, **({'flush': True} if text else {})}))
                             if not text:
                                 return
@@ -141,6 +152,7 @@ class Voice:
                             alignment = forwarded_alignment(data)
                             if alignment:
                                 message['alignment'] = alignment
+                            self.record('tts_audio_chunk', **correlation, audio_base64_chars=len(data['audio']) if isinstance(data['audio'], str) else None, alignment=alignment)
                             browser.send(json.dumps(message))
                         if data.get('isFinal'):
                             browser.send(json.dumps({'isFinal': True}))
@@ -156,13 +168,15 @@ class Voice:
             except ConnectionClosed:
                 pass
         finally:
-            self.record('tts_stream', first_audio_ms=first_audio,
+            self.record('tts_stream', **correlation, first_audio_ms=first_audio,
                         elapsed_ms=round((time.monotonic() - started) * 1000))
 
     def relay(self, browser):
-        profile = parse_qs(urlsplit(browser.request.path).query).get('tts')
+        query = parse_qs(urlsplit(browser.request.path).query)
+        correlation = {key: query[key][0][:100] for key in ('capture_id', 'generation', 'socket_epoch') if key in query}
+        profile = query.get('tts')
         if profile:
-            return self.speech_relay(browser, profile[0])
+            return self.speech_relay(browser, profile[0], correlation)
         if not self.config()["configured"]:
             browser.send(json.dumps({"message_type": "error", "error": "ElevenLabs is not configured"}))
             return
@@ -190,7 +204,7 @@ class Voice:
                             audio_chunks += 1
                             audio_bytes += chunk_bytes
                             if audio_chunks == 1:
-                                self.record('stt_audio_started', bytes=chunk_bytes, sample_rate=16000)
+                                self.record('stt_audio_started', **correlation, bytes=chunk_bytes, sample_rate=16000)
                     except (ValueError, TypeError, AttributeError, ConnectionClosed):
                         pass
                     finally:
@@ -203,14 +217,14 @@ class Voice:
                         body = json.loads(raw)
                         kind = body.get("message_type")
                         if kind == "session_started":
-                            self.record("stt_connected", model="scribe_v2_realtime")
+                            self.record("stt_connected", **correlation, model="scribe_v2_realtime")
                             browser.send(json.dumps({"message_type": kind}))
                         elif kind in ("partial_transcript", "committed_transcript"):
                             transcripts += 1
-                            self.record(kind, text=body["text"])
+                            self.record(kind, **correlation, text=body["text"])
                             browser.send(json.dumps({"message_type": kind, "text": body["text"]}))
                         elif "error" in body or kind.endswith("error"):
-                            self.record("stt_error", category=kind)
+                            self.record("stt_error", **correlation, category=kind)
                             browser.send(json.dumps({"message_type": "error", "error": f"Speech recognition: {kind}"}))
                             break
                 finally:
@@ -218,15 +232,15 @@ class Voice:
                     worker.join(timeout=3)
         except InvalidStatus as error:
             code = error.response.status_code
-            self.record("stt_error", http_status=code)
+            self.record("stt_error", **correlation, http_status=code)
             browser.send(json.dumps({"message_type": "error", "error": f"ElevenLabs recognition HTTP {code}"}))
         except ConnectionClosed:
             pass
         except (OSError, TimeoutError):
-            self.record("stt_error", category="connection_failed")
+            self.record("stt_error", **correlation, category="connection_failed")
             browser.send(json.dumps({"message_type": "error", "error": "Speech provider connection failed"}))
         finally:
-            self.record("stt_disconnected", elapsed_ms=round((time.monotonic() - started) * 1000),
+            self.record("stt_disconnected", **correlation, elapsed_ms=round((time.monotonic() - started) * 1000),
                         audio_chunks=audio_chunks, audio_bytes=audio_bytes, transcripts=transcripts)
 
     def start(self, origin, port=0, public_origin=None):

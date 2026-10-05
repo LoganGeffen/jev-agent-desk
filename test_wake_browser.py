@@ -67,7 +67,7 @@ class WakeBrowserTests(unittest.TestCase):
                 page.evaluate('''async () => {
                   window.voice = new VoiceControls(async text => commands.push(text));
                   voice.configure({configured:true, websocket_url:'ws://synthetic-request-only'});
-                  document.getElementById('wake-mode').checked = true;
+                  voice.localWake = true;
                   await voice.start();
                   window.feed = async name => {
                     const pcm = new Int16Array(await (await fetch('/test-fixtures/wake/'+name+'.pcm')).arrayBuffer());
@@ -99,16 +99,24 @@ class WakeBrowserTests(unittest.TestCase):
                 self.assertTrue(result['ignored'])
                 self.assertGreater(result['buffered'], 0)
                 self.assertEqual(result['commands'], ['read Dog Data.'])
-                self.assertTrue(result['closed'])
+                self.assertFalse(result.get('closed', False))
                 self.assertTrue(result['ready'])
-                self.assertEqual(result['waiting'], 'waiting')
+                self.assertEqual(result['waiting'], 'listening')
                 self.assertEqual(result['permissions'], 1)
+                page.evaluate("cloudSockets[0].onmessage({data:JSON.stringify({message_type:'committed_transcript',text:'Explain those numbers.'})});")
+                page.evaluate('voice.finishDraft(true)')
+                self.assertEqual(page.evaluate('commands'), ['read Dog Data.', 'Explain those numbers.'])
+                self.assertEqual(page.evaluate('cloudSockets.length'),1)
+                page.evaluate('voice.wakeIdleMs=80;voice.wakeActivity(voice.capture)')
+                page.wait_for_function("voice.capture.wakeState === 'waiting'")
+                self.assertTrue(page.evaluate('cloudSockets[0].closed'))
+                page.evaluate('voice.wakeIdleMs=60000')
                 page.wait_for_timeout(2100)
                 page.evaluate("feed('positive')")
                 self.assertEqual(page.evaluate('cloudSockets.length'), 2)
                 self.assertEqual(page.evaluate('permissions'), 1)
                 page.evaluate("cloudSockets[1].onmessage({data:JSON.stringify({message_type:'session_started'})}); cloudSockets[1].onmessage({data:JSON.stringify({message_type:'committed_transcript',text:'Hey Jarvis.'})});")
-                self.assertEqual(page.evaluate('commands'), ['read Dog Data.'])
+                self.assertEqual(page.evaluate('commands'), ['read Dog Data.', 'Explain those numbers.'])
                 self.assertEqual(errors, [])
                 self.assertTrue(all(url.startswith(origin) for url in requests))
                 self.assertTrue(any(url.endswith('.wasm') for url in requests))

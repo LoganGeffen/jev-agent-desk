@@ -45,7 +45,12 @@ class JarvisTurns:
             self.clients[body['client_id']] = record
         if not body.get('invalidate') and body['text'].strip():
             try:
-                answers = self.app.evaluate(jev.turn_decision_question(body['text'], subject, prior_request))['answers']
+                question = jev.turn_decision_question(body['text'], subject, prior_request)
+                trace = getattr(self.app, 'diagnostics', None)
+                if trace: trace.record('pause_jev_input', client_id=body['client_id'], transcript_id=body['transcript_id'], question=question)
+                response = self.app.evaluate(question)
+                if trace: trace.record('pause_jev_result', client_id=body['client_id'], transcript_id=body['transcript_id'], response=response)
+                answers = response['answers']
                 decision = answers['decision']['choice']
                 correction = answers['correction']['choice'] == 'yes'
                 if decision not in ('complete', 'wait', 'cancel'):

@@ -47,7 +47,8 @@ def validate_arguments(value, schema):
 
 
 class JarvisController:
-    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None, turn_guard=None, continuity_classifier=None):
+    def __init__(self, provider, execute_tool, tool_specs=(), state=None, authorize=None, effect_tools=(), literal_boundaries=None, response_policy=None, turn_guard=None, continuity_classifier=None, trace=None):
+        self._trace = trace
         self.provider = provider
         self.execute_tool = execute_tool
         self.state = state or JarvisState()
@@ -73,6 +74,13 @@ class JarvisController:
 
     def snapshot(self):
         return self.state.snapshot()
+
+    def trace(self, stage, **fields):
+        try:
+            if self._trace:
+                self._trace(stage, **fields)
+        except Exception:
+            pass
 
     def cancel(self, turn_id=None):
         with self.control_lock:
@@ -198,7 +206,9 @@ class JarvisController:
                     raise
 
         def dispatch(name, arguments):
+            self.trace('tool_input', request_id=turn['request_id'], turn_id=turn['turn_id'], name=name, arguments=arguments)
             result = perform(name, arguments)
+            self.trace('tool_result', request_id=turn['request_id'], turn_id=turn['turn_id'], name=name, result=result)
             self.state.tool_receipt(turn['turn_id'], name, result)
             return result
 
@@ -214,15 +224,20 @@ class JarvisController:
             if self.continuity_classifier:
                 self.state.compact_continuity(self.continuity_classifier, turn['turn_id'])
             guard()
-            result = self.provider(self.state.context(turn['turn_id']), self.tool_specs, dispatch,
+            context = self.state.context(turn['turn_id'])
+            self.trace('provider_input', request_id=turn['request_id'], turn_id=turn['turn_id'], context=context, tools=self.tool_specs)
+            result = self.provider(context, self.tool_specs, dispatch,
                                    on_text=stream, cancel=cancel)
             guard()
             if not isinstance(result, dict) or not isinstance(result.get('text'), str):
                 raise ValueError('Controller provider returned no final text')
+            self.trace('provider_result', request_id=turn['request_id'], turn_id=turn['turn_id'], result=result)
             if self.response_policy:
                 result = self.response_policy(result, turn)
                 guard()
-            return self.receipt(self.state.finish_turn(turn['turn_id'], result=result))
+            receipt = self.receipt(self.state.finish_turn(turn['turn_id'], result=result))
+            self.trace('canonical_receipt', request_id=turn['request_id'], turn_id=turn['turn_id'], receipt=receipt)
+            return receipt
         except InterruptedError:
             self.state.cancel(turn['turn_id'])
             return self.receipt(self.state.snapshot()['turns'][turn['turn_id']])

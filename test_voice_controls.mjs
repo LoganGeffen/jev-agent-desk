@@ -29,7 +29,7 @@ function fakeClock() {
   return clock;
 }
 
-function setup({clock = null} = {}) {
+function setup({clock = null, automatic = false} = {}) {
   const elements = new Map();
   const listeners = {};
   const logs = [];
@@ -41,6 +41,7 @@ function setup({clock = null} = {}) {
   const stream = {getTracks: () => tracks};
   class Context {
     currentTime = 0;
+    state = 'running';
     sampleRate = 16000;
     createBuffer = (_, length, rate) => ({duration: length / rate, getChannelData: () => new Float32Array(length)});
     destination = {};
@@ -88,6 +89,8 @@ function setup({clock = null} = {}) {
     submitted.push(text);
     submissions.push(JSON.parse(JSON.stringify({text, target, source, meta})));
   });
+  voice.localWake = false;
+  voice.autoAttempted = !automatic;
   voice.configure({configured: true, websocket_url: 'ws://test'});
   return {voice, context, document, elements, listeners, logs, submitted, submissions, sources, tracks, stream, sockets};
 }
@@ -481,7 +484,7 @@ test('viewing a reply with the microphone off preserves original without calling
   await s.voice.speakReply('Exact original reply.', s.voice.generation);
   assert.equal(s.elements.get('reply-original').textContent, 'Exact original reply.');
   assert.equal(s.elements.get('reply-presentation').open, true);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls.filter(url => url !== '/api/voice-event'), []);
 });
 
 test('failed readback releases preparation without fallback speech', async () => {
@@ -618,6 +621,7 @@ test('a thinking pause that continues stays one turn; the late judgment for the 
   assert.equal(s.decisions[0].signal.aborted, true);
   assert.equal(s.invalidations.length, 1);
   assert.equal(s.invalidations[0].transcript_id, 'tr1');
+  assert.equal(s.invalidations[0].transcript_id, s.decisions[0].payload.transcript_id);
   assert.ok(s.invalidations[0].transcript_revision > s.decisions[0].payload.transcript_revision);
   s.decisions[0].resolve({decision: 'complete', decision_id: 'd1'});
   await s.clock.advance(10);
@@ -939,7 +943,7 @@ async function localWaiting(s) {
     feed() { const fired = this.trigger; this.trigger = false; return fired; },
     close() { this.closed = true; }};
   s.context.LocalWakeDetector = {create: async () => detector};
-  s.document.getElementById('wake-mode').checked = true;
+  s.voice.localWake = true;
   await s.voice.start();
   return detector;
 }
@@ -985,8 +989,8 @@ test('wake boundary rejects earlier pre-roll commits and preserves only the exac
   assert.equal(s.voice.draft.text, 'read Dog Data exactly.');
   await s.voice.finishDraft(true);
   assert.deepEqual(s.submitted, ['read Dog Data exactly.']);
-  assert.equal(socket.closed, true);
-  assert.equal(s.voice.capture.wakeState, 'waiting');
+  assert.equal(socket.closed, undefined);
+  assert.equal(s.voice.capture.wakeState, 'listening');
   assert.equal(s.voice.capture.ready, true);
   await s.voice.speak('verified response', s.voice.generation);
   assert.equal(s.sources.at(-1).started, true);
@@ -1033,7 +1037,7 @@ test('microphone loss during model load disposes late initialization and cannot 
   const s = setup({clock: fakeClock()});
   let finish;
   s.context.LocalWakeDetector = {create: () => new Promise(resolve => { finish = resolve; })};
-  s.document.getElementById('wake-mode').checked = true;
+  s.voice.localWake = true;
   const starting = s.voice.start();
   for (let i = 0; i < 12; i++) await Promise.resolve();
   assert.equal(typeof s.tracks[0].onended, 'function');
@@ -1043,18 +1047,6 @@ test('microphone loss during model load disposes late initialization and cannot 
   assert.equal(s.voice.capture, null);
   assert.equal(detector.closed, true);
   assert.equal(s.sockets.length, 0);
-});
-
-test('changing wake mode closes continuous cloud capture and requires explicit re-enable', async () => {
-  const s = setup({clock: fakeClock()});
-  await listening(s);
-  const old = s.sockets[0];
-  const option = s.document.getElementById('wake-mode');
-  option.checked = true; option.onchange();
-  assert.equal(old.closed, true);
-  assert.equal(s.voice.capture, null);
-  assert.equal(s.tracks[0].stopped, true);
-  assert.equal(s.sockets.length, 1);
 });
 
 test('wake idle can resume only its own finalized paused voice draft without another mic tap', async () => {
@@ -1132,4 +1124,124 @@ test('wake resume remains bound to the real Jarvis session and subject, not the 
     }
     s.voice.stop();
   }
+});
+
+test('one wake supports separate followups, then idle closes cloud and requires a new boundary', async () => {
+  const clock = fakeClock(), s = setup({clock});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  const socket = s.sockets[0];
+  recognitionMessage(socket, undefined, 'session_started');
+  recognitionMessage(socket, 'Hey Jarvis, read Dog Data.');
+  await s.voice.finishDraft(true);
+  await clock.advance(50000);
+  recognitionMessage(socket, 'Explain those numbers with an example.');
+  await s.voice.finishDraft(true);
+  assert.deepEqual(s.submitted, ['read Dog Data.', 'Explain those numbers with an example.']);
+  assert.equal(s.sockets.length, 1);
+  assert.equal(socket.closed, undefined);
+  await clock.advance(59999);
+  assert.equal(s.voice.capture.wakeState, 'listening');
+  await clock.advance(1);
+  assert.equal(socket.closed, true);
+  assert.equal(s.voice.capture.wakeState, 'waiting');
+  microphonePacket(s);
+  assert.equal(s.sockets.length, 1);
+  detector.trigger = true; microphonePacket(s);
+  recognitionMessage(s.sockets[1], undefined, 'session_started');
+  recognitionMessage(s.sockets[1], 'unaddressed pre-roll speech');
+  assert.equal(s.voice.draft, null);
+  recognitionMessage(s.sockets[1], 'Hey Jarvis, next request.');
+  assert.equal(s.voice.draft.text, 'next request.');
+  s.voice.stop();
+});
+
+test('pending response and playback leave a full conversation window after audio finishes', async () => {
+  const clock = fakeClock(), s = setup({clock});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  recognitionMessage(s.sockets[0], undefined, 'session_started');
+  recognitionMessage(s.sockets[0], 'Hey Jarvis, explain the output.');
+  let resolve;
+  s.voice.submit = () => new Promise(done => {resolve = done;});
+  const submitting = s.voice.finishDraft(true);
+  await clock.advance(120000);
+  assert.equal(s.voice.capture.wakeState, 'listening');
+  resolve(); await submitting;
+  await s.voice.speak('reply', s.voice.generation);
+  await clock.advance(120000);
+  assert.equal(s.voice.capture.wakeState, 'listening');
+  s.sources[0].onended();
+  await clock.advance(59999);
+  assert.equal(s.voice.capture.wakeState, 'listening');
+  await clock.advance(1);
+  assert.equal(s.voice.capture.wakeState, 'waiting');
+  s.voice.stop();
+});
+
+test('automatic activation tries granted, prompt and unsupported permission queries once; denied and suspended stay off', async () => {
+  for (const state of ['granted', 'prompt', 'unsupported', 'denied', 'suspended']) {
+    const s = setup({clock: fakeClock()});
+    let grants = 0;
+    s.voice.localWake = true;
+    s.voice.autoAttempted = false;
+    s.context.LocalWakeDetector = {create: async () => ({feed() {return false;}, close() {}})};
+    s.context.navigator.permissions = state === 'unsupported' ? undefined : {query: async () => ({state: state === 'suspended' ? 'granted' : state})};
+    s.context.navigator.mediaDevices.getUserMedia = async () => {grants++;return s.stream;};
+    if (state === 'suspended') {
+      const Context = s.context.AudioContext;
+      s.context.AudioContext = class extends Context {state = 'suspended';};
+    }
+    s.voice.configure({configured: true, websocket_url: 'ws://test'});
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(grants, state === 'denied' ? 0 : 1);
+    assert.equal(!!s.voice.capture, !['denied', 'suspended'].includes(state));
+    assert.equal(s.sockets.length, 0);
+    s.voice.stop();
+    s.voice.configure({configured: true, websocket_url: 'ws://test'});
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(grants, state === 'denied' ? 0 : 1);
+  }
+});
+
+test('Stop before delayed automatic permission or microphone grant prevents late capture', async () => {
+  for (const delayed of ['permission', 'microphone']) {
+    const s = setup({clock: fakeClock()});
+    let finish, grants = 0, models = 0;
+    s.voice.localWake = true; s.voice.autoAttempted = false;
+    s.context.LocalWakeDetector = {create: async () => {models++;return {feed() {return false;}, close() {}};}};
+    s.context.navigator.permissions = {query: delayed === 'permission' ? () => new Promise(resolve => {finish = resolve;}) : async () => ({state:'granted'})};
+    s.context.navigator.mediaDevices.getUserMedia = () => {grants++;return delayed === 'microphone' ? new Promise(resolve => {finish = resolve;}) : Promise.resolve(s.stream);};
+    s.voice.configure({configured:true,websocket_url:'ws://test'});
+    for(let i=0;i<15;i++) await Promise.resolve();
+    s.voice.stop();
+    finish(delayed === 'permission' ? {state:'granted'} : s.stream);
+    for(let i=0;i<20;i++) await Promise.resolve();
+    assert.equal(s.voice.capture, null);
+    assert.equal(grants, delayed === 'permission' ? 0 : 1);
+    assert.equal(models, 0);
+    assert.equal(s.sockets.length, 0);
+    if(delayed === 'microphone') assert.equal(s.tracks[0].stopped, true);
+  }
+});
+
+test('repeated wake while awake stops readback but wake alone produces no request and queued wake audio is retained', async () => {
+  const s = setup({clock:fakeClock()});
+  const detector = await localWaiting(s);
+  detector.trigger = true; microphonePacket(s);
+  const socket = s.sockets[0];
+  recognitionMessage(socket, undefined, 'session_started');
+  recognitionMessage(socket, 'Hey Jarvis, first command.');
+  await s.voice.finishDraft(true);
+  await s.voice.speak('reply', s.voice.generation);
+  microphonePacket(s, 41);
+  detector.trigger = true; microphonePacket(s, 42);
+  assert.equal(s.sources[0].stopped, true);
+  assert.equal(new Int16Array(Uint8Array.from(atob(socket.messages.at(-1).audio_base_64), x => x.charCodeAt(0)).buffer)[0],42);
+  recognitionMessage(socket, 'echo before Hey Jarvis.');
+  assert.equal(s.voice.draft, null);
+  assert.deepEqual(s.submitted, ['first command.']);
+  recognitionMessage(socket, 'Ask Dog Data: include Hey Jarvis in the greeting.');
+  assert.equal(s.voice.draft.text, 'Ask Dog Data: include Hey Jarvis in the greeting.');
+  s.voice.stop();
 });

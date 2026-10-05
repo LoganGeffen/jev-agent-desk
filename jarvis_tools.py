@@ -150,6 +150,19 @@ class JarvisTools:
         self.jobs_limit = threading.BoundedSemaphore(2)
         self.denials = {}
 
+    def trace(self, stage, **fields):
+        try:
+            if getattr(self.app, 'diagnostics', None):
+                self.app.diagnostics.record(stage, **fields)
+        except Exception:
+            pass
+
+    def evaluate(self, question, turn):
+        self.trace('jev_input', request_id=turn['request_id'], turn_id=turn['turn_id'], question=question)
+        response = self.app.evaluate(question)
+        self.trace('jev_result', request_id=turn['request_id'], turn_id=turn['turn_id'], response=response)
+        return response
+
     @property
     def state(self):
         return self.controller.state
@@ -232,7 +245,9 @@ class JarvisTools:
                     pane['active'] = pane['id'] == subject['pane']
             routing_tabs.append({'id': tab['id'], 'name': tab['name'], 'agent': tab['agent'], 'panes': panes})
         payload = authorization_question(turn['user_text'], routing_tabs, subject, operation)
-        response = self.app.evaluate(payload)
+        self.trace('authorization_input', request_id=turn['request_id'], turn_id=turn['turn_id'], operation=operation, question=payload)
+        response = self.evaluate(payload, turn)
+        self.trace('authorization_initial', request_id=turn['request_id'], turn_id=turn['turn_id'], operation=operation, response=response)
         decision = {'allowed': response['answers']['permission']['choice'] == 'allow', 'target': None}
         if decision['allowed']:
             tab_id = response['answers']['target']['choice']
@@ -247,7 +262,8 @@ class JarvisTools:
                     self.denials[turn['turn_id']] = str(error)
             if operation == 'send':
                 response['answers']['action'] = {'choice': 'send_message'}
-                jev.refine_boundaries(payload, response, self.app.evaluate)
+                jev.refine_boundaries(payload, response, lambda question: self.evaluate(question, turn))
+                self.trace('authorization_refined', request_id=turn['request_id'], turn_id=turn['turn_id'], question=payload, response=response)
                 end = response['answers']['message_end']['choice']
                 if end.isdigit() and not turn['user_text'][int(end):].strip():
                     response['answers']['message_end']['choice'] = str(len(turn['user_text']))
@@ -257,6 +273,7 @@ class JarvisTools:
                                 form=response['answers']['message_form']['choice'])
                 recipient = (decision['target'] or {}).get('label', 'unresolved recipient')
                 decision['delivery'] = prepare_message(turn['user_text'], source, decision['form'], recipient)
+        self.trace('authorization_result', request_id=turn['request_id'], turn_id=turn['turn_id'], operation=operation, decision=decision)
         self.decisions[key] = decision
         return decision
 
@@ -342,7 +359,7 @@ class JarvisTools:
                            'criteria': {'allow': 'Explicitly confirm the offered subject resolution; no delivery authority.' if resolution else 'Explicitly confirm this pending send in answer to the offered prompt, including yes, Dog Data.', 'deny': 'No confirmation, changed content, cancellation, unrelated or ambiguous response, or the offer was not the immediate prompt.'}},
             'target': {'type': 'choice', 'instructions': 'Choose the explicitly confirmed recipient; if unnamed use captured_recipient only. An exact name wins. Never pick the visible pane.',
                        'criteria': {**{item['identity']: item for item in targets}, 'none': 'Recipient unresolved'}}}}
-        response = self.app.evaluate(payload)
+        response = self.evaluate(payload, turn)
         if response['answers']['permission']['choice'] != 'allow':
             return {'ok': False, 'status': 'not_attempted', 'error': 'Pending message not confirmed'}
         selected = next((item for item in targets if item['identity'] == response['answers']['target']['choice']), None)

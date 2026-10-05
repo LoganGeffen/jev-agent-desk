@@ -25,19 +25,11 @@ class VoiceControls {
     this.speechCache = new Map();
     this.listenAfter = 0;
     this.config = {};
-    this.wakeIdleMs = 12000;
-    this.wakeSessionMs = 60000;
+    this.wakeIdleMs = 60000;
     this.loudFrames = 0;
     document.getElementById('voice-toggle').onclick = () => this.capture ? this.stop() : this.start();
-    const wakeOption = document.getElementById('wake-mode');
-    if (wakeOption) {
-      try { wakeOption.checked = localStorage.getItem('jev-local-wake') === 'true'; } catch {}
-      wakeOption.onchange = () => {
-        try { localStorage.setItem('jev-local-wake', String(wakeOption.checked)); } catch {}
-        this.stop();
-        this.status(wakeOption.checked ? 'On-device wake selected · enable microphone once' : 'Manual voice selected · enable microphone');
-      };
-    }
+    this.localWake = true;
+    this.autoAttempted = false;
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.stop(); });
     window.addEventListener('pagehide', () => this.stop());
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
@@ -110,6 +102,10 @@ class VoiceControls {
     }
   }
   speechOnset(recognized = false) {
+    if (this.capture?.wake && !this.draft && !this.capture.firstRequest) {
+      this.capture.requestContext = this.wakeContext(); this.capture.firstRequest = true;
+    }
+    if (this.capture?.wake) this.wakeActivity(this.capture);
     clearTimeout(this.draftTimer);
     clearTimeout(this.recognitionTimer);
     this.touchTranscript();
@@ -176,10 +172,16 @@ class VoiceControls {
     this.draft = null;
     this.onsetTarget = undefined;
     this.renderDraft();
-    if (this.capture?.wake) this.waitForWake(this.capture);
+    const capture = this.capture;
+    if (capture?.wake) { capture.requestsPending = (capture.requestsPending || 0) + 1; this.wakeActivity(capture); }
+    this.trace('transcript_dispatch', {text: draft.text, transcript_id: draft.transcriptId, transcript_revision: draft.revision, target: draft.target});
     const transcript = {transcript_id: this.identify(draft).transcriptId, transcript_revision: draft.revision};
-    await this.submit(draft.text, draft.target, draft.source || 'voice',
-      decision ? {...transcript, decision_id: decision.decision_id} : {...transcript, explicit_send: manual});
+    try {
+      await this.submit(draft.text, draft.target, draft.source || 'voice',
+        decision ? {...transcript, decision_id: decision.decision_id} : {...transcript, explicit_send: manual});
+    } finally {
+      if (capture?.wake) { capture.requestsPending--; this.wakeActivity(capture); }
+    }
   }
   async evaluate(attempt = 0) {
     const draft = this.draft;
@@ -224,14 +226,16 @@ class VoiceControls {
       const late = this.lateWordsTarget !== undefined;
       this.draft = {text: '', partial: '', target: late ? this.lateWordsTarget : this.onsetTarget ?? this.target(), held: late,
         transcriptId: this.newId(), revision: 0, outstanding: false,
-        ...(this.capture?.wake ? {wakeContext: this.capture.requestContext} : {}),
+        ...(this.capture?.wake ? {wakeContext: this.capture.firstRequest ? this.capture.requestContext : this.wakeContext()} : {}),
         recoveryReason: late ? 'These words may have arrived late. Review before sending.' : ''};
       this.lateWordsTarget = undefined;
     }
   }
   committed(text) {
+    if (this.capture?.wake) this.wakeActivity(this.capture);
     clearTimeout(this.recognitionTimer);
     this.ensureDraft();
+    if (this.capture?.wake) this.capture.firstRequest = false;
     this.touchTranscript();
     this.draft.text = [this.draft.text, text].filter(Boolean).join(' ');
     this.draft.partial = '';
@@ -244,29 +248,49 @@ class VoiceControls {
     this.draftTimer = this.semantic ? setTimeout(() => this.evaluate(), this.silenceMs)
       : setTimeout(() => this.finishDraft(), this.graceMs);
   }
-  status(text) { document.getElementById('voice-status').textContent = text; this.onChange?.(); }
+  status(text) { document.getElementById('voice-status').textContent = text; this.trace('activation', {text}); this.onChange?.(); }
   toggleState(active) {
     const button = document.getElementById('voice-toggle');
     button.setAttribute('aria-pressed', String(active));
-    button.setAttribute('aria-label', active ? 'Stop voice input' : 'Start voice input');
-    button.title = active ? 'Stop voice input' : 'Start voice input';
+    button.setAttribute('aria-label', active ? 'Stop Jarvis' : this.localWake ? 'Enable Jarvis' : 'Start voice input');
+    button.title = active ? 'Stop Jarvis' : this.localWake ? 'Enable Jarvis' : 'Start voice input';
+    const label = document.getElementById('voice-toggle-label');
+    if (label) label.textContent = button.title;
   }
   playbackStatus(text) {
+    if (this.capture?.wake && this.capture.wakeState === 'listening') this.wakeActivity(this.capture);
     document.getElementById('playback-status').textContent = text;
     this.onChange?.(text);
   }
   recognitionPaused() {
     return ((this.pending || this.playing) && !document.getElementById('talk-to-interrupt').checked) || Date.now() < this.listenAfter;
   }
+  trace(stage, data = {}) {
+    try { return this.log('pipeline', {stage, capture_id: this.capture?.id, generation: this.generation,
+      transcript_id: this.draft?.transcriptId, transcript_revision: this.draft?.revision,
+      context: this.semantic?.context?.(), ...data}); } catch { return Promise.resolve(); }
+  }
   log(kind, detail = '') {
-    return fetch('/api/voice-event', {
+    try { return fetch('/api/voice-event', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({kind, detail})
-    }).catch(() => {});
+    }).catch(() => {}); } catch { return Promise.resolve(); }
   }
   configure(config) {
     this.config = config;
     document.getElementById('voice-toggle').disabled = !config.configured;
     if (!config.configured && !this.capture) this.status('Voice unavailable');
+    if (config.configured && !this.autoAttempted && !document.hidden) {
+      this.autoAttempted = true;
+      const generation = this.generation;
+      this.automaticallyEnable(generation);
+    }
+  }
+  async automaticallyEnable(generation) {
+    let permission;
+    try { permission = await navigator.permissions?.query({name: 'microphone'}); } catch {}
+    if (this.capture || this.generation !== generation || document.hidden) return;
+    if (permission?.state === 'denied') { this.status('Microphone permission denied · Enable Jarvis after allowing access'); return; }
+    await this.start({automatic: true});
   }
   stopReadback(reason) {
     this.generation++;
@@ -354,7 +378,7 @@ class VoiceControls {
     const capture = this.capture;
     if (!capture?.ready || this.draft || generation !== this.generation) return null;
     const profile = document.getElementById('voice-profile').value || 'current';
-    const url = this.config.websocket_url + (this.config.websocket_url.includes('?') ? '&' : '?') + 'tts=' + encodeURIComponent(profile);
+    const url = this.config.websocket_url + (this.config.websocket_url.includes('?') ? '&' : '?') + 'tts=' + encodeURIComponent(profile) + '&capture_id=' + encodeURIComponent(capture.id) + '&generation=' + generation;
     const started = Date.now();
     const finish = error => {
       if (this.playing !== player) return;
@@ -372,6 +396,7 @@ class VoiceControls {
         this.log('playback_started', JSON.stringify({first_audio_ms: Date.now() - started, streaming: true}));
       },
       onEnd: () => finish(), onError: finish,
+      onDiagnostic: data => this.trace('audio_playback', {generation, ...data}),
     });
     this.playing = player;
     document.getElementById('stop-readback').hidden = false;
@@ -389,6 +414,7 @@ class VoiceControls {
   }
   async speakReply(text, generation, spokenReady = false, onHeard = null, track = null) {
     if (generation !== this.generation) return;
+    this.trace('readback_source', {generation, original:text, turn_id:track?.turnId});
     this.presentReply(text);
     this.replyHeard = onHeard;
     this.replyTrack = track;
@@ -448,18 +474,19 @@ class VoiceControls {
       this.onChange?.();
     }
   }
-  async start() {
-    const capture = {};
+  async start({automatic = false} = {}) {
+    this.autoAttempted = true;
+    const capture = {id: globalThis.crypto?.randomUUID?.() ?? 'capture-' + Date.now() + '-' + Math.random().toString(36).slice(2)};
     this.capture = capture;
     this.toggleState(true);
     this.status('Opening microphone…');
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone requires localhost or HTTPS');
       capture.context = new AudioContext({sampleRate: 16000});
-      await capture.context.resume();
+      if (!automatic) await capture.context.resume();
       if (this.capture !== capture) return;
       capture.playback = new AudioContext();
-      await capture.playback.resume();
+      if (!automatic) await capture.playback.resume();
       if (this.capture !== capture) return;
       const stream = await navigator.mediaDevices.getUserMedia({audio: {
         channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true
@@ -467,6 +494,18 @@ class VoiceControls {
       if (this.capture !== capture) { stream.getTracks().forEach(track => track.stop()); return; }
       capture.stream = stream;
       stream.getTracks().forEach(track => { track.onended = () => this.fail(capture, 'Microphone disconnected'); });
+      if (automatic) {
+        await Promise.race([Promise.all([capture.context.resume(), capture.playback.resume()]),
+          new Promise((_, reject) => {
+            capture.abortActivation = () => reject(new Error('Enable Jarvis once to activate audio'));
+            capture.activationTimer = setTimeout(capture.abortActivation, 1500);
+          })]);
+        clearTimeout(capture.activationTimer);
+        capture.abortActivation = null;
+        if (this.capture !== capture) return;
+        if (capture.context.state !== 'running' || capture.playback.state !== 'running')
+          throw new Error('Enable Jarvis once to activate audio');
+      }
       if (capture.context.sampleRate !== 16000) throw new Error('This browser cannot capture at 16 kHz');
       await capture.context.audioWorklet.addModule('/microphone.js');
       if (this.capture !== capture) return;
@@ -474,7 +513,7 @@ class VoiceControls {
       capture.processor = new AudioWorkletNode(capture.context, 'microphone');
       capture.input.connect(capture.processor);
       capture.processor.connect(capture.context.destination);
-      capture.wakeMode = !!document.getElementById('wake-mode')?.checked;
+      capture.wakeMode = this.localWake;
       capture.processor.port.onmessage = ({data}) => this.microphonePacket(capture, data);
       if (capture.wakeMode) {
         this.status('Loading on-device Hey Jarvis…');
@@ -492,7 +531,23 @@ class VoiceControls {
     if (capture !== this.capture || (!capture.ready && !capture.wakeMode)) return;
     try {
       if (capture.wake) {
+        const wasPlayback = !!(this.pending || this.playing);
+        if (this.recognitionPaused()) {
+          capture.playbackBuffer ||= [];
+          capture.playbackSamples = (capture.playbackSamples || 0) + data.pcm.length;
+          capture.playbackBuffer.push(data.pcm.slice());
+          while (capture.playbackSamples > 48000) capture.playbackSamples -= capture.playbackBuffer.shift().length;
+        }
         const detected = capture.wake.feed(data.pcm);
+        if (detected && capture.wakeState === 'listening') {
+          this.stopReadback('Hey Jarvis'); this.listenAfter = 0; this.wakeActivity(capture);
+          if (wasPlayback) {
+            capture.prefixConsumed = false; capture.boundaryPending = '';
+            for (const pcm of capture.playbackBuffer || []) this.sendAudio(capture, pcm);
+            capture.playbackBuffer = []; capture.playbackSamples = 0;
+            return;
+          }
+        }
         if (capture.wakeState === 'waiting' || capture.wakeState === 'connecting') {
           capture.buffer.push(data.pcm.slice());
           capture.bufferSamples += data.pcm.length;
@@ -534,6 +589,7 @@ class VoiceControls {
     this.listenAfter = 0;
     this.onsetTarget = this.draft?.target ?? this.target();
     capture.requestContext = this.draft?.wakeContext ?? this.wakeContext();
+    capture.firstRequest = true;
     capture.wakeState = 'connecting';
     capture.prefixConsumed = false;
     capture.boundaryPending = '';
@@ -548,12 +604,11 @@ class VoiceControls {
       cue.start(); cue.stop(capture.playback.currentTime + 0.08);
     }
     this.openRecognition(capture);
-    const epoch = capture.wakeEpoch;
-    capture.wakeMaximum = setTimeout(() => this.wakeTimeout(capture, epoch), this.wakeSessionMs);
+    this.wakeActivity(capture);
   }
   wakeText(capture, text, committed) {
     this.wakeActivity(capture);
-    if (capture.prefixConsumed) return text;
+    if (capture.prefixConsumed) return text.replace(/^\s*hey[\s,]+jarvis\b[\s.,!?;:]*/i, '');
     const pending = capture.boundaryPending || '';
     const joined = pending ? pending + ' ' + text : text;
     const prefix = /(?:^|\b)hey[\s,]+jarvis\b[\s.,!?;:]*/i.exec(joined);
@@ -566,12 +621,14 @@ class VoiceControls {
     return '';
   }
   wakeActivity(capture) {
+    if (capture !== this.capture || capture.wakeState === 'waiting') return;
     clearTimeout(capture.wakeIdle);
     const epoch = capture.wakeEpoch;
     capture.wakeIdle = setTimeout(() => this.wakeTimeout(capture, epoch), this.wakeIdleMs);
   }
   wakeTimeout(capture, epoch) {
     if (capture !== this.capture || capture.wakeState === 'waiting' || capture.wakeEpoch !== epoch) return;
+    if (capture.requestsPending || this.pending || this.playing) { this.wakeActivity(capture); return; }
     const resumable = this.draft && !this.draft.held && !this.draft.partial && !this.draft.unfinalized;
     this.preservePartial();
     this.holdDraft();
@@ -592,17 +649,23 @@ class VoiceControls {
     capture.wakeState = 'waiting';
     capture.buffer = [];
     capture.bufferSamples = 0;
+    capture.playbackBuffer = []; capture.playbackSamples = 0;
     this.loudFrames = 0;
-    this.status('Waiting locally · say Hey Jarvis');
+    this.status('Dormant · listening on-device for Hey Jarvis');
   }
   openRecognition(capture) {
     if (capture !== this.capture) return;
-    const socket = capture.ws = new WebSocket(this.config.websocket_url);
+    const socket = capture.ws = new WebSocket(this.config.websocket_url + (this.config.websocket_url.includes('?') ? '&' : '?')
+      + 'capture_id=' + encodeURIComponent(capture.id) + '&socket_epoch=' + (capture.wakeEpoch || 0));
     capture.cloudReady = false;
     capture.timer = setTimeout(() => this.fail(capture, 'Speech connection timed out'), 15000);
     capture.ws.onmessage = ({data}) => {
       if (capture !== this.capture || capture.ws !== socket) return;
       const message = JSON.parse(data);
+      if (message.text) this.trace('recognition', {socket_epoch: capture.wakeEpoch, message_type: message.message_type, text: message.text});
+      if (capture.wake && this.draft?.held && message.text) {
+        this.status('Review or discard the retained draft before continuing'); return;
+      }
       if (capture.wake && message.text) message.text = this.wakeText(capture, message.text, message.message_type === 'committed_transcript');
       if (message.message_type === 'session_started') {
         clearTimeout(capture.timer);
@@ -640,6 +703,7 @@ class VoiceControls {
     this.log('voice_error', message);
   }
   stop() {
+    this.autoAttempted = true;
     this.preservePartial();
     this.holdDraft();
     const capture = this.capture;
@@ -648,6 +712,8 @@ class VoiceControls {
     this.onsetTarget = undefined;
     this.stopReadback('voice disabled');
     if (capture) {
+      capture.abortActivation?.();
+      clearTimeout(capture.activationTimer);
       clearTimeout(capture.timer);
       clearTimeout(capture.wakeIdle);
       clearTimeout(capture.wakeMaximum);

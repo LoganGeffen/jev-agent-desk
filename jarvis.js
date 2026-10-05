@@ -142,6 +142,7 @@ class JarvisClient {
     return entry.done;
   }
   async post(entry) {
+    this.voice.trace?.('turn_post', {request_id:entry.id, client_id:this.clientId, transcript_id:entry.meta.transcript_id, text:entry.text});
     entry.controller = new AbortController();
     try {
       const response = await this.fetch('/api/jarvis/turn', {
@@ -243,6 +244,7 @@ class JarvisClient {
   }
   tracker(turnId, defaultGeneration) {
     const track = (player, {style, generation = defaultGeneration} = {}) => this.trackPlayback(player, {generation, turnId, style});
+    track.turnId = turnId;
     track.prepare = ({style, generation = defaultGeneration}) => this.preparePlayback({generation, turnId, style});
     return track;
   }

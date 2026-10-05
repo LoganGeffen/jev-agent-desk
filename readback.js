@@ -1,6 +1,7 @@
 class ReadbackPlayer {
-  constructor(url, context, {onStart, onEnd, onError, onProgress = null}) {
+  constructor(url, context, {onStart, onEnd, onError, onProgress = null, onDiagnostic = null}) {
     this.context = context;
+    this.diagnostic = fields => { try { onDiagnostic?.(fields); } catch {} };
     this.sources = new Set();
     this.queue = [];
     this.text = '';
@@ -29,7 +30,7 @@ class ReadbackPlayer {
       try {
         const message = JSON.parse(data);
         if (message.error) throw new Error(message.error);
-        if (message.alignment) this.align(message.alignment);
+        if (message.alignment) { this.diagnostic({stage:'alignment', alignment:message.alignment}); this.align(message.alignment); }
         if (message.audio) {
           const bytes = Uint8Array.from(atob(message.audio), char => char.charCodeAt(0));
           const samples = new DataView(bytes.buffer);
@@ -42,10 +43,12 @@ class ReadbackPlayer {
           source.onended = () => {
             this.sources.delete(source);
             this.endedMs += buffer.duration * 1000;
+            this.diagnostic({stage:'audio_ended', ended_ms:this.endedMs, scheduled_ms:this.scheduledMs});
             source.disconnect();
             this.finishPlayback();
             this.reportHeard();
           };
+          this.diagnostic({stage:'audio_queued', bytes:bytes.length, duration_ms:buffer.duration*1000, scheduled_ms:this.scheduledMs, ended_ms:this.endedMs});
           this.sources.add(source);
           this.nextTime = Math.max(context.currentTime + .03, this.nextTime);
           source.start(this.nextTime);
@@ -151,6 +154,7 @@ class ReadbackPlayer {
   }
   report() {
     const progress = this.progress();
+    this.diagnostic({stage:'progress', ...progress});
     this.reportedChars = progress.heard_prefix?.chars ?? 0;
     try { this.onProgress?.(progress); } catch {}
   }

@@ -13,6 +13,7 @@ import time
 import uuid
 
 import jev
+from diagnostics import Diagnostics
 from jarvis_controller import JarvisController
 from jarvis_haiku import run_turn as jarvis_run_turn
 from jarvis_tools import JarvisTools, TOOLS as JARVIS_TOOLS
@@ -227,14 +228,15 @@ class Playground:
         self.lock = threading.Lock()
         self.input_lock = threading.Lock()
         self.groups = TabGroups(self.log.parent / "groups.json")
-        self.voice = Voice(self.log.parent / "voice.jsonl")
+        self.diagnostics = Diagnostics(self.log.parent / 'diagnostics' / 'pipeline.jsonl')
+        self.voice = Voice(self.log.parent / "voice.jsonl", trace=self.diagnostics.record)
         self.jarvis_store = JarvisStore(jarvis_store_path or self.log.parent / 'jarvis.sqlite3')
         jarvis_state = JarvisState(store=self.jarvis_store)
         self.jarvis_tools = JarvisTools(self)
         self.jarvis = JarvisController(jarvis_provider or jarvis_run_turn, self.jarvis_tools.execute, JARVIS_TOOLS,
             authorize=self.jarvis_tools.authorize, literal_boundaries=self.jarvis_tools.boundaries,
             response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"}, state=jarvis_state,
-            continuity_classifier=self.classify_continuity)
+            continuity_classifier=self.classify_continuity, trace=self.diagnostics.record)
         self.jarvis_tools.controller = self.jarvis
         self.jarvis_turns = JarvisTurns(self)
         self.jarvis.turn_guard = self.jarvis_turns.guard
@@ -885,6 +887,13 @@ class Playground:
 
 
 def make_server(playground, port=0, public_origin=None):
+    def diagnostic(stage, **fields):
+        try:
+            if getattr(playground, 'diagnostics', None):
+                playground.diagnostics.record(stage, **fields)
+        except Exception:
+            pass
+
     class Handler(BaseHTTPRequestHandler):
         def send(self, code, body, content_type="application/json"):
             data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -962,7 +971,7 @@ def make_server(playground, port=0, public_origin=None):
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
-                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/spoken-version") else 8192
+                limit = 128000 if self.path in ("/api/speech", "/api/request", "/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/spoken-version", "/api/voice-event") else 8192
                 if self.headers.get_content_type() != "application/json" or not 0 < size <= limit:
                     raise ValueError(f"Send a JSON request up to {limit} bytes")
                 body = json.loads(self.rfile.read(size))
@@ -976,7 +985,10 @@ def make_server(playground, port=0, public_origin=None):
                     if set(body) - allowed:
                         raise ValueError('Unknown Jarvis request field')
                     if self.path == '/api/jarvis/turn-decision':
-                        self.send(200, playground.jarvis_turns.decide(body))
+                        diagnostic('turn_decision_input', **body)
+                        decision = playground.jarvis_turns.decide(body)
+                        diagnostic('turn_decision_result', **decision)
+                        self.send(200, decision)
                         return
                     if self.path == '/api/jarvis/cancel':
                         if bool(body.get('turn_id')) == bool(body.get('request_id')):
@@ -995,14 +1007,17 @@ def make_server(playground, port=0, public_origin=None):
                             result = playground.jarvis_turns.update_playback(body)
                         else:
                             raise ValueError('Unknown playback operation')
+                        diagnostic('playback_ledger', request=body, result=result)
                         self.send(200, result)
                         return
+                    diagnostic('http_turn_input', **body)
                     streaming = body.get('stream', False)
                     if type(streaming) is not bool:
                         raise ValueError('stream must be a boolean')
                     playground.jarvis_turns.commit(body)
                     result = playground.jarvis.submit(body['text'], body['request_id'], capture_target=body.get('capture_target'),
                                                        source=body.get('source', 'typed'))
+                    diagnostic('http_turn_receipt', request_id=body['request_id'], result=result)
                     if streaming:
                         self.start_stream()
                         try:
@@ -1015,6 +1030,7 @@ def make_server(playground, port=0, public_origin=None):
                         self.send(200, result)
                     return
                 if self.path == '/api/spoken-version':
+                    diagnostic('rendition_input', request=body)
                     retain = playground.jarvis_turns.tracked_rendition(body)
                     def emit_rendition(text):
                         if retain:
@@ -1027,6 +1043,7 @@ def make_server(playground, port=0, public_origin=None):
                                       emit_rendition)
                             if retain:
                                 retain(complete=True, full_text=result['text'])
+                            diagnostic('rendition_result', request=body, result=result)
                             playground.voice.record('spoken_rendition', original=body['text'], **result)
                             self.stream_event('result', result=result)
                         except (BrokenPipeError, ConnectionResetError):
@@ -1040,6 +1057,7 @@ def make_server(playground, port=0, public_origin=None):
                         result = playground.readbacks.render(body['text'], body.get('mode', 'spoken'), (lambda text: retain(text)) if retain else None)
                         if retain:
                             retain(complete=True, full_text=result['text'])
+                        diagnostic('rendition_result', request=body, result=result)
                         playground.voice.record('spoken_rendition', original=body['text'], **result)
                         self.send(200, result)
                     return
@@ -1047,6 +1065,10 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.voice.speak(body["text"], body.get('profile', 'current')), "audio/mpeg")
                     return
                 if self.path == "/api/voice-event":
+                    if body.get("kind") == "pipeline":
+                        diagnostic("browser", client=body.get("detail"))
+                        self.send(200, {"ok": True})
+                        return
                     if body["kind"] not in ("mic_started", "mic_stopped", "playback_started", "playback_ended",
                                              "playback_cancelled", "voice_error", "speech_detected"):
                         raise ValueError("Unknown voice event")
