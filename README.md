@@ -533,3 +533,42 @@ original, rendition and TTS text before alignment and played progress. The full
 stage joins were exercised with real HTTP/WebSocket/browser code, synthetic
 inference/audio and disposable terminal conversations; existing live chats are
 excluded from automated tests.
+
+### Reconstructing one interaction
+
+Use the read-only CLI to list recent anchored requests, then select an exact ID or
+an unambiguous prefix. It reads the current pipeline log and its `.1` rotation.
+
+```sh
+python interaction_report.py --log /path/to/run/diagnostics/pipeline.jsonl
+python interaction_report.py --log /path/to/run/diagnostics/pipeline.jsonl --request REQUEST_ID
+python interaction_report.py --log /path/to/run/diagnostics/pipeline.jsonl --request REQUEST_ID --json --output /private/reports/request.json
+```
+
+Add `--session-id SESSION_ID` when an ID was reused across sessions. The readable
+report highlights accepted wording, decisions, delivery and controller receipts,
+originals, rendition and recorded playback acknowledgments, then gives a timeline
+with file/line references. JSON includes the full selected events. Exports create
+new files with mode 600 and new report directories with mode 700; existing files
+are never overwritten. Standard output is an explicit display of private evidence.
+Reports contain user text and agent evidence; keep them private.
+
+Correlation uses known event envelopes, not IDs embedded in model context, history
+or message text. HTTP input binds the transcript revision; a revisionless browser
+post does not authorize later revisions. Playback IDs bind through application
+ledger events. Audio generation is joined only for audio stages, so the next
+utterance's dispatch generation cannot become the previous reply's playback.
+A shared microphone capture does not identify an utterance: raw recognition is
+separate contextual evidence, never joined by matching words or time. Missing
+rendition or TTS IDs remain visible as unassociated sources. Ambiguous links are
+excluded rather than guessed. An empty log or deployment probe lists zero interactions.
+
+The reader bounds input to sixteen MiB and twenty thousand records across both
+files, with a 128,000-byte line limit. Missing files, malformed/incomplete lines,
+invalid timestamps, truncated events and limit omissions appear as gaps with
+source references. Rotation can lose earlier stages, and diagnostics remain best
+effort. A controller's `completed` status says its turn ended; `submitted` says
+input was handed over. A full playback flag requires the recorded application
+boundary acknowledgment; it does not independently establish physical hearing or
+agent completion. The checked-in 99-event fixture is an actual synthetic caller
+trace with two requests sharing one capture, not a live user recording.
