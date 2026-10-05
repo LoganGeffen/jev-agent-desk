@@ -4,7 +4,8 @@ class JarvisClient {
   constructor({fetch, newId, retain, onChange = () => {}, now = Date.now, deadlineMs = 90000, lostGraceMs = 10000, clientId = null}) {
     this.fetch = fetch;
     this.clientId = clientId || 'client-' + Math.random().toString(36).slice(2) + now();
-    this.semantic = {decide: (payload, signal) => this.decideTurn(payload, signal), invalidate: payload => this.invalidateTurn(payload)};
+    this.semantic = {context: () => ({session_id: this.sessionId, subject: this.snapshot?.subject
+      ? {tab: this.snapshot.subject.tab, pane: this.snapshot.subject.pane, identity: this.snapshot.subject.identity} : null}), decide: (payload, signal) => this.decideTurn(payload, signal), invalidate: payload => this.invalidateTurn(payload)};
     this.newId = newId;
     this.retain = retain;
     this.onChange = onChange;

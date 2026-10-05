@@ -354,7 +354,8 @@ fallback. Model/runtime files are pinned and served from this app; see
 After sending or cancelling, recognition closes and local waiting continues.
 A 12-second recognition idle timeout or 60-second request bound also closes it.
 A finalized voice draft paused solely by that timeout can continue after another
-wake, with its original recipient. Unfinalized words and manually held drafts
+wake, with its original recipient and Jarvis session/subject identity. A changed
+subject or restarted Jarvis holds the exact words for review. Unfinalized words and manually held drafts
 still require review; they never merge silently with a new request. Changing the
 mode stops capture and requires explicit re-enable. The preference is remembered,
 but refresh never opens the microphone automatically. Stop, page hiding and

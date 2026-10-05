@@ -1090,3 +1090,46 @@ test('wake cannot merge a restored draft and a failed model never falls back to 
   assert.equal(s.sockets.length, 0);
   assert.equal(s.document.getElementById('voice-status').textContent, 'Local model unavailable');
 });
+
+test('wake resume remains bound to the real Jarvis session and subject, not the generic Jarvis target', async () => {
+  for (const changed of ['subject', 'session', 'unchanged']) {
+    const clock = fakeClock(), s = setup({clock});
+    vm.runInContext(readFileSync(new URL('./jarvis.js', import.meta.url), 'utf8') + '\nglobalThis.Client = JarvisClient;', s.context);
+    const requests = [];
+    let complete = false;
+    const client = new s.context.Client({newId: () => 'id', retain() {}, clientId: 'phone',
+      fetch: async (url, options) => {
+        const payload = JSON.parse(options.body); requests.push(payload);
+        return {ok: true, json: async () => ({...payload, decision: complete ? 'complete' : 'wait',
+          ...(complete ? {decision_id: 'accepted'} : {})})};
+      }});
+    const dog = {tab: 'dog', pane: 'dog', identity: 'dog-A'}, controller = {tab: 'controller', pane: 'controller', identity: 'controller-A'};
+    client.adopt({session_id: 'session', revision: 1, subject: dog, turns: {}, actions: {}});
+    s.voice.target = () => client.target;
+    s.voice.semantic = client.semantic;
+    client.voice = s.voice;
+    const detector = await localWaiting(s);
+    detector.trigger = true; microphonePacket(s);
+    recognitionMessage(s.sockets[0], undefined, 'session_started');
+    recognitionMessage(s.sockets[0], 'Hey Jarvis, tell it the numbers');
+    await clock.advance(s.voice.wakeIdleMs);
+    assert.equal(s.voice.draft.wakeResume, true);
+    client.adopt({session_id: changed === 'session' ? 'restarted' : 'session', revision: 2,
+      subject: changed === 'subject' ? controller : dog, turns: {}, actions: {}});
+    complete = true;
+    detector.trigger = true; microphonePacket(s);
+    if (changed === 'unchanged') {
+      recognitionMessage(s.sockets[1], undefined, 'session_started');
+      recognitionMessage(s.sockets[1], 'Hey Jarvis, look correct.');
+      await clock.advance(s.voice.silenceMs);
+      assert.deepEqual(s.submitted, ['tell it the numbers look correct.']);
+      assert.deepEqual(JSON.parse(JSON.stringify(requests.at(-1).subject)), dog);
+    } else {
+      assert.equal(s.sockets.length, 1);
+      assert.deepEqual(s.submitted, []);
+      assert.equal(s.voice.draft.text, 'tell it the numbers');
+      assert.equal(s.voice.draft.held, true);
+    }
+    s.voice.stop();
+  }
+});

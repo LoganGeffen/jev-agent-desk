@@ -57,7 +57,7 @@ class VoiceControls {
   }
   renderDraft() {
     const draft = this.draft;
-    const changed = !!draft && JSON.stringify(draft.target) !== JSON.stringify(this.target());
+    const changed = !!draft && (this.draftContextChanged(draft) || JSON.stringify(draft.target) !== JSON.stringify(this.target()));
     document.getElementById('speech-draft-status').textContent = !draft ? '' : draft.held && changed
       ? 'Session changed. Review this draft, then press Send.' : draft.held
       ? draft.unfinalized ? 'Review the last recognized words before sending.' : draft.recoveryReason || ''
@@ -153,6 +153,8 @@ class VoiceControls {
     this.draft.partial = '';
     this.draft.awaitingCommit = false;
   }
+  wakeContext() { return JSON.stringify(this.semantic?.context?.() ?? null); }
+  draftContextChanged(draft) { return draft?.wakeContext !== undefined && draft.wakeContext !== this.wakeContext(); }
   async finishDraft(manual = false, decision = null) {
     const draft = this.draft;
     clearTimeout(this.draftTimer);
@@ -161,6 +163,7 @@ class VoiceControls {
       this.status('Waiting for the final recognized words');
       return;
     }
+    if (!manual && this.draftContextChanged(draft)) { this.holdDraft(); return; }
     if (JSON.stringify(draft.target) !== JSON.stringify(this.target())) {
       const target = this.target();
       if (!manual || !target || target.tab !== draft.target?.tab || target.pane !== draft.target?.pane) {
@@ -181,7 +184,7 @@ class VoiceControls {
   async evaluate(attempt = 0) {
     const draft = this.draft;
     if (!this.semantic || !draft?.text || draft.partial || draft.awaitingCommit || draft.held) return;
-    if (JSON.stringify(draft.target) !== JSON.stringify(this.target())) return this.holdDraft();
+    if (this.draftContextChanged(draft) || JSON.stringify(draft.target) !== JSON.stringify(this.target())) return this.holdDraft();
     this.evaluating?.abort();
     const seq = ++this.evalSeq, text = draft.text, revision = ++this.identify(draft).revision;
     const controller = this.evaluating = new AbortController();
@@ -221,6 +224,7 @@ class VoiceControls {
       const late = this.lateWordsTarget !== undefined;
       this.draft = {text: '', partial: '', target: late ? this.lateWordsTarget : this.onsetTarget ?? this.target(), held: late,
         transcriptId: this.newId(), revision: 0, outstanding: false,
+        ...(this.capture?.wake ? {wakeContext: this.capture.requestContext} : {}),
         recoveryReason: late ? 'These words may have arrived late. Review before sending.' : ''};
       this.lateWordsTarget = undefined;
     }
@@ -234,7 +238,7 @@ class VoiceControls {
     this.draft.awaitingCommit = false;
     this.draft.recognitionStalled = false;
     clearTimeout(this.draftTimer);
-    if (JSON.stringify(this.draft.target) !== JSON.stringify(this.target())) this.draft.held = true;
+    if (this.draftContextChanged(this.draft) || JSON.stringify(this.draft.target) !== JSON.stringify(this.target())) this.draft.held = true;
     this.renderDraft();
     if (this.draft.held) return;
     this.draftTimer = this.semantic ? setTimeout(() => this.evaluate(), this.silenceMs)
@@ -519,7 +523,7 @@ class VoiceControls {
   wakeDetected(capture) {
     if (capture !== this.capture || capture.wakeState !== 'waiting') return;
     this.stopReadback('Hey Jarvis');
-    const resume = this.draft?.wakeResume && !this.draft.unfinalized &&
+    const resume = this.draft?.wakeResume && !this.draft.unfinalized && !this.draftContextChanged(this.draft) &&
       JSON.stringify(this.draft.target) === JSON.stringify(this.target());
     if (this.draft && !resume) {
       this.holdDraft();
@@ -529,6 +533,7 @@ class VoiceControls {
     if (resume) { this.draft.held = false; this.draft.wakeResume = false; }
     this.listenAfter = 0;
     this.onsetTarget = this.draft?.target ?? this.target();
+    capture.requestContext = this.draft?.wakeContext ?? this.wakeContext();
     capture.wakeState = 'connecting';
     capture.prefixConsumed = false;
     capture.boundaryPending = '';
