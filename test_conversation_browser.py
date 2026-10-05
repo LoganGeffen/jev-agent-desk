@@ -28,7 +28,7 @@ def fixture_state():
     return state
 
 
-STATIC_FILES = ('index.html', 'voice.js', 'readback.js', 'jarvis.js', 'terminal.js')
+STATIC_FILES = ('index.html', 'voice.js', 'wake.js', 'readback.js', 'jarvis.js', 'terminal.js')
 SUBJECT_B = {'tab': '@b', 'pane': '%b', 'identity': 'b:original', 'label': 'B · pane 1'}
 SPY_SPEECH = """() => {
   window.spoken = [];
