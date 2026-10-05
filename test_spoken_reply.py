@@ -37,3 +37,33 @@ class ReadbackTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     render_spoken_reply(text, mode)
         rewrite.assert_not_called()
+
+
+class ListeningPreparationTests(unittest.TestCase):
+    def test_stream_preparation_keeps_original_and_prompts_label_value_fidelity(self):
+        from spoken_reply import ReadbackCache
+        original = 'See [verification notes](/reports/2026-10-05/checks.md).\n3/5 passed; p = 0.05; deployment is NOT verified. Run `python check.py`.'
+        rendition = 'See verification notes. Three of the five passed. P equals zero point zero five. Deployment is not verified. Run python check dot py.'
+        requests = []
+        def provider(question, evidence, instructions, on_text=None):
+            requests.append((question, evidence, instructions))
+            self.assertEqual(evidence['original_reply'], original)
+            self.assertIn('speak the link label', instructions)
+            self.assertIn('without rounding or changing', instructions)
+            self.assertIn('substantive instruction or fact', instructions)
+            for chunk in [rendition[:40], rendition[40:]]:
+                on_text(chunk)
+            return {'text': rendition, 'model': 'synthetic'}
+        cache = ReadbackCache()
+        self.addCleanup(cache.pool.shutdown)
+        chunks = []
+        with patch('spoken_reply.answer_question', side_effect=provider):
+            result = cache.render(original, 'spoken', chunks.append)
+        self.assertEqual(''.join(chunks), rendition)
+        self.assertEqual(result['text'], rendition)
+        self.assertNotIn('/reports/', result['text'])
+        self.assertEqual(list(cache.entries), [(original, 'spoken')])
+        original_chunks = []
+        self.assertEqual(cache.render(original, 'original', original_chunks.append)['text'], original)
+        self.assertEqual(original_chunks, [original])
+        self.assertEqual(len(requests), 1)
