@@ -192,8 +192,18 @@ explanation of a chat's output. Things to know:
   submitted to X. Waiting for its reply; its task is not complete.", "Delivery to X
   is uncertain. It will not be retried automatically.", or "No message was
   submitted." plus the reason. A reply from Haiku that claims no action passes a
-  model-based narrative check or is replaced by the tool output. That check is a
+  model-based narrative check. A rejected status or summary gives a brief inability to verify, rather than reading an older reply as a fallback. That check is a
   safety judgment, not deterministic proof that the sentence is true.
+- **Composition can need clarification.** A message assembled from separate quoted
+  fragments or rewrite instructions is held when no single exact authorized body
+  is established. A span that crosses a paired quote wrapper is rejected. Jarvis
+  retains the request and asks for the exact message; a bare yes cannot send the
+  composition instructions. Ordinary quoted words and multi-sentence literals stay exact.
+- **Current status differs from exact reading.** Current-status questions use a
+  bounded live terminal and newest-turn snapshot in the same response. A completed
+  earlier reply remains historical while newer work is active. Summaries and
+  explanations keep their concise evidenced answer with the original separately
+  inspectable; an explicit read keeps the original as the primary response.
 - **Preparation is not delivery.** If a turn prepares exact words but does not send,
   Jarvis says no message was submitted and offers the retained draft for explicit
   confirmation. An incidental earlier original stays separately inspectable as
@@ -205,6 +215,11 @@ explanation of a chat's output. Things to know:
   send or prepared-unsent turn is shown separately as read-only text; it has no
   playback control. Automatic and manual playback for that turn use the canonical
   status, not the incidental original.
+- **Spoken wording.** Optional renditions use citation labels rather than long
+  incidental Markdown destinations, and natural numbers and units without rounding.
+  Substantive commands, paths, names, values and uncertainties must retain their
+  meaning. Original wording stays exact. Fixture tests exercise streamed preparation;
+  physical pronunciation and model fidelity for every reply are not guaranteed.
 - **Stopping audio is not interrupting the agent.** Stop & listen cancels
   preparation and playback. Interrupting a chat is a separate action that needs
   its own authorization. A result that arrives after you stopped cannot restart
@@ -336,37 +351,43 @@ queue and its heard state are checkpointed in the Jarvis store and restored on
 restart; a reply is heard only if its full-completion acknowledgment was stored.
 There are no closed-app alerts.
 
-For hands-free requests, select **Hey Jarvis · on-device wake** under Options,
-then enable the microphone once. Wait for **Waiting locally · say Hey Jarvis**.
-Say “Hey Jarvis, read Dog Data” or say the wake phrase, pause, then speak your
-request. A short local tone confirms wake. Wake alone sends no agent command;
-wake during readback stops only the audio. Ordinary background volume does not
-stop readback while waiting for wake.
+Jarvis listens for **Hey Jarvis** on-device by default. On the first visible page
+load it attempts microphone activation once; the browser may ask permission.
+When capture and audio are available, the visible status says **Dormant · listening
+on-device for Hey Jarvis**. If permission or browser audio restrictions prevent
+activation, use the visible **Enable Jarvis** button once. **Stop Jarvis** releases
+the microphone; the app does not automatically restart it. There is no wake checkbox.
+The browser still controls permission and audio activation; automatic start is not
+available on every device.
 
-Waiting opens no recognition connection. After wake, a bounded buffer of about
-three seconds, including the wake phrase and possibly immediately preceding
-sound, plus your request goes to ElevenLabs. Recognized words before the wake
-phrase are excluded from the command. If transcription misses the wake boundary,
+Say “Hey Jarvis, read Dog Data” or pause after the wake phrase, then speak your
+request. A short local tone confirms wake. Continue with follow-up requests without
+repeating the wake phrase. Recognition stays awake for sixty seconds of inactivity;
+pending requests and response playback defer that timeout, giving another full
+window after the response. It then closes recognition and returns to local waiting.
+Wake alone sends no command. Saying Hey Jarvis during readback stops only audio;
+ordinary background volume does not stop readback while waiting for wake.
+
+Dormant listening opens no recognition connection. After wake, a bounded buffer of
+about three seconds, including the wake phrase and possibly immediately preceding
+sound, plus awake speech goes to ElevenLabs. Recognized words before the initial
+wake boundary are excluded from the command. If transcription misses that boundary,
 the request stays unsent. There is no browser speech-recognition or cloud wake
 fallback. Model/runtime files are pinned and served from this app; see
 [wake-assets/PROVENANCE.json](wake-assets/PROVENANCE.json) for licenses and rebuild.
 
-After sending or cancelling, recognition closes and local waiting continues.
-A 12-second recognition idle timeout or 60-second request bound also closes it.
-A finalized voice draft paused solely by that timeout can continue after another
-wake, with its original recipient and Jarvis session/subject identity. A changed
-subject or restarted Jarvis holds the exact words for review. Unfinalized words and manually held drafts
-still require review; they never merge silently with a new request. Changing the
-mode stops capture and requires explicit re-enable. The preference is remembered,
-but refresh never opens the microphone automatically. Stop, page hiding and
-microphone loss release capture; closed/background pages do not listen. Browsers
-must support 16 kHz capture. Physical phone, accents, noise and speaker echo are
-not established by the synthetic-speaker Chromium tests; headphones are useful.
+A finalized voice draft paused solely by inactivity can continue after another
+wake with its original recipient and Jarvis session/subject identity. A changed
+subject or restarted Jarvis holds the exact words for review. Unfinalized, typed
+and manually held drafts never merge silently into a new wake request. Switching
+to **Direct** stops capture; enable voice explicitly there for continuous manual
+dictation. Stop, page hiding and microphone loss release capture; closed/background
+pages do not listen. Browsers must support sixteen-kilohertz capture. Physical
+phone acoustics, accents, noise and speaker echo are not established by the
+synthetic-speaker Chromium tests.
 
-Leave wake mode unchecked for the existing continuous/manual voice behavior.
-Allow microphone access and wait for Listening. Speech and typing share a draft
-bound to the conversation where composition began. When to send depends on the
-mode:
+Speech and typing share a draft bound to the conversation where composition began.
+When to send depends on the mode:
 
 - **Jarvis (default):** about 0.7 s after a committed transcript, the server asks
   Jev one focused question: is this utterance complete, still unfinished, or
@@ -476,3 +497,39 @@ This repository begins with a clean source export, without private workspace
 history or runtime data. No software license has been selected for the exported
 source. Licensing remains for the owner to decide. Dependencies retain their respective
 licenses.
+
+## Following a request through the pipeline
+
+Private correlated events are in `<run-dir>/diagnostics/pipeline.jsonl`; the legacy
+`voice.jsonl` sink is bounded too. Each retains up to four MiB plus one rotated
+backup. Logging is best effort and never authorizes delivery. Events include text
+and agent evidence, so treat the directory as private. Credentials and audio
+payloads are excluded; oversized events retain correlation IDs and a bounded
+preview, so some content can be truncated.
+
+Find `request_id` in `turn_post`, `http_turn_input`, `provider_input`, tool and
+`canonical_receipt` events. The receipt supplies `turn_id`. For voice, the browser
+`transcript_dispatch` and decision events join `client_id`, `transcript_id` and
+revision; `capture_id` joins raw recognition and audio events. Playback uses its
+record ID plus generation/epoch. These IDs distinguish a capture, utterance,
+controller turn and played response; they are not interchangeable.
+
+| Layer | Emitted evidence | Limit |
+| --- | --- | --- |
+| Capture and wake | Activation/status, capture ID, recognition socket epoch | No raw microphone recording or physical acoustic measurement |
+| Recognition and accepted text | Provider and browser transcript chunks, dispatch text/transcript revision | Provider may recognize words incorrectly; wake boundary still gates the first request |
+| Semantic completion | Pause Jev input/result, decision input/result | Model judgment, not proof of intended wording |
+| Controller | Haiku context/tool specifications, tool input/result, raw result and canonical receipt | Bounded context and diagnostics can omit older/oversized evidence |
+| Delivery judgment | Jev initial/refined questions and results, final authorization/span | Historical logs predating these events cannot reconstruct those judgments |
+| Recipient and paste | Captured identity, immutable draft and action receipt | Submitted input is not agent task completion; uncertain input never retries |
+| Current evidence | Read intent, live/newest-turn snapshot, historical original | A snapshot describes its capture time, not later execution |
+| Rendition | Exact original, preparation input/result and streamed TTS text | Synthetic preparation tests do not establish physical pronunciation |
+| Audio | TTS chunk sizes/alignment, queued/ended/progress events and playback ledger | Queued or generated audio is not heard; unsupported alignment cannot prove a prefix |
+
+For a wrong message, compare dispatch text with the Jev span and draft before
+looking at the paste receipt. For wrong status, compare the newest-turn snapshot
+with the historical original and final answer. For odd speech, compare the exact
+original, rendition and TTS text before alignment and played progress. The full
+stage joins were exercised with real HTTP/WebSocket/browser code, synthetic
+inference/audio and disposable terminal conversations; existing live chats are
+excluded from automated tests.

@@ -50,7 +50,7 @@ jarvis_state.JarvisState  <-> jarvis_store.JarvisStore (SQLite)
 - `jarvis_tools.py`: the application tools, authorization and receipt-derived
   speech. Core tools (`read_user_source`, `set_subject`, `prepare_literal`,
   `send_draft`) come from the controller; `JarvisTools` adds `list_sessions`,
-  `list_ready`, `resolve_subject`, `read_reply`, `select_session`,
+  `list_ready`, `resolve_subject`, `read_reply`, `observe_session`, `select_session`,
   `interrupt_agent`, `observer_job`, `job_status`, `confirm_draft`, `list_pending`,
   `review_pending` and `discard_pending`.
 - `jarvis_turns.py`: HTTP-facing turn decisions and the playback ledger.
@@ -255,12 +255,18 @@ answer deltas without starting a turn in the real observed agent conversation.
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
 manages drafts per pane, recognition pauses, readback cancellation and audio caches.
-Optional `wake.js` uses the same mono 16 kHz PCM through a pinned local microWakeWord
+Default Jarvis activation attempts microphone access once on visible load. Browser
+permission and running audio contexts are required; failure exposes Enable Jarvis.
+Explicit Stop suppresses automatic restart, and direct mode remains manually enabled.
+`wake.js` uses the same mono 16 kHz PCM through a pinned local microWakeWord
 pipeline, with all WASM/model assets under `/wake-assets/`. Idle detection opens
 no recognition socket. The bounded three-second pre-roll plus request is sent
 only after wake, and transcript authority begins only after a recognized wake
 boundary. Playback readiness is separate from cloud-recognition readiness, so
-closing STT after dispatch leaves response audio available. Capture and wake-epoch
+closing STT on dormancy leaves response audio available. An awake conversation
+reuses recognition for separate utterances; sixty seconds of inactivity returns
+to local waiting. Pending work and playback defer inactivity. Each new utterance
+binds fresh context, while a resumable timeout draft keeps its original context. Capture and wake-epoch
 checks fence late initialization, socket callbacks and timeouts. Stop/hide/error
 disposes the detector and both audio contexts. The official model threshold is
 unchanged. This path has no backend wake classifier or browser SpeechRecognition.
@@ -290,3 +296,36 @@ WebSocket checks Origin. Remote access requires a separately authenticated priva
 proxy. There are no accounts, multi-user isolation, public hosting, or process
 supervision in this application. The Jarvis ledger is durable across restarts, but a
 crashed web process must be restarted by you.
+
+## Correlated diagnostics and observation
+
+`diagnostics.py` records best-effort events to `diagnostics/pipeline.jsonl` under
+the run directory; `Voice` uses the same bounded sink for legacy `voice.jsonl`.
+Each has a four-MiB limit and one backup. Credential-shaped fields and relevant
+in-process secrets are scrubbed; audio payloads are never recorded. Correlation
+IDs survive oversized previews. Logging exceptions, including argument preparation,
+must remain outside authority and delivery control flow.
+
+The join is capture/socket epoch → client/transcript revision → request/turn →
+draft/action/recipient identity → rendition/playback generation and ledger. Browser
+recognition and accepted dispatch text, focused pause decisions, Haiku context and
+tool traffic, initial/refined Jev authorization, captured identity/delivery receipts,
+current evidence, rendition text, TTS alignment and actual playback progress are
+recorded separately. README's coverage table states the missing physical/provider
+observations; no raw audio or blanket claim of end-to-end acoustic fidelity exists.
+
+`read_reply` retains the latest completed original but also captures existing
+`session_questions.session_snapshot` freshness. A focused read-intent judgment
+separates literal reading, summary and present status. `observe_session` supplies
+that bounded current snapshot directly so the same controller turn can answer;
+`observer_job` continues to mean an explicitly queued quiet background observation.
+The completion watcher's `latest_reply` semantics are unchanged. Summaries retain
+checked model prose and expose originals separately; rejected/failed narrative
+verification does not fall back to a historical original for present status.
+
+Message preparation additionally rejects spans crossing a paired quote wrapper.
+The existing semantic form judgment can hold composition without a single exact
+body. Such a clarification retains the full source with operation `compose`,
+which cannot be confirmed into a send. No generated composition gains delivery
+authority. Unmatched literal quote/code data and full multi-sentence literals
+remain supported.
