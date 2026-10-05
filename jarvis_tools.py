@@ -34,7 +34,7 @@ def quoted_literal_span(text, start, end):
     quote_start = len(opening) - 1
     quote_end = len(text) - len(closing)
     routing = text[:quote_start]
-    outer_routing = r'\s*(?:tell|ask|message|send)\b(?:[^:]*:\s*|.+\bto\s+(?:say|send)\s*)'
+    outer_routing = r'\s*(?:please\s+)?(?:tell|ask|message|send)\b(?:[^:]*:\s*|.+\bto\s+(?:say|send)\s*)'
     if routing.strip() and not re.fullmatch(outer_routing, routing, re.I):
         return None
     tail = text[quote_end + 1:]

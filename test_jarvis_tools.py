@@ -1016,6 +1016,16 @@ class CompositionTests(DisposableDesk):
             receipt = self.app.jarvis.submit(request, 'quoted-whitespace')
         self.assertEqual(receipt['actions'][0]['payload'], '  ' + selected + '  ')
 
+    def test_polite_quoted_payload_retains_whitespace(self):
+        selected = 'Keep 12 rows; do not call them final.'
+        request = 'Please tell Dog Data: “  ' + selected + '  ”'
+        self.allow(request, body=selected)
+        self.intents[request]['form'] = 'composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.compose_message', side_effect=AssertionError('composer must not run')):
+            receipt = self.app.jarvis.submit(request, 'polite-quoted')
+        self.assertEqual(receipt['actions'][0]['payload'], '  ' + selected + '  ')
+
     def test_quoted_payload_after_to_say_retains_whitespace(self):
         selected = 'Keep 12 rows; do not call them final.'
         request = 'Tell Dog Data to say “  ' + selected + '  ”'
