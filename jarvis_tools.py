@@ -11,6 +11,20 @@ from session_actions import interrupt_turn, read_reply
 from session_questions import ask_session
 
 
+def consistent_quote_span(text, start, end):
+    pairs, opened = [], {}
+    for match in re.finditer(r'(?<!\\)["“”]', text):
+        quote, index = match.group(), match.start()
+        if quote == '”':
+            if '“' in opened:
+                pairs.append((opened.pop('“'), index))
+        elif quote in opened:
+            pairs.append((opened.pop(quote), index))
+        else:
+            opened[quote] = index
+    return all((left < start <= right) == (left < end <= right) for left, right in pairs)
+
+
 def spec(name, description, properties=None, required=()):
     return {'name': name, 'description': description, 'inputSchema': {'type': 'object',
             'properties': properties or {}, 'required': list(required), 'additionalProperties': False}}
@@ -131,12 +145,13 @@ def authorization_question(request, tabs, subject, operation):
             'token': 'End of captured message including trailing whitespace', 'preceding': request[-100:], 'following': ''}
         questions['message_form'] = {'type': 'choice',
             'instructions': {'task': 'Classify the selected content after excluding outer routing. indirect_question only when the OUTER request asks the '
-                                     'recipient and the unquoted content begins who/what/when/where/why/how/whether/if; otherwise verbatim.',
+                                     'recipient and the unquoted content begins who/what/when/where/why/how/whether/if. Choose clarify_composition when the user asks to assemble or rewrite multiple fragments and no single exact span is the authorized message. Ordinary quoted words inside a complete message and multiple literal sentences remain verbatim.',
                              'examples': [{'request': 'Ask Luna what its favorite color is', 'form': 'indirect_question'},
                                           {'request': 'Ask Luna to rerun the tests', 'form': 'verbatim'},
                                           {'request': 'Ask Luna: "What is its favorite color?"', 'form': 'verbatim'},
                                           {'request': 'Tell Nova: Ask Luna whether she ran tests', 'form': 'verbatim'}]},
-            'criteria': {'verbatim': 'Quoted, exact, after a colon, a direct question, or a command/imperative for the recipient; copy unchanged.',
+            'criteria': {'clarify_composition': 'Composition instructions or fragmented quotations without one unambiguous exact message; retain the request and ask for its exact wording, never invent it.',
+                         'verbatim': 'Quoted, exact, after a colon, a direct question, or a command/imperative for the recipient; copy unchanged.',
                          'indirect_question': 'Unquoted dependent who/what/when/where/why/how/whether/if clause the outer request asks the recipient.'}}
     return jev.bound_questions({'model': 'jev-latest', 'state': state, 'questions': questions})
 
@@ -272,13 +287,27 @@ class JarvisTools:
                                 end=int(response['answers']['message_end']['choice']), source_text=source,
                                 form=response['answers']['message_form']['choice'])
                 recipient = (decision['target'] or {}).get('label', 'unresolved recipient')
-                decision['delivery'] = prepare_message(turn['user_text'], source, decision['form'], recipient)
+                if decision['form'] == 'clarify_composition' or not consistent_quote_span(turn['user_text'], decision['start'], decision['end']):
+                    decision.update(allowed=False, composition=True)
+                else:
+                    decision['delivery'] = prepare_message(turn['user_text'], source, decision['form'], recipient)
         self.trace('authorization_result', request_id=turn['request_id'], turn_id=turn['turn_id'], operation=operation, decision=decision)
         self.decisions[key] = decision
         return decision
 
     def boundaries(self, text, turn):
         decision = self.semantic(turn, 'send')
+        if decision.get('composition'):
+            with self.state.lock:
+                self.state.guard(turn['turn_id'])
+                if not any(p.get('source_turn_id') == turn['turn_id'] and p.get('operation') == 'compose'
+                           for p in self.state.clarifications.values()):
+                    pending_id = uuid.uuid4().hex
+                    self.state.clarifications[pending_id] = {'clarification_id': pending_id, 'status': 'pending',
+                        'source_turn_id': turn['turn_id'], 'start': 0, 'end': len(text), 'source_text': text,
+                        'text': text, 'form': 'unresolved', 'operation': 'compose', 'target': decision['target']}
+                    self.state.changed()
+            return []
         if not decision['allowed']:
             return []
         if not decision['target']:
@@ -346,6 +375,8 @@ class JarvisTools:
         original = snapshot['drafts'].get(arguments.get('draft_id')) or snapshot['clarifications'].get(arguments.get('clarification_id'))
         if not original:
             raise ValueError('Unknown retained draft')
+        if original.get('operation') == 'compose':
+            return {'ok': False, 'status': 'clarification', 'error': 'Please provide the exact message wording. Composition instructions cannot be confirmed as a message.'}
         provenance = self.provenance(snapshot, original, turn)
         if provenance is None or not provenance['prompt_was_immediately_previous_turn'] or original['status'] not in ('prepared', 'pending'):
             return {'ok': False, 'status': 'not_attempted',
@@ -414,7 +445,8 @@ class JarvisTools:
                 self.state.clarifications[original['clarification_id']]['replacement_target'] = current
                 self.state.changed()
         label = (original.get('target') or {}).get('label')
-        prompt = (f"Use the current {label} conversation? This will not send a message." if original.get('operation') == 'resolve' else
+        prompt = ('What exact message should I send? The original request is retained; nothing was submitted.' if original.get('operation') == 'compose' else
+                  f"Use the current {label} conversation? This will not send a message." if original.get('operation') == 'resolve' else
                   f"Send this exact message to {label}? {original['text']}" if label else
                   f"Which conversation should receive this exact message? {original['text']}")
         self.state.review_pending(turn['turn_id'], [arguments['record_id']])
@@ -485,7 +517,9 @@ class JarvisTools:
             offered = sends or offered
             replaced = [snapshot['clarifications'][identifier] for identifier in offered
                         if snapshot['clarifications'][identifier].get('rebind_required')]
-            if replaced:
+            if any(snapshot['clarifications'][identifier].get('operation') == 'compose' for identifier in offered):
+                result['text'] = 'What exact message should I send? The original request is retained; nothing was submitted.'
+            elif replaced:
                 question = ('Which current conversation should receive these exact retained words?' if sends else
                             'Which current conversation should I use? This will not send a message.')
                 result['text'] = f"The captured {(replaced[0]['target'] or {}).get('label', 'agent')} conversation changed. " + question

@@ -508,7 +508,7 @@ class AuthorizationQuestionTests(unittest.TestCase):
         ends = questions['message_end']['criteria']
         self.assertEqual(request[:int(max(ends, key=int))], request)
         self.assertIn('trailing whitespace', ends[str(len(request))]['token'])
-        self.assertEqual(set(questions['message_form']['criteria']), {'verbatim', 'indirect_question'})
+        self.assertEqual(set(questions['message_form']['criteria']), {'verbatim', 'indirect_question', 'clarify_composition'})
 
     def test_routing_rule_is_general_and_never_names_the_observed_fixture(self):
         payload = self.build('Ask it to explain those numbers with an example')
@@ -805,6 +805,58 @@ class CapturedSubjectIdentityTests(DisposableDesk):
         self.assertEqual(self.app.jarvis.snapshot()['drafts'], {})
         self.assertEqual(self.app.jarvis.snapshot()['subject'], fresh)
         self.assertEqual(self.received('Dog Data'), b'')
+
+
+class CompositionTests(DisposableDesk):
+    def test_straddled_fragment_is_retained_but_not_confirmable(self):
+        request = 'Tell Dog Data: "check the queue" and then add "explain the result". So just say that politely.'
+        body = request[request.index('check'):]
+        self.allow(request, body=body)
+        self.provider = self.send_provider
+        receipt = self.app.jarvis.submit(request, 'composition')
+        self.assertEqual(receipt['actions'], [])
+        self.assertIn('What exact message', receipt['text'])
+        pending = next(iter(self.app.jarvis.snapshot()['clarifications'].values()))
+        self.assertEqual(pending['text'], request)
+        self.assertEqual(pending['operation'], 'compose')
+        self.assertFalse(self.app.jarvis.snapshot()['drafts'])
+        self.intents['yes'] = {'permission': 'allow', 'target': self.targets['Dog Data']}
+        results = []
+        def confirm(context, specs, execute, **kwargs):
+            results.append(execute('confirm_draft', {'clarification_id': pending['clarification_id']}))
+            return final()
+        self.provider = confirm
+        yes = self.app.jarvis.submit('yes', 'bare-confirm')
+        self.assertEqual(yes['actions'], [])
+        self.assertFalse(results[0]['ok'])
+        explicit = 'Tell Dog Data: Check the queue and explain the result.'
+        self.allow(explicit, body='Check the queue and explain the result.')
+        self.provider = self.send_provider
+        sent = self.app.jarvis.submit(explicit, 'explicit-body')
+        self.assertEqual(sent['actions'][0]['payload'], 'Check the queue and explain the result.')
+
+    def test_semantic_composition_without_quotes_never_generates_message(self):
+        request = 'Tell Dog Data something combining the first two ideas, but make it more polite.'
+        self.allow(request)
+        self.intents[request]['form'] = 'clarify_composition'
+        self.provider = self.send_provider
+        with patch('jarvis_tools.prepare_message', side_effect=AssertionError('No composition generation')):
+            result = self.app.jarvis.submit(request, 'compose-unquoted')
+        self.assertEqual(result['actions'], [])
+        self.assertIn('What exact message', result['text'])
+
+    def test_complete_literal_preserves_quoted_words_and_multiple_sentences(self):
+        for number, (request, body) in enumerate([
+            ('Tell Dog Data: The broken command is echo "hello', 'The broken command is echo "hello'),
+            ('Tell Dog Data: Keep the "old" result. Explain both cases.', 'Keep the "old" result. Explain both cases.'),
+            ('Tell Dog Data: “Check the queue. Explain both cases.”', 'Check the queue. Explain both cases.'),
+        ]):
+            with self.subTest(request=request):
+                self.allow(request, body=body)
+                self.provider = self.send_provider
+                result = self.app.jarvis.submit(request, 'literal-' + str(number))
+                self.assertEqual(result['actions'][0]['payload'], body)
+                self.assertEqual(result['actions'][0]['status'], 'submitted')
 
 
 if __name__ == '__main__':
