@@ -60,7 +60,7 @@ class DisposableDesk(unittest.TestCase):
         def history(thread):
             return {'turns': [{'id': 'reply-' + thread, 'status': 'completed', 'items': [
                 {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Five of six samples passed; one needs review.'}]}]}
-        for target, callback in (('codex_actions.thread_read', history), ('server.reply_history', lambda agent: history(agent['thread_id']))):
+        for target, callback in (('codex_actions.thread_read', history), ('session_questions.thread_read', history), ('server.reply_history', lambda agent: history(agent['thread_id']))):
             mocked = patch(target, side_effect=callback)
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -80,6 +80,8 @@ class DisposableDesk(unittest.TestCase):
         self.open_app()
 
     def evaluate(self, payload):
+        if 'read_intent' in payload['questions']:
+            return {'answers': {'read_intent': {'choice': getattr(self, 'read_mode', 'literal')}}}
         if 'narrative_safety' in payload['questions']:
             return {'answers': {'narrative_safety': {'choice': 'safe' if getattr(self, 'narrative_safe', False) else 'unproven_effect'}}}
         if 'permission' not in payload['questions']:
@@ -805,6 +807,80 @@ class CapturedSubjectIdentityTests(DisposableDesk):
         self.assertEqual(self.app.jarvis.snapshot()['drafts'], {})
         self.assertEqual(self.app.jarvis.snapshot()['subject'], fresh)
         self.assertEqual(self.received('Dog Data'), b'')
+
+
+class CurrentEvidenceTests(DisposableDesk):
+    def snapshot(self):
+        return {'observed_at': '2026-10-05T20:05:00Z', 'live_working_indicator': True,
+                'current_turn': {'id': 'new-run', 'recorded_outcome': None, 'completed_at': None,
+                    'records': [{'type': 'userMessage', 'text': 'The issue is resolved. Continue the launch checks.'},
+                                {'type': 'agentMessage', 'text': 'Running the new launch checks.'}]},
+                'recent_terminal': 'Running the new launch checks.', 'history_error': None}
+
+    def test_actual_snapshot_new_running_turn_supersedes_old_completed_reply(self):
+        history = {'turns': [
+            {'id': 'old-run', 'status': 'completed', 'completedAt': '18:52', 'items': [
+                {'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Launch blocked.'}]},
+            {'id': 'new-run', 'status': 'inProgress', 'items': [
+                {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'Resolved. Continue the checks.'}]},
+                {'type': 'agentMessage', 'phase': 'commentary', 'text': 'Running the new checks.'}]}]}
+        self.read_mode, self.narrative_safe = 'current', True
+        observed = []
+        def provider(context, specs, execute, **kwargs):
+            observed.append(execute('read_reply', {'name': 'Dog Data'}))
+            return final('The newer request is continuing the checks; its outcome is not confirmed.')
+        self.provider = provider
+        with patch('codex_actions.thread_read', return_value=history), patch('session_questions.thread_read', return_value=history):
+            receipt = self.app.jarvis.submit('What is Dog Data doing now?', 'actual-current-snapshot')
+        current = observed[0]['snapshot']['current_turn']
+        self.assertEqual(current['id'], 'new-run')
+        self.assertIsNone(current['recorded_outcome'])
+        self.assertIn('Running the new checks.', str(current['records']))
+        self.assertEqual(observed[0]['original'], 'Launch blocked.')
+        self.assertIn('newer request', receipt['text'])
+        self.assertNotIn('readback', receipt)
+        self.assertEqual(receipt['available_readback']['original'], 'Launch blocked.')
+
+    def test_summary_keeps_model_answer_and_original_separately(self):
+        self.read_mode, self.narrative_safe = 'summary', True
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final('Five passed; one needs review.')
+        with patch('jarvis_tools.session_snapshot', return_value=self.snapshot()):
+            receipt = self.app.jarvis.submit('Summarize Dog Data’s reply.', 'summary')
+        self.assertEqual(receipt['text'], 'Five passed; one needs review.')
+        self.assertNotIn('readback', receipt)
+        self.assertEqual(receipt['available_readback']['original'], 'Five of six samples passed; one needs review.')
+        self.assertEqual(self.app.jarvis.snapshot()['turns'][receipt['turn_id']]['result']['text'], receipt['text'])
+
+    def test_current_read_supplies_fresh_evidence_not_old_final_as_status(self):
+        self.read_mode, self.narrative_safe = 'current', True
+        observed = []
+        def provider(context, specs, execute, **kwargs):
+            observed.append(execute('read_reply', {'name': 'Dog Data'}))
+            return final('It is running the new launch checks; the earlier completed reply is historical.')
+        self.provider = provider
+        with patch('jarvis_tools.session_snapshot', return_value=self.snapshot()):
+            result = self.app.jarvis.submit('What is happening in Dog Data now?', 'current')
+        self.assertEqual(observed[0]['snapshot']['current_turn']['id'], 'new-run')
+        self.assertIn('current_snapshot', observed[0]['output'])
+        self.assertIn('running the new launch checks', result['text'])
+        self.assertNotIn('readback', result)
+        self.assertEqual(self.app.jarvis.snapshot()['jobs'], {})
+        self.assertEqual(result['actions'], [])
+
+    def test_current_snapshot_answers_same_turn_and_rejects_unsupported_fallback(self):
+        self.narrative_safe = True
+        self.provider = lambda context, specs, execute, **kwargs: execute('observe_session', {'name': 'Dog Data'}) and final('It is running the new launch checks.')
+        with patch('jarvis_tools.session_snapshot', return_value=self.snapshot()):
+            result = self.app.jarvis.submit('Is Dog Data working?', 'live-observation')
+        self.assertIn('running the new launch checks', result['text'])
+        self.assertEqual(self.app.jarvis.snapshot()['jobs'], {})
+        self.read_mode, self.narrative_safe = 'current', False
+        self.provider = lambda context, specs, execute, **kwargs: execute('read_reply', {'name': 'Dog Data'}) and final('It finished successfully.')
+        with patch('jarvis_tools.session_snapshot', return_value=self.snapshot()):
+            rejected = self.app.jarvis.submit('What is it doing now?', 'unsafe-summary')
+        self.assertEqual(rejected['text'], 'I could not verify an answer from the current evidence.')
+        self.assertNotIn(rejected['available_readback']['original'], rejected['text'])
+        self.assertEqual(self.app.jarvis.snapshot()['turns'][rejected['turn_id']]['result']['text'], rejected['text'])
 
 
 class CompositionTests(DisposableDesk):

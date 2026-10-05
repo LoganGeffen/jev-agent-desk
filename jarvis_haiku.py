@@ -29,6 +29,7 @@ INSTRUCTIONS = (
     'tools for preparing and sending a draft. Do not answer, explain, summarize or perform the delegated content '
     'yourself, even when you could from earlier replies. If it asks what an agent said, or for your own reading, '
     'explanation or inspection, that is observation: use the read and list tools and answer from their results.\n'
+    'For what is happening now or whether an agent is working, use observe_session for bounded fresh evidence and answer in this same turn. Do not queue an observer_job unless the user requests a background observation. A latest completed reply is historical and cannot override a newer unfinished turn or live work. For a summary or explanation, answer the question concisely instead of quoting the whole original; exact reading is separate.\n'
     'When the current request names a chat, use that named conversation, taking precedence over the subject, '
     'capture_target and visible pane. Reading a named chat means reading that chat, not looking for its name '
     'or content inside the visible conversation. Use the resolution or read tools with the requested chat name; '
