@@ -654,3 +654,58 @@ reused socket path or window number. Closed-tab archives retain their bytes, but
 archive browsing, reassociation and automatic migration are deferred. Live browser
 attachments are deliberately not restored on Desk restart. The visual API uses the
 same loopback/private-proxy access boundary as Desk; it is not a multi-user service.
+
+## Managed browser, outputs and app sessions
+
+After starting Desk against a disposable or chosen tmux session, provision a new
+managed agent once. Ordinary requests inside that conversation then use the Desk
+browser/output tools automatically:
+
+```sh
+python launch.py managed-session 'Research' --socket /path/to/tmux.sock \
+  --source-session tabs --run-dir /path/to/desk-run \
+  --provider claude --workspace /path/to/project
+```
+
+Use `--provider codex` for Codex. `--account-profile work-account` selects a
+separate persistent account environment; the default is `desk`. Account choice
+is setup, not a model argument. App previews always use separate app storage.
+The command adds session-local MCP configuration and lifecycle identity tracking;
+it does not edit global Claude/Codex settings or the older restricted test
+helpers. Claude waits for MCP startup and receives the small tool schemas upfront.
+Codex requires the Desk MCP server and authorizes this explicitly provisioned
+server's tools. Existing provider subscription stores stay in place.
+
+`--resume EXACT_CONVERSATION_UUID` uses native provider resume after the original
+process has stopped. It refuses a still-running conversation in the same tmux
+server. The resumed conversation receives a new live binding and Desk tab; native
+conversation history and the selected account's sign-ins continue. Previous page
+handles are not reassigned across tabs. Saved outputs stay in the original
+read-only archive. Uninstrumented browser tools cannot be adopted by URL, title
+or whichever page is active.
+
+Managed tools open exact owned browser pages, create/publish completed files,
+finish browser downloads, and start/stop app previews. Publication returns an
+immutable receipt; identical receipt-key retries return the same version, while
+conflicting reuse fails. Markdown captures local image references along with the
+original text. Other supported files get exact download cards. Current capture
+bounds remain 8 MiB/file, 16 MiB/version and 128 files. A pending download is not
+saved until completion and a successful receipt.
+
+App commands are argument arrays with a `{port}` placeholder and must bind to
+`127.0.0.1`. Desk checks the listener belongs to that exact process tree before
+opening the isolated app browser. Two app processes and two browser profiles are
+the current limits; capacity errors do not evict active work. App processes receive
+only basic locale/PATH variables plus an isolated HOME, PORT and HOST. Readiness
+and bounded error output appear in Desk. Source identity is a supplied exact
+build identifier or a bounded hash of non-hidden project files and command,
+excluding dependency/cache directories. Initial and final screenshots are labeled
+saved outputs with source/process/build provenance; stopping an app preserves
+them. Screenshot or browser cleanup failure is reported while the verified app
+process still stops.
+
+Visual selection is local to each device. A selected saved version can travel as
+structured reference context for the actual message recipient through the managed
+`desk_context` tool; the user's terminal message remains byte-for-byte unchanged.
+The saved output's author never becomes delivery authority. Explicit selection
+receipts include `view_target`, including recovered Jarvis receipts.

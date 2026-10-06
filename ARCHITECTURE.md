@@ -384,3 +384,29 @@ A new observer supersedes the previous connection using a per-connection cancell
 event. Old callbacks and cleanup cannot reset the replacement observer or its state.
 The frontend fences requests, stream callbacks and image decoding by selection and
 generation. The live connection is ephemeral, whereas creation history is durable.
+
+## Managed sessions and runtimes
+
+`managed_session.py` provisions native Claude/Codex sessions with per-invocation
+MCP settings; `desk_mcp.py` is the stdio adapter. A private session record is
+created by the actual pane launcher before exec. `managed_provider.py` verifies
+its capability and exact pane process generation, resolves native conversation
+identity using the existing tracking, and persists the resulting owner binding.
+Every operation revalidates that binding. Browser effects also use the daemon's
+owner challenge before delayed execution. Models provide page handles within
+that binding, never tab/process/account authority. The bridge limits file capture
+to the provisioned workspace and traverses without following symlinks.
+
+The publication table makes receipt keys idempotent within the immutable
+workspace. Archive routes read original workspace IDs without reopening tmux
+ownership. The reference inbox validates stored version identity, then binds
+context to the actual validated recipient at delivery without changing the
+literal message. Its context contains the original delivered message separately
+from immutable source provenance.
+
+`managed_apps.py` owns bounded app processes, cwd/command/build identity,
+listener readiness, isolated browser profiles and saved screenshots. Runtime
+state checks PID start time; a saved screenshot is a version, not an executable
+historical app. Process environment filtering excludes Desk/provider credentials.
+App stop validates ownership again after capture and reports capture/cleanup
+failures separately from termination.

@@ -12,7 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
-from visual_workspace import VisualError, fields, process_stamp, safe_components, visible
+from visual import read_file
+from visual_workspace import MAX_VERSION, MAX_FILES, VisualError, fields, process_stamp, safe_components, visible
 
 
 def within(root, path):
@@ -24,6 +25,28 @@ def within(root, path):
     if not requested.is_dir():
         raise VisualError('App working directory does not exist')
     return requested
+
+
+def build_identity(cwd, command):
+    digest = hashlib.sha256(json.dumps(command).encode())
+    total = count = 0
+    for directory, dirs, names in os.walk(cwd, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if not name.startswith('.') and name not in ('node_modules', '__pycache__'))
+        for name in sorted(names):
+            path = Path(directory) / name
+            if name.startswith('.') or path.is_symlink():
+                continue
+            try:
+                safe_components(path.parts)
+            except VisualError:
+                continue
+            data = read_file(path)
+            count += 1
+            total += len(data)
+            if count > MAX_FILES or total > MAX_VERSION:
+                raise VisualError('App source fingerprint exceeds capture bounds; provide an exact build_identity')
+            digest.update(str(path.relative_to(cwd)).encode() + b'\0' + data)
+    return 'sha256:' + digest.hexdigest()
 
 
 def owns_listener(pid, port):
@@ -67,7 +90,8 @@ class ManagedApps:
 
     def alive(self, record):
         try:
-            return process_stamp(record['pid']) == record['source']['process']
+            state = Path(f"/proc/{record['pid']}/stat").read_text().rsplit(')', 1)[1].split()[0]
+            return state != 'Z' and process_stamp(record['pid']) == record['source']['process']
         except OSError:
             return False
 
@@ -92,6 +116,7 @@ class ManagedApps:
         ready_path = args.get('ready_path', '/')
         if not isinstance(ready_path, str) or not ready_path.startswith('/') or ready_path.startswith('//') or len(ready_path) > 1000:
             raise VisualError('Readiness path must be a local URL path')
+        identity = str(args.get('build_identity') or build_identity(cwd, command))[:200]
         with self.lock:
             if sum(self.alive(record) for record in self.records.values()) >= 2:
                 raise VisualError('Two apps are already running; stop one before starting another', 429)
@@ -108,7 +133,7 @@ class ManagedApps:
             record = {'id': identifier, 'title': title, 'owner': owner, 'target': owner['target'], 'workspace_id': owner['workspace_id'],
                       'status': 'starting', 'pid': process.pid, 'port': port, 'log_excerpt': '', 'error': None, 'saved_export': None,
                       'source': {'cwd': str(cwd), 'process': process_stamp(process.pid), 'command': command,
-                                 'build_identity': str(args.get('build_identity') or hashlib.sha256(json.dumps(command).encode()).hexdigest())[:200]}}
+                                 'build_identity': identity}}
             self.records[identifier] = record
             self.persist()
         threading.Thread(target=self.read_output, args=(process, record), daemon=True).start()
@@ -116,14 +141,15 @@ class ManagedApps:
         return self.view(record)
 
     def read_output(self, process, record):
-        while chunk := process.stdout.read1(1024):
-            with self.lock:
-                record['log_excerpt'] = (record['log_excerpt'] + chunk.decode(errors='replace'))[-4000:]
+        with process.stdout:
+            while chunk := process.stdout.read1(1024):
+                with self.lock:
+                    record['log_excerpt'] = (record['log_excerpt'] + chunk.decode(errors='replace'))[-4000:]
         process.wait()
         with self.lock:
             if record['status'] != 'stopped':
                 record.update(status='error' if process.returncode else 'stopped', error=f'App exited ({process.returncode})')
-            self.persist()
+                self.persist()
 
     def ready(self, record, path):
         from browser_http import browser_owner
@@ -144,7 +170,12 @@ class ManagedApps:
                                 if browser_owner(self.app.visual, record['target']) != owner:
                                     raise VisualError('App conversation changed during readiness', 409)
                                 with self.lock:
-                                    record.update(status='ready', page_id=page['page_id'], run_id=page['run_id'])
+                                    record.update(page_id=page['page_id'], run_id=page['run_id'])
+                                    try:
+                                        self.snapshot(record, page, 'initial')
+                                    except Exception as error:
+                                        record['error'] = 'App is running, but its saved screenshot failed: ' + str(error)
+                                    record['status'] = 'ready'
                                     self.persist()
                                 return
                     except (HTTPError, URLError, TimeoutError):
@@ -156,6 +187,15 @@ class ManagedApps:
                 record.update(status='error', error=str(error))
                 self.persist()
 
+    def snapshot(self, record, page, revision):
+        result = self.app.browser.request('action', owner=record['owner'], page_id=page['page_id'], run_id=page['run_id'], account_epoch=page['account_epoch'], action='screenshot')['result']
+        body = {'target': record['target'], 'title': record['title'] + ' — saved screenshot', 'kind': 'image', 'mode': 'captured',
+                'entrypoint': 'app.jpg', 'files': [{'path': 'app.jpg', 'data': result['data']}],
+                'receipt_key': 'app-' + record['id'] + '-' + revision}
+        if record.get('saved_export'):
+            body['creation_id'] = record['saved_export']['creation_id']
+        record['saved_export'] = self.app.visual.register(body, app_source={'id': record['id'], **record['source'], 'representation': 'screenshot'})
+
     def stop(self, owner, app_id):
         from browser_http import browser_owner
         with self.lock:
@@ -164,14 +204,31 @@ class ManagedApps:
                 raise VisualError('App does not belong to this conversation', 409)
             if browser_owner(self.app.visual, owner['target']) != owner:
                 raise VisualError('App owner changed', 409)
+            errors = []
+            if record.get('page_id'):
+                try:
+                    pages = self.app.browser.request('pages', owner=owner)['pages']
+                    for page in pages:
+                        if page['profile_id'] == 'app-' + app_id and page['status'] != 'closed':
+                            try:
+                                if page['page_id'] == record['page_id']:
+                                    self.snapshot(record, page, 'stopped')
+                            except Exception as error:
+                                errors.append('Final screenshot was not saved: ' + str(error))
+                            self.app.browser.request('action', owner=owner, page_id=page['page_id'], run_id=page['run_id'], account_epoch=page['account_epoch'], action='close')
+                    self.app.browser.request('stop_profile', profile_id='app-' + app_id)
+                except Exception as error:
+                    errors.append('App browser cleanup failed: ' + str(error))
+            if browser_owner(self.app.visual, owner['target']) != owner:
+                raise VisualError('App owner changed before stop', 409)
             if self.alive(record) and os.getpgid(record['pid']) == record['pid']:
                 os.killpg(record['pid'], signal.SIGTERM)
-            if record.get('page_id'):
-                pages = self.app.browser.request('pages', owner=owner)['pages']
-                for page in pages:
-                    if page['profile_id'] == 'app-' + app_id and page['status'] != 'closed':
-                        self.app.browser.request('action', owner=owner, page_id=page['page_id'], run_id=page['run_id'], account_epoch=page['account_epoch'], action='close')
-                self.app.browser.request('stop_profile', profile_id='app-' + app_id)
+                deadline = time.monotonic() + 2
+                while self.alive(record) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                if self.alive(record) and os.getpgid(record['pid']) == record['pid']:
+                    os.killpg(record['pid'], signal.SIGKILL)
+            record['error'] = '; '.join(errors) or None
             record.update(status='stopped')
             self.persist()
             return self.view(record)

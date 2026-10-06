@@ -736,6 +736,7 @@ class JarvisTools:
         if name == 'select_session':
             self.app.focus(target['tab'], target['pane'])
             return {'ok': True, 'status': 'completed', 'subject': target,
+                    'view_target': {key: target[key] for key in ('tab', 'pane', 'identity')},
                     'output': 'Selected ' + target['label'] + '.'}
         if name == 'observe_session':
             evidence = session_snapshot(self.app.socket, self.agent(target))

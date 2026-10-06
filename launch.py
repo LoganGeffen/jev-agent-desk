@@ -351,6 +351,7 @@ if __name__ == "__main__":
     parser.add_argument('--resume')
     parser.add_argument('--model')
     parser.add_argument('--prompt')
+    parser.add_argument('--account-profile', default='desk')
     args = parser.parse_args()
     if args.action == "clock":
         while True:
@@ -365,7 +366,7 @@ if __name__ == "__main__":
             if not args.socket or not args.provider or not args.workspace:
                 parser.error('managed-session requires --socket, --provider and --workspace')
             from managed_session import launch
-            print(json.dumps(launch(args.socket, args.source_session, args.run_dir, args.provider, args.label or args.provider.title(), args.workspace, args.resume, args.model, args.prompt)))
+            print(json.dumps(launch(args.socket, args.source_session, args.run_dir, args.provider, args.label or args.provider.title(), args.workspace, args.resume, args.model, args.prompt, args.account_profile)))
         elif args.action == "status":
             print(json.dumps(status(), indent=2))
             print((RUN / "url").read_text())

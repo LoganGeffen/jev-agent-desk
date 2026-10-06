@@ -479,6 +479,7 @@ class Playground:
                 def select():
                     tab, pane = target_pane()
                     self.focus(tab['id'], pane['id'])
+                    event['view_target'] = {'tab': tab['id'], 'pane': pane['id'], 'identity': pane['identity']}
 
                 def no_action():
                     target = response['answers'].get('target', {}).get('choice')
@@ -644,7 +645,7 @@ class Playground:
 
     def deliver(self, agent, text, event):
         if getattr(self, 'providers', None):
-            self.providers.bind_reference(event.get('request_id'), agent)
+            self.providers.bind_reference(event.get('request_id'), agent, text)
         baseline = None
         if event.get('source') in ('typed', 'voice', 'manual_clarification'):
             try:

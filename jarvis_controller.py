@@ -95,7 +95,7 @@ class JarvisController:
                 'request_id': turn['request_id'], 'revision': snapshot['revision'],
                 'status': turn['status'], 'text': turn.get('result', {}).get('text', ''),
                 'actions': [action for action in snapshot['actions'].values() if action['turn_id'] == turn['turn_id']],
-                **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'available_readback', 'raw_model_text') if key in turn.get('result', {})}),
+                **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'available_readback', 'raw_model_text', 'view_target') if key in turn.get('result', {})}),
                 **({'error': turn['error']} if 'error' in turn else {})}
 
     def submit(self, text, request_id, capture_target=None, on_text=None, source='typed', mode='jarvis'):
@@ -109,6 +109,7 @@ class JarvisController:
             cancel = self.cancels[turn['turn_id']] = threading.Event()
         deadline = time.monotonic() + 60
         calls = 0
+        view_target = None
 
         def guard():
             if self.turn_guard:
@@ -121,7 +122,7 @@ class JarvisController:
                 raise TimeoutError('Controller inference exceeded 60 seconds')
 
         def perform(name, arguments):
-            nonlocal calls
+            nonlocal calls, view_target
             guard()
             if name not in self.specs:
                 raise ValueError('Unknown controller tool')
@@ -192,6 +193,8 @@ class JarvisController:
                     if action:
                         self.state.finish_action(action['action_id'], result)
                         result = dict(result, action_id=action['action_id'])
+                    if name == 'select_session' and result.get('ok') and result.get('view_target'):
+                        view_target = copy.deepcopy(result['view_target'])
                     if result.get('job_id'):
                         self.state.record_job(turn['turn_id'], result, subject=app_turn['subject'])
                     guard()
@@ -236,6 +239,8 @@ class JarvisController:
             if self.response_policy:
                 result = self.response_policy(result, turn)
                 guard()
+            if view_target is not None:
+                result['view_target'] = view_target
             receipt = self.receipt(self.state.finish_turn(turn['turn_id'], result=result))
             self.trace('canonical_receipt', request_id=turn['request_id'], turn_id=turn['turn_id'], receipt=receipt)
             return receipt

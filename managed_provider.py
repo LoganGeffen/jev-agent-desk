@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 from visual_workspace import KINDS, MAX_BODY, VisualError, fields, process_stamp
 
 
-INSTRUCTIONS = '''Use the desk browser tools for browser tasks so the user sees your actual owned page. Use desk_publish_file or desk_create_document for every completed document/export; success returns its saved immutable creation/version receipt. Use desk_context at the start of each user request to read any selected output reference; preserve that creation_id when revising it. Never claim publication succeeded without a receipt. Login uses the Desk Sign in button; do not ask for passwords in chat or tools. Uninstrumented browsers are not visible in Desk. Use desk_app_start for development app previews.'''
+INSTRUCTIONS = '''For every request to use the browser, call desk_browser_open then desk_browser_action with action=snapshot to read its text. These managed tools show the actual owned page to the user; WebFetch and curl do not. In Claude the names are mcp__desk__desk_browser_open and mcp__desk__desk_browser_action. If tools are deferred, discover those exact names with ToolSearch before choosing a different route. Use desk_publish_file or desk_create_document for every completed document/export; success returns its saved immutable creation/version receipt. Use desk_context at the start of each user request to read any selected output reference; preserve that creation_id when revising it in the same workspace; references from another workspace require a new creation. Never claim publication succeeded without a receipt. Login uses the Desk Sign in button; do not ask for passwords in chat or tools. Uninstrumented browsers are not visible in Desk. Use desk_app_start for development app previews.'''
 
 
 def record_path(run_dir, identifier):
@@ -80,11 +80,11 @@ class ManagedProviders:
         encoded = json.dumps(reference, sort_keys=True)
         with self.lock, self.db() as db:
             row = db.execute('SELECT reference FROM references_inbox WHERE request=?', (request_id,)).fetchone()
-            if row and row[0] != encoded:
+            if row and {key: item for key, item in json.loads(row[0]).items() if key != 'message'} != reference:
                 raise VisualError('Request already belongs to another output reference', 409)
             db.execute('INSERT OR IGNORE INTO references_inbox VALUES(?,?,NULL)', (request_id, encoded))
 
-    def bind_reference(self, request_id, agent):
+    def bind_reference(self, request_id, agent, text=None):
         if not request_id:
             return
         with self.lock, self.db() as db:
@@ -97,7 +97,9 @@ class ManagedProviders:
             recipient = json.dumps({key: agent[key] for key in ('provider', 'thread_id', 'process')}, sort_keys=True)
             if row[1] and row[1] != recipient:
                 raise VisualError('Reference delivery recipient changed', 409)
-            db.execute('UPDATE references_inbox SET recipient=? WHERE request=?', (recipient, request_id))
+            reference = json.loads(row[0])
+            reference['message'] = text
+            db.execute('UPDATE references_inbox SET recipient=?,reference=? WHERE request=?', (recipient, json.dumps(reference, sort_keys=True), request_id))
 
     def context(self, owner):
         recipient = json.dumps({key: owner[key] for key in ('provider', 'thread_id', 'process')}, sort_keys=True)
@@ -107,7 +109,7 @@ class ManagedProviders:
         for request_id, encoded in rows:
             ref = json.loads(encoded)
             data, mime, _ = self.app.visual.content(ref['workspace_id'], ref['version_id'])
-            references.append({'request_id': request_id, **ref, 'text': data[:32768].decode(errors='replace') if ref['kind'] in ('text', 'markdown', 'html') else None, 'truncated': len(data) > 32768})
+            references.append({'request_id': request_id, **ref, 'can_append': ref['workspace_id'] == owner.get('workspace_id'), 'text': data[:32768].decode(errors='replace') if ref['kind'] in ('text', 'markdown', 'html') else None, 'truncated': len(data) > 32768})
         return {'references': references, 'supported': 'Managed Desk tools only; existing unrelated browser tools cannot be adopted automatically.'}
 
     def downloads(self, owner):
@@ -123,7 +125,7 @@ class ManagedProviders:
                 'receipt_key': item['receipt_key']})
             self.app.browser.request('ack_download', owner=owner, download_id=item['download_id'])
             receipts.append(receipt)
-        return {'saved_downloads': receipts, 'download_errors': result.get('errors', [])}
+        return {'saved_downloads': receipts, 'download_errors': result.get('errors', []), 'pending_downloads': result.get('pending', 0)}
 
     def call(self, identifier, token, tool, args):
         owner, record = self.owner(identifier, token)
@@ -135,6 +137,9 @@ class ManagedProviders:
         elif tool == 'desk_browser_open':
             fields(args, {'url'})
             result = self.app.browser.request('open', owner=owner, profile_id=record['profile_id'], url=args['url'])
+        elif tool == 'desk_browser_downloads':
+            fields(args, set())
+            result = self.downloads(owner)
         elif tool == 'desk_browser_pages':
             fields(args, set())
             result = self.app.browser.request('pages', owner=owner)

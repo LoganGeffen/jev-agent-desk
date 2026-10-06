@@ -21,6 +21,7 @@ STRING = {'type': 'string'}
 TOOLS = [
     {'name': 'desk_context', 'description': 'Read user-selected immutable output reference context for this conversation at the start of each request.', 'inputSchema': schema()},
     {'name': 'desk_browser_open', 'description': 'Open an owned browser page visible beside this conversation, using the configured persistent Desk account.', 'inputSchema': schema({'url': STRING}, ['url'])},
+    {'name': 'desk_browser_downloads', 'description': 'Finish saving completed browser downloads. If pending_downloads is nonzero, check again before claiming the file is saved. This never retries the original click.', 'inputSchema': schema()},
     {'name': 'desk_browser_pages', 'description': 'List only this conversation browser pages and their current handles/epochs.', 'inputSchema': schema()},
     {'name': 'desk_browser_action', 'description': 'Control one exact owned page. Snapshot refreshes the account epoch after human sign-in. Agent calls pause during Sign in; never replay an uncertain mutation.', 'inputSchema': schema({'page_id': STRING, 'run_id': STRING, 'account_epoch': {'type': 'integer'}, 'action': {'type': 'string', 'enum': ['navigate', 'snapshot', 'click', 'fill', 'press', 'scroll', 'back', 'forward', 'reload', 'close', 'screenshot']}, 'args': {'type': 'object'}}, ['page_id', 'run_id', 'account_epoch', 'action'])},
     {'name': 'desk_publish_file', 'description': 'Publish a completed file or static export directory from this workspace to Desk and return its immutable saved version receipt. Use creation_id to revise an existing creation.', 'inputSchema': schema({'path': STRING, 'title': STRING, 'entrypoint': STRING, 'creation_id': STRING, 'receipt_key': STRING}, ['path', 'title'])},
@@ -56,10 +57,20 @@ class Bridge:
                 data = args['text'].encode()
                 if len(data) > 8 * 1024 * 1024:
                     raise ValueError('Document exceeds 8 MiB')
-                path.parent.mkdir(parents=True, exist_ok=True)
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-                with os.fdopen(fd, 'wb') as stream:
-                    stream.write(data)
+                descriptors = [os.open(self.record['workspace'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+                try:
+                    for part in path.relative_to(self.record['workspace']).parts[:-1]:
+                        try:
+                            os.mkdir(part, mode=0o700, dir_fd=descriptors[-1])
+                        except FileExistsError:
+                            pass
+                        descriptors.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptors[-1]))
+                    fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600, dir_fd=descriptors[-1])
+                    with os.fdopen(fd, 'wb') as stream:
+                        stream.write(data)
+                finally:
+                    for fd in reversed(descriptors):
+                        os.close(fd)
             entrypoint, files = capture(path, args.get('entrypoint'))
             kind = next((kind for kind, extensions in KINDS.items() if Path(entrypoint).suffix.lower() in extensions), None)
             if kind is None:
@@ -108,7 +119,12 @@ def main():
                 if params['name'] not in {tool['name'] for tool in TOOLS}:
                     raise ValueError('Unknown Desk tool')
                 value = bridge.call(params['name'], params.get('arguments', {}))
-                result = {'content': [{'type': 'text', 'text': json.dumps(value)}]}
+                image = value.get('result') if isinstance(value, dict) else None
+                if isinstance(image, dict) and image.get('mime') in ('image/jpeg', 'image/png') and image.get('data'):
+                    result = {'content': [{'type': 'text', 'text': json.dumps({key: item for key, item in value.items() if key != 'result'})},
+                                          {'type': 'image', 'mimeType': image['mime'], 'data': image['data']}]}
+                else:
+                    result = {'content': [{'type': 'text', 'text': json.dumps(value)}]}
             else:
                 print(json.dumps({'jsonrpc': '2.0', 'id': identifier, 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)
                 continue

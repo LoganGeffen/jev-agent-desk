@@ -192,7 +192,7 @@ class VisualWorkspace:
             raise VisualError('Identify the agent conversation before capturing or attaching', 409)
         return {**live, 'agent_process': agent_process(live)}
 
-    def register(self, body):
+    def register(self, body, app_source=None):
         fields(body, {'target', 'title', 'kind', 'mode', 'entrypoint', 'files'}, {'creation_id', 'receipt_key'})
         pane = self.target(body['target'])
         workspace = self.workspace(body['target']['tab'])
@@ -232,6 +232,8 @@ class VisualWorkspace:
         version = str(uuid.uuid4())
         source = {key: pane.get(key) for key in ('provider', 'thread_id', 'process', 'agent_process')}
         source.update(mode=body['mode'], pane=body['target']['pane'], identity=body['target']['identity'])
+        if app_source is not None:
+            source['app'] = app_source
         with self.db() as db:
             if receipt_key:
                 previous = db.execute('SELECT digest,receipt FROM publications WHERE workspace=? AND receipt_key=?', (workspace, receipt_key)).fetchone()
