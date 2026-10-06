@@ -32,6 +32,8 @@ from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_histor
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
 from visual_workspace import VisualWorkspace, VisualError, get_route as visual_get, post_route as visual_post
+from browser_http import create_browser, get_route as browser_get, post_route as browser_post
+from browser_runtime import BrowserError
 
 
 ATTENTION_OFF = {"", "0", "false", "no", "off"}
@@ -891,6 +893,7 @@ def make_server(playground, port=0, public_origin=None):
     visual = VisualWorkspace(playground) if playground is not None else None
     if playground is not None:
         playground.visual = visual
+        playground.browser = create_browser(visual)
     def diagnostic(stage, **fields):
         try:
             if getattr(playground, 'diagnostics', None):
@@ -937,9 +940,11 @@ def make_server(playground, port=0, public_origin=None):
 
         def do_GET(self):
             try:
+                if playground is not None and browser_get(self, visual, playground.browser):
+                    return
                 if visual_get(self, visual, public_origin):
                     return
-            except (VisualError, ValueError, TypeError, OSError, RuntimeError) as error:
+            except (VisualError, BrowserError, ValueError, TypeError, OSError, RuntimeError) as error:
                 self.send(getattr(error, 'status', 400), {'error': str(error)})
                 return
             if not self.local_request():
@@ -978,9 +983,11 @@ def make_server(playground, port=0, public_origin=None):
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
                 return
             try:
+                if playground is not None and browser_post(self, visual, playground.browser):
+                    return
                 if visual_post(self, visual):
                     return
-            except (VisualError, ValueError, TypeError, OSError, RuntimeError) as error:
+            except (VisualError, BrowserError, ValueError, TypeError, OSError, RuntimeError) as error:
                 self.send(getattr(error, 'status', 400), {'error': str(error)})
                 return
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
