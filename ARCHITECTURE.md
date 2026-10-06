@@ -336,3 +336,46 @@ immutable current-turn draft. Failed generation or fidelity retains an unsendabl
 `compose` clarification; older such records cannot become sendable. Diagnostics
 retain the form, source, candidate and judgment. Unmatched literal quote/code data
 and full multi-sentence literals remain supported.
+
+## Visual workspace
+
+`visual_workspace.py` owns saved creations and passive browser observation, outside
+Jarvis, delivery, terminal control and audio. `server.make_server` creates its store
+and dispatches `/api/visual/*` plus version-scoped `/visual-preview/*` capabilities.
+`visual.py` is the explicit registration helper; it snapshots regular files using
+`openat`-style descriptor traversal with `O_NOFOLLOW`, then uploads bounded bytes.
+The server never reads a supplied local path or proxies an arbitrary URL.
+
+A workspace is keyed by Linux boot ID, tmux server PID/start time, socket device and
+inode, and tmux window ID. Window IDs do not repeat within a server incarnation.
+SQLite persists the random workspace ID, creations, immutable version records and
+all copied bytes atomically. Exact pane identity and resolved provider conversation
+are checked before capture and again before publication. A creation can gain a
+version only in its existing workspace and kind; source provenance remains on each
+version even after the agent changes. UI content/download requests include both
+workspace and version; cross-workspace combinations fail. Archived bytes survive a
+missing tab, with archival navigation deferred.
+
+HTML capability responses set `Content-Security-Policy: sandbox allow-scripts`
+without `allow-same-origin`, and the iframe repeats that sandbox. This makes the
+content's effective origin opaque, including when the capability URL is opened
+directly. The resource policy permits only this version's immutable assets plus
+inline scripts/styles/data images; `connect-src`, `form-action`, `frame-src` and
+`object-src` are denied. Capabilities expose no directory listing or filesystem.
+Preview routes validate Host and capability; all privileged visual API routes
+retain Desk's Host/Origin boundary and reject cross-site fetches. Binary downloads
+always use attachment disposition and `nosniff`. Capability URLs stay private and
+are never sent upstream to agent-browser.
+
+Attachments bind a workspace and exact pane/conversation to one explicitly named
+agent-browser daemon. Linux `/proc` checks the executable, selected daemon/session
+environment entries, PID start time and owned loopback listener inode. Those
+bindings are rechecked during observation and immediately before forwarding a
+frame. Any mismatch latches stale and never reconnects to a replacement endpoint.
+The SSE route opens a receive-only WebSocket; only validated JPEG/PNG frame packets
+are forwarded, with local sequence numbers and an attachment generation. Provider
+command/result traffic is discarded. There is no viewer-to-upstream channel.
+Frames are capped at five forwarded frames per second and bounded in size.
+A client disconnect closes only its observation socket; it never kills a browser.
+The frontend fences requests, stream callbacks and image decoding by selection and
+generation. The live connection is ephemeral, whereas creation history is durable.

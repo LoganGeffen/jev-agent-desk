@@ -575,3 +575,79 @@ input was handed over. A full playback flag requires the recorded application
 boundary acknowledgment; it does not independently establish physical hearing or
 agent completion. The checked-in 99-event fixture is an actual synthetic caller
 trace with two requests sharing one capture, not a live user recording.
+
+## Visual workspace
+
+Each selected tab has a **Creations** view and a passive **Live browser** view.
+Creations are explicitly captured files, with immutable versions; changing or
+removing the original does not change a saved version. A tab with several panes
+shares its creations, with the source conversation shown. Its live browser appears
+only for the selected matching pane and exact conversation. Visual selection does
+not change Jarvis's conversational subject or terminal focus.
+
+Use the helper from this checkout and virtual environment. Copy the tab and pane
+IDs from the Desk state (`GET /api/state`). The helper captures the current identity
+once; supply `--identity` when retaining a previously captured identity is required.
+An unresolved or replaced agent conversation blocks capture and browser attachment.
+
+```sh
+python visual.py --url http://127.0.0.1:54617 register \
+  --tab @1 --pane %1 --title 'Prototype' /path/to/export/index.html
+
+# Append a new immutable revision using the creation_id returned above:
+python visual.py --url http://127.0.0.1:54617 register \
+  --tab @1 --pane %1 --title 'Prototype' --creation CREATION_UUID /path/to/export/index.html
+
+# Capture a static HTML bundle with relative JS/CSS/image assets:
+python visual.py --url http://127.0.0.1:54617 register \
+  --tab @1 --pane %1 --title 'Prototype bundle' --entrypoint index.html /path/to/export
+
+python visual.py --url http://127.0.0.1:54617 list --tab @1
+```
+
+HTML, Markdown, plain text/CSV, PDF and common raster images are supported. Use
+`--mode imported` for surviving older files: this records an import of today's
+bytes, not a reconstructed historical version. The default `captured` records an
+explicit current snapshot, without claiming the agent authored it. Save versions
+explicitly; there is no automatic transcript backfill or filesystem watcher.
+Downloads preserve original bytes, or a ZIP containing original bundle files.
+
+Capture allows up to 128 files, 8 MiB per file and 16 MiB per version. Use a small
+export directory: symlinks, hidden directories, credential-like names and runtime
+files are rejected. HTML runs in an opaque sandbox, with scripts/CSS/images/fonts
+limited to its captured bundle and inline resources; remote resources, network
+requests, forms, embedded frames and privileged Desk access are blocked. This is
+for self-contained static pages, not a development server or a general app runtime.
+PDF display depends on browser support; the original download remains available.
+
+To view an agent's browser, explicitly attach an already running **named** local
+agent-browser session. Obtain its stream port and daemon PID from that session's
+`.stream` and `.pid` records (under its configured `AGENT_BROWSER_SOCKET_DIR`).
+Use the actual session the agent controls; opening a URL in a separate browser does
+not attach the same state. Default or unidentified sessions are rejected.
+
+```sh
+python visual.py --url http://127.0.0.1:54617 attach \
+  --tab @1 --pane %1 --name 'Prototype browser' \
+  --session MY_NAMED_SESSION --port STREAM_PORT --pid DAEMON_PID
+
+python visual.py --url http://127.0.0.1:54617 detach \
+  --tab @1 --attachment ATTACHMENT_UUID
+```
+
+The relay only receives viewport images; it sends no browser input, navigation,
+resize or other application commands. It follows that agent-browser session's
+active page. Closing the view or detaching leaves the browser running. Replacement
+of the pane/conversation, tmux server, daemon or stream listener invalidates the
+attachment, which must then be attached explicitly again. A disconnected unchanged
+session can be viewed again. One simultaneous viewer per attachment is supported.
+This integration targets native Linux agent-browser 0.33.0; other browser providers
+and older Node-based agent-browser daemons are not supported by this first slice.
+
+Saved bytes and provenance live in owner-only `<run-dir>/visual.sqlite3`. Restarting
+Desk with the same run directory preserves versions and tab ownership while that
+tmux server/window still exists. A new tmux server does not inherit history from a
+reused socket path or window number. Closed-tab archives retain their bytes, but
+archive browsing, reassociation and automatic migration are deferred. Live browser
+attachments are deliberately not restored on Desk restart. The visual API uses the
+same loopback/private-proxy access boundary as Desk; it is not a multi-user service.

@@ -31,6 +31,7 @@ from jarvis_store import JarvisStore
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
+from visual_workspace import VisualWorkspace, VisualError, get_route as visual_get, post_route as visual_post
 
 
 ATTENTION_OFF = {"", "0", "false", "no", "off"}
@@ -887,6 +888,9 @@ class Playground:
 
 
 def make_server(playground, port=0, public_origin=None):
+    visual = VisualWorkspace(playground) if playground is not None else None
+    if playground is not None:
+        playground.visual = visual
     def diagnostic(stage, **fields):
         try:
             if getattr(playground, 'diagnostics', None):
@@ -930,6 +934,12 @@ def make_server(playground, port=0, public_origin=None):
             return self.headers.get("Origin", origin) == origin
 
         def do_GET(self):
+            try:
+                if visual_get(self, visual, public_origin):
+                    return
+            except (VisualError, ValueError, TypeError, OSError, RuntimeError) as error:
+                self.send(getattr(error, 'status', 400), {'error': str(error)})
+                return
             if not self.local_request():
                 self.send(403, {"error": "Use this playground's loopback URL"})
             elif self.path == "/":
@@ -944,6 +954,9 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(503, {"error": str(error)})
             elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
+            elif self.path in ("/visual-workspace.js", "/visual-workspace.css", "/vendor/marked.min.js", "/vendor/purify.min.js"):
+                asset = Path(__file__).parent / self.path[1:]
+                self.send(200, asset.read_bytes(), "text/css" if asset.suffix == '.css' else "text/javascript")
             elif self.path.startswith("/wake-assets/"):
                 relative = self.path[len("/wake-assets/"):]
                 assets = Path(__file__).with_name("wake-assets")
@@ -961,6 +974,12 @@ def make_server(playground, port=0, public_origin=None):
         def do_POST(self):
             if not self.local_request():
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
+                return
+            try:
+                if visual_post(self, visual):
+                    return
+            except (VisualError, ValueError, TypeError, OSError, RuntimeError) as error:
+                self.send(getattr(error, 'status', 400), {'error': str(error)})
                 return
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
