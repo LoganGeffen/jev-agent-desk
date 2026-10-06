@@ -64,9 +64,15 @@ def select_conversation(held, title='', metadata=None):
         candidates = {thread for thread in held if thread.startswith(hint[1])}
         tracking = 'live_title'
     elif metadata is not None:
-        candidates = {thread for thread in held
-                      if thread not in metadata or metadata[thread]['source'] == 'cli'}
-        tracking = 'interactive_metadata'
+        named = {thread for thread in held if metadata.get(thread, {}).get('name') and
+                 (title == metadata[thread]['name'] or title.startswith(metadata[thread]['name'] + ' | '))}
+        if named:
+            candidates = named
+            tracking = 'live_name'
+        else:
+            candidates = {thread for thread in held
+                          if thread not in metadata or metadata[thread]['source'] == 'cli'}
+            tracking = 'interactive_metadata'
     else:
         candidates = held
         tracking = 'single_writer'

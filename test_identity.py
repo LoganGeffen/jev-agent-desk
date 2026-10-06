@@ -55,6 +55,21 @@ class SessionIdentityTests(unittest.TestCase):
             connection.execute('DELETE FROM threads WHERE id = ?', (CHILD,))
         self.assertIsNone(self.live()['thread_id'])
 
+    def test_native_resume_retains_writers_but_unique_name_tracks_current_thread(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('ALTER TABLE threads ADD COLUMN name')
+            connection.execute("UPDATE threads SET source = 'cli', name = 'Original'")
+            connection.execute('UPDATE threads SET name = ? WHERE id = ?', ('New', CHILD))
+        self.assertEqual(self.live('Original | user')['thread_id'], ROOT)
+        self.assertEqual(self.live('Original')['tracking'], 'live_name')
+        self.assertEqual(self.live('New')['thread_id'], CHILD)
+        self.assertIsNone(self.live('Orig')['thread_id'])
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE threads SET name = 'Original'")
+        self.assertIsNone(self.live('Original')['thread_id'])
+        (self.proc / '42' / 'fd' / '0').unlink()
+        self.assertNotEqual(self.live('Original')['thread_id'], ROOT)
+
     def test_missing_metadata_fails_closed_for_multiple_writers(self):
         self.database.unlink()
         self.assertIsNone(self.live()['thread_id'])
