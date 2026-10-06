@@ -2,6 +2,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import io
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,7 +26,8 @@ MAX_FILES = 128
 MAX_BODY = 24 * 1024 * 1024
 KINDS = {'html': {'.html', '.htm'}, 'markdown': {'.md', '.markdown'},
          'text': {'.txt', '.csv', '.log'}, 'pdf': {'.pdf'},
-         'image': {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif'}}
+         'image': {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif'},
+         'file': {'.docx', '.xlsx', '.pptx', '.zip', '.json', '.xml', '.yaml', '.yml', '.svg', '.mp4', '.webm'}}
 EXTENSIONS = set().union(*KINDS.values()) | {'.js', '.mjs', '.css', '.svg', '.woff', '.woff2', '.ttf', '.json'}
 
 
@@ -141,6 +143,7 @@ class VisualWorkspace:
                 CREATE TABLE IF NOT EXISTS creations(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS versions(id TEXT PRIMARY KEY, creation TEXT NOT NULL, number INTEGER NOT NULL, created_at TEXT NOT NULL, entrypoint TEXT NOT NULL, byte_size INTEGER NOT NULL, source TEXT NOT NULL, token TEXT UNIQUE NOT NULL);
                 CREATE TABLE IF NOT EXISTS files(version TEXT NOT NULL, path TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(version,path));
+                CREATE TABLE IF NOT EXISTS publications(workspace TEXT NOT NULL, receipt_key TEXT NOT NULL, digest TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(workspace,receipt_key));
             ''')
         self.path.chmod(0o600)
 
@@ -190,7 +193,7 @@ class VisualWorkspace:
         return {**live, 'agent_process': agent_process(live)}
 
     def register(self, body):
-        fields(body, {'target', 'title', 'kind', 'mode', 'entrypoint', 'files'}, {'creation_id'})
+        fields(body, {'target', 'title', 'kind', 'mode', 'entrypoint', 'files'}, {'creation_id', 'receipt_key'})
         pane = self.target(body['target'])
         workspace = self.workspace(body['target']['tab'])
         title = visible(body['title'], 'creation title')
@@ -217,8 +220,12 @@ class VisualWorkspace:
             if len(data) > MAX_FILE or size > MAX_VERSION:
                 raise VisualError('Capture exceeds 8 MiB per file or 16 MiB per version')
             files[name] = data
-        if entrypoint not in files or (kind != 'html' and len(files) != 1):
-            raise VisualError('Missing entrypoint or unsupported non-HTML bundle')
+        if entrypoint not in files or (kind not in ('html', 'markdown') and len(files) != 1):
+            raise VisualError('Missing entrypoint or unsupported document bundle')
+        receipt_key = body.get('receipt_key')
+        if receipt_key is not None and (not isinstance(receipt_key, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', receipt_key)):
+            raise VisualError('Invalid publication receipt key')
+        digest = hashlib.sha256(json.dumps({key: value for key, value in body.items() if key != 'receipt_key'}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         creation = body.get('creation_id') or str(uuid.uuid4())
         if not isinstance(creation, str):
             raise VisualError('Invalid creation ID')
@@ -226,6 +233,12 @@ class VisualWorkspace:
         source = {key: pane.get(key) for key in ('provider', 'thread_id', 'process', 'agent_process')}
         source.update(mode=body['mode'], pane=body['target']['pane'], identity=body['target']['identity'])
         with self.db() as db:
+            if receipt_key:
+                previous = db.execute('SELECT digest,receipt FROM publications WHERE workspace=? AND receipt_key=?', (workspace, receipt_key)).fetchone()
+                if previous:
+                    if previous['digest'] != digest:
+                        raise VisualError('Publication receipt already belongs to different bytes or provenance', 409)
+                    return json.loads(previous['receipt'])
             row = db.execute('SELECT * FROM creations WHERE id=?', (creation,)).fetchone()
             if body.get('creation_id') and (row is None or row['workspace'] != workspace or row['kind'] != kind):
                 raise VisualError('Creation does not belong to this workspace and kind', 409)
@@ -239,12 +252,19 @@ class VisualWorkspace:
             db.execute('INSERT INTO versions VALUES(?,?,?,?,?,?,?,?)', (version, creation, number,
                 datetime.now(timezone.utc).isoformat(), entrypoint, size, json.dumps(source), secrets.token_urlsafe(32)))
             db.executemany('INSERT INTO files VALUES(?,?,?)', [(version, name, data) for name, data in files.items()])
-        return {'workspace_id': workspace, 'creation_id': creation, 'version_id': version}
+            receipt = {'workspace_id': workspace, 'creation_id': creation, 'version_id': version}
+            if receipt_key:
+                db.execute('INSERT INTO publications VALUES(?,?,?,?)', (workspace, receipt_key, digest, json.dumps(receipt)))
+        return receipt
 
     def list(self, tab):
-        workspace = self.workspace(tab)
+        return self.list_workspace(self.workspace(tab), tab)
+
+    def list_workspace(self, workspace, tab=None):
         creations = []
         with self.db() as db:
+            if not db.execute('SELECT id FROM workspaces WHERE id=?', (workspace,)).fetchone():
+                raise VisualError('Saved workspace not found', 404)
             for row in db.execute('SELECT * FROM creations WHERE workspace=? ORDER BY rowid DESC', (workspace,)):
                 creation = {key: row[key] for key in ('id', 'title', 'kind')}
                 creation['versions'] = []
@@ -254,15 +274,39 @@ class VisualWorkspace:
                     item.update(source=json.loads(version['source']), content_url='/api/visual/content?' + query,
                                 download_url='/api/visual/download?' + query,
                                 preview_url='/visual-preview/' + version['token'] + '/' + quote(version['entrypoint']) if creation['kind'] == 'html' else None)
+                    item['assets'] = {file['path']: '/visual-preview/' + version['token'] + '/' + quote(file['path']) for file in db.execute('SELECT path FROM files WHERE version=?', (version['id'],)) if file['path'] != version['entrypoint']}
                     creation['versions'].append(item)
                 creations.append(creation)
-        live = self.live.get(workspace)
+        live = self.live.get(workspace) if tab is not None else None
         if live:
             try:
                 self.validate_live(workspace, live)
             except VisualError as error:
                 live.update(status='stale', error=str(error))
-        return {'workspace_id': workspace, 'tab': tab, 'creations': creations, 'live': self.live_view(workspace, live) if live else None}
+        return {'workspace_id': workspace, 'tab': tab, 'archived': tab is None, 'creations': creations, 'live': self.live_view(workspace, live) if live else None}
+
+    def archives(self):
+        active = {}
+        try:
+            tabs = self.playground.observe()['tabs']
+            active = {self.workspace(tab['id']): tab for tab in tabs}
+        except (OSError, ValueError, RuntimeError):
+            pass
+        with self.db() as db:
+            rows = db.execute('SELECT w.id,count(c.id) AS count FROM workspaces w JOIN creations c ON c.workspace=w.id GROUP BY w.id ORDER BY max(c.rowid) DESC').fetchall()
+        return {'workspaces': [{'workspace_id': row['id'], 'tab': active.get(row['id'], {}).get('id'),
+                                'title': active.get(row['id'], {}).get('name', 'Saved conversation'),
+                                'closed': row['id'] not in active, 'creations_count': row['count']} for row in rows]}
+
+    def reference(self, value):
+        fields(value, {'workspace_id', 'creation_id', 'version_id'}, {'source'})
+        with self.db() as db:
+            row = db.execute('SELECT v.source,v.entrypoint,c.title,c.kind FROM versions v JOIN creations c ON c.id=v.creation WHERE v.id=? AND c.id=? AND c.workspace=?',
+                             (value['version_id'], value['creation_id'], value['workspace_id'])).fetchone()
+        if not row:
+            raise VisualError('Referenced saved version does not exist', 404)
+        return {key: value[key] for key in ('workspace_id', 'creation_id', 'version_id')} | {
+            'title': row['title'], 'kind': row['kind'], 'entrypoint': row['entrypoint'], 'source': json.loads(row['source'])}
 
     def content(self, workspace, version, download=False):
         with self.db() as db:
@@ -285,7 +329,7 @@ class VisualWorkspace:
     def preview(self, token, name):
         safe_path(name)
         with self.db() as db:
-            row = db.execute('SELECT f.data FROM files f JOIN versions v ON f.version=v.id JOIN creations c ON c.id=v.creation WHERE v.token=? AND f.path=? AND c.kind=?', (token, name, 'html')).fetchone()
+            row = db.execute("SELECT f.data FROM files f JOIN versions v ON f.version=v.id JOIN creations c ON c.id=v.creation WHERE v.token=? AND f.path=? AND c.kind IN ('html','markdown')", (token, name)).fetchone()
         if row is None:
             raise VisualError('Preview file not found', 404)
         return row['data'], mimetypes.guess_type(name)[0] or 'application/octet-stream'
@@ -471,6 +515,11 @@ def get_route(handler, visual, public_origin):
         return {key: value[0] for key, value in query.items()}
     if parsed.path == '/api/visual/workspace':
         handler.send(200, visual.list(**args({'tab'})))
+    elif parsed.path == '/api/visual/archives':
+        args(set())
+        handler.send(200, visual.archives())
+    elif parsed.path == '/api/visual/archive':
+        handler.send(200, visual.list_workspace(**args({'workspace'})))
     elif parsed.path in ('/api/visual/content', '/api/visual/download'):
         download = parsed.path.endswith('/download')
         data, mime, filename = visual.content(**args({'workspace', 'version'}), download=download)

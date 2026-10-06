@@ -11,6 +11,7 @@ import string
 import threading
 import time
 import uuid
+from urllib.parse import parse_qs, urlsplit
 
 import jev
 from diagnostics import Diagnostics
@@ -31,6 +32,8 @@ from jarvis_store import JarvisStore
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
+from managed_provider import ManagedProviders, post_route as provider_post
+from managed_apps import ManagedApps, get_route as apps_get, post_route as apps_post
 from visual_workspace import VisualWorkspace, VisualError, get_route as visual_get, post_route as visual_post
 from browser_http import create_browser, get_route as browser_get, post_route as browser_post
 from browser_runtime import BrowserError
@@ -285,7 +288,7 @@ class Playground:
                  'process': pane['process'], 'run_dir': str(self.log.parent)}
                 for window in windows.splitlines() for pane in self.panes(window) if pane['agent']]
 
-    def observe(self):
+    def observe(self, view_tab=None, view_pane=None):
         rows = tmux(self.socket, "list-windows", "-t", f"={self.view_session}", "-F",
                     "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}"
                     "\t#{window_activity}\t#{@agent_status}\t#{@agent_attention}"
@@ -311,7 +314,12 @@ class Playground:
                 self.selected_window = selected
             selected = self.selected_window
         tabs, groups = self.groups.view(tabs)
+        if view_tab in {tab['id'] for tab in tabs}:
+            selected = view_tab
         visible = next(tab for tab in tabs if tab['id'] == selected)['panes']
+        if view_pane in {pane['id'] for pane in visible}:
+            for pane in visible:
+                pane['active'] = pane['id'] == view_pane
         for pane in visible:
             pane['terminal_ansi'] = tmux(self.socket, 'capture-pane', '-p', '-e', '-S', '-', '-t', pane['id'])
         active = next(pane for pane in visible if pane['active'])
@@ -382,8 +390,12 @@ class Playground:
             raise ValueError('That pane or conversation changed; refresh and try again')
         return live
 
-    def state(self):
-        return {**self.observe(), "latest": self.latest, "read_output": self.read_output,
+    def state(self, view_tab=None, view_pane=None):
+        snapshot = self.observe(view_tab, view_pane) if view_tab is not None else self.observe()
+        if getattr(self, "visual", None):
+            for tab in snapshot["tabs"]:
+                tab["workspace_id"] = self.visual.workspace(tab["id"])
+        return {**snapshot, "latest": self.latest, "read_output": self.read_output,
                 'pending_close': self.pending_close,
                 'pending_clarification': self.pending_clarification,
                 'request_results': list(self.recent_requests.values()),
@@ -418,8 +430,8 @@ class Playground:
                 event["before"] = before
                 if capture_target:
                     self.validate_pane(capture_target['tab'], capture_target['pane'], capture_target['identity'])
-                    if before['selected'] != capture_target['tab'] or before['selected_pane'] != capture_target['pane']:
-                        raise ValueError('Selection changed during composition. Return to the original pane and review the retained text.')
+                    before = self.observe(capture_target['tab'], capture_target['pane'])
+                    event['before'] = before
                 if self.pending_clarification:
                     pending = self.pending_clarification
                     event['input'] = jev.clarification_question(request, pending)
@@ -631,6 +643,8 @@ class Playground:
             self.attention.heard(item['id'])
 
     def deliver(self, agent, text, event):
+        if getattr(self, 'providers', None):
+            self.providers.bind_reference(event.get('request_id'), agent)
         baseline = None
         if event.get('source') in ('typed', 'voice', 'manual_clarification'):
             try:
@@ -797,14 +811,10 @@ class Playground:
         if key is not None and key not in TERMINAL_KEYS:
             raise ValueError("Unsupported terminal key")
         with self.input_lock:
-            before = self.observe()
-            if window_id != before["selected"]:
-                raise ValueError("That tab is no longer selected")
+
             if pane_id is None or identity is None:
                 raise ValueError('An explicit pane id and identity are required')
             self.validate_pane(window_id, pane_id, identity)
-            if pane_id != before['selected_pane']:
-                raise ValueError('That pane is no longer selected')
             pane = pane_id
             if text is not None and any(character in text for character in "\r\n\t"):
                 buffer = "jev-input-" + uuid.uuid4().hex
@@ -814,7 +824,7 @@ class Playground:
                 tmux(self.socket, "send-keys", "-t", pane, "-l", text)
             else:
                 tmux(self.socket, "send-keys", "-t", pane, key)
-            return self.state()
+            return self.state(window_id, pane_id)
 
     def close_pane(self, window, pane, identity):
         with self.input_lock:
@@ -894,6 +904,8 @@ def make_server(playground, port=0, public_origin=None):
     if playground is not None:
         playground.visual = visual
         playground.browser = create_browser(visual)
+        playground.providers = ManagedProviders(playground)
+        playground.apps = ManagedApps(playground)
     def diagnostic(stage, **fields):
         try:
             if getattr(playground, 'diagnostics', None):
@@ -942,6 +954,8 @@ def make_server(playground, port=0, public_origin=None):
             try:
                 if playground is not None and browser_get(self, visual, playground.browser):
                     return
+                if playground is not None and apps_get(self, playground.apps):
+                    return
                 if visual_get(self, visual, public_origin):
                     return
             except (VisualError, BrowserError, ValueError, TypeError, OSError, RuntimeError) as error:
@@ -954,14 +968,17 @@ def make_server(playground, port=0, public_origin=None):
                           "text/html; charset=utf-8")
             elif self.path == "/api/jarvis/state":
                 self.send(200, playground.jarvis.snapshot())
-            elif self.path == "/api/state":
+            elif urlsplit(self.path).path == "/api/state":
                 try:
-                    self.send(200, playground.state())
+                    query = parse_qs(urlsplit(self.path).query)
+                    if set(query) - {"tab", "pane"} or any(len(v) != 1 for v in query.values()):
+                        raise ValueError("Invalid viewing selection")
+                    self.send(200, playground.state(query.get("tab", [None])[0], query.get("pane", [None])[0]))
                 except Exception as error:
                     self.send(503, {"error": str(error)})
-            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js"):
+            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js", "/device-view.js", "/visual-readers.js", "/managed-browser.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
-            elif self.path in ("/visual-workspace.js", "/visual-workspace.css", "/vendor/marked.min.js", "/vendor/purify.min.js"):
+            elif self.path in ("/visual-workspace.js", "/visual-workspace.css", "/vendor/marked.min.js", "/vendor/purify.min.js", "/vendor/pdfjs/pdf.mjs", "/vendor/pdfjs/pdf.worker.mjs"):
                 asset = Path(__file__).parent / self.path[1:]
                 self.send(200, asset.read_bytes(), "text/css" if asset.suffix == '.css' else "text/javascript")
             elif self.path.startswith("/wake-assets/"):
@@ -985,6 +1002,8 @@ def make_server(playground, port=0, public_origin=None):
             try:
                 if playground is not None and browser_post(self, visual, playground.browser):
                     return
+                if playground is not None and (provider_post(self, playground.providers) or apps_post(self, playground.apps)):
+                    return
                 if visual_post(self, visual):
                     return
             except (VisualError, BrowserError, ValueError, TypeError, OSError, RuntimeError) as error:
@@ -1006,7 +1025,7 @@ def make_server(playground, port=0, public_origin=None):
                 if self.path.startswith('/api/jarvis/'):
                     if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
                         raise ValueError('Jarvis session changed; refresh before acting')
-                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send'},
+                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send', 'visual_reference'},
                                '/api/jarvis/turn-decision': {'session_id', 'client_id', 'transcript_id', 'transcript_revision', 'text', 'subject', 'invalidate'},
                                '/api/jarvis/cancel': {'session_id', 'turn_id', 'request_id'},
                                '/api/jarvis/playback': {'session_id', 'op', 'turn_id', 'style', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases', 'heard_prefix'}}[self.path]
@@ -1042,6 +1061,8 @@ def make_server(playground, port=0, public_origin=None):
                     streaming = body.get('stream', False)
                     if type(streaming) is not bool:
                         raise ValueError('stream must be a boolean')
+                    if body.get('visual_reference') is not None:
+                        playground.providers.stage_reference(body['request_id'], body['visual_reference'])
                     playground.jarvis_turns.commit(body)
                     result = playground.jarvis.submit(body['text'], body['request_id'], capture_target=body.get('capture_target'),
                                                        source=body.get('source', 'typed'))
@@ -1148,6 +1169,8 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.move_tab(
                         body["tab"], body["group"], body.get("before")))
                     return
+                if body.get('visual_reference') is not None:
+                    playground.providers.stage_reference(body.get('request_id'), body['visual_reference'])
                 request = body["request"]
                 if not isinstance(request, str) or not request.strip():
                     raise ValueError("A nonempty request string is required")

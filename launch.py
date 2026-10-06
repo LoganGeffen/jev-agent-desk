@@ -334,7 +334,7 @@ def add_claude(label):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["start", "stop", "status", "clock", "add-codex", 'add-claude',
-                                           'attach-start', 'attach-stop', 'attach-status', 'attach-restart'])
+                                           'attach-start', 'attach-stop', 'attach-status', 'attach-restart', 'managed-session'])
     parser.add_argument("label", nargs="?")
     parser.add_argument("--ask-key", action="store_true", help="Prompt privately; keep key in process environment only")
     parser.add_argument('--socket', required=False)
@@ -346,6 +346,11 @@ if __name__ == "__main__":
     parser.add_argument('--public-origin')
     parser.add_argument('--voice-port', type=int, default=0)
     parser.add_argument('--independent-selection', action='store_true')
+    parser.add_argument('--provider', choices=('claude', 'codex'))
+    parser.add_argument('--workspace', type=Path)
+    parser.add_argument('--resume')
+    parser.add_argument('--model')
+    parser.add_argument('--prompt')
     args = parser.parse_args()
     if args.action == "clock":
         while True:
@@ -356,7 +361,12 @@ if __name__ == "__main__":
         os.umask(0o077)
         if args.action == "start" and args.ask_key:
             os.environ["TYPESAFE_API_KEY"] = getpass("TypeSafe API key (hidden): ")
-        if args.action == "status":
+        if args.action == 'managed-session':
+            if not args.socket or not args.provider or not args.workspace:
+                parser.error('managed-session requires --socket, --provider and --workspace')
+            from managed_session import launch
+            print(json.dumps(launch(args.socket, args.source_session, args.run_dir, args.provider, args.label or args.provider.title(), args.workspace, args.resume, args.model, args.prompt)))
+        elif args.action == "status":
             print(json.dumps(status(), indent=2))
             print((RUN / "url").read_text())
         elif args.action == 'attach-start':

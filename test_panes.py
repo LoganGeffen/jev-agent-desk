@@ -75,8 +75,8 @@ class PaneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'changed'):
             self.app.terminal_input(window, key='Escape', pane_id=second, identity='stale')
         self.app.select_tab(window, '%0')
-        with self.assertRaisesRegex(ValueError, 'no longer selected'):
-            self.app.terminal_input(window, key='Escape', pane_id=second, identity=pane['identity'])
+        self.app.terminal_input(window, key='Escape', pane_id=second, identity=pane['identity'])
+        self.assertEqual(self.app.observe()['selected_pane'], '%0')
 
     def test_pane_moved_to_other_tab_cannot_receive_old_action(self):
         window = self.tabs[0]['id']

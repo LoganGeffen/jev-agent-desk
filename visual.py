@@ -2,6 +2,7 @@ import argparse
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import stat
 from urllib.parse import urlencode, urlsplit
@@ -60,9 +61,21 @@ def capture(path, entrypoint=None):
     else:
         entrypoint = entrypoint or path.name
         paths = [path]
+        if path.suffix.lower() in KINDS['markdown']:
+            source = read_file(path).decode('utf-8')
+            for match in re.finditer(r'!\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+[^)]*)?\)', source):
+                name = match.group(1)
+                if urlsplit(name).scheme or name.startswith(('/', '#')):
+                    continue
+                safe_path(name)
+                asset = path.parent / name
+                if asset not in paths:
+                    paths.append(asset)
+                if len(paths) > MAX_FILES:
+                    raise ValueError('Capture exceeds 128 files')
     files, total = [], 0
     for source in paths:
-        relative = str(source.relative_to(path)) if path.is_dir() else source.name
+        relative = str(source.relative_to(path if path.is_dir() else path.parent))
         safe_path(relative)
         data = read_file(source)
         total += len(data)
