@@ -61,12 +61,14 @@ class SessionIdentityTests(unittest.TestCase):
             connection.execute("UPDATE threads SET source = 'cli', name = 'Original'")
             connection.execute('UPDATE threads SET name = ? WHERE id = ?', ('New', CHILD))
         self.assertEqual(self.live('Original | user')['thread_id'], ROOT)
+        self.assertEqual(self.live('⠸ Original | user')['thread_id'], ROOT)
         self.assertEqual(self.live('Original')['tracking'], 'live_name')
         self.assertEqual(self.live('New')['thread_id'], CHILD)
         self.assertIsNone(self.live('Orig')['thread_id'])
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("UPDATE threads SET name = 'Original'")
         self.assertIsNone(self.live('Original')['thread_id'])
+        self.assertIsNone(self.live('⠸ Original | user')['thread_id'])
         (self.proc / '42' / 'fd' / '0').unlink()
         self.assertNotEqual(self.live('Original')['thread_id'], ROOT)
 
@@ -81,6 +83,7 @@ class SessionIdentityTests(unittest.TestCase):
     def test_title_changes_follow_current_held_conversation(self):
         with patch('pane_identity.thread_metadata') as metadata:
             self.assertEqual(self.live(ROOT)['thread_id'], ROOT)
+            self.assertEqual(self.live('⠸ ' + ROOT)['thread_id'], ROOT)
             self.assertEqual(self.live(CHILD[:25] + '... ⠸')['thread_id'], CHILD)
             self.assertIsNone(self.live('33333333-3333-4333-8333-333333333333')['thread_id'])
             metadata.assert_not_called()
@@ -118,9 +121,11 @@ class DaemonIdentityTests(unittest.TestCase):
 
     def test_daemon_title_requires_unique_name_and_live_writer(self):
         self.assertIsNone(self.live('Same name | user')['thread_id'])
+        self.assertIsNone(self.live('⠸ Same name | user')['thread_id'])
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('UPDATE threads SET name = ? WHERE id = ?', ('Other name', CHILD))
         self.assertEqual(self.live('Same name | user')['thread_id'], ROOT)
+        self.assertEqual(self.live('⠸ Same name | user')['thread_id'], ROOT)
         self.assertEqual(self.live('Same name | user')['tracking'], 'daemon_title')
         self.assertEqual(self.live('Other name | user')['thread_id'], CHILD)
         self.assertIsNone(self.live('Same')['thread_id'])

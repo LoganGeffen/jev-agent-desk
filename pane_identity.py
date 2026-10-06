@@ -105,6 +105,7 @@ def daemon_conversation(process, title, home, proc):
 
 
 def process_identity(pid, proc=Path('/proc'), title='', codex_home=None):
+    title = re.sub(r'^[\u2800-\u28ff] ', '', title)
     try:
         stat = (proc / str(pid) / 'stat').read_text()
         started = stat.rsplit(')', 1)[1].split()[19]
