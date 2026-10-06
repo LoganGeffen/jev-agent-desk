@@ -79,6 +79,7 @@ class JarvisClient {
       revision: snapshot.revision, status: turn.status, text: turn.result?.text || '',
       actions: Object.values(snapshot.actions || {}).filter(action => action.turn_id === turn.turn_id),
       ...(turn.result?.readback ? {readback: turn.result.readback} : {}),
+      ...(turn.result?.view_target ? {view_target: turn.result.view_target} : {}),
       ...(turn.result?.available_readback ? {available_readback: turn.result.available_readback} : {}),
       ...(turn.interrupted ? {interrupted: true} : {}),
       ...(turn.error ? {error: turn.error} : {})};
@@ -149,6 +150,7 @@ class JarvisClient {
         method: 'POST', headers: {'Content-Type': 'application/json'}, signal: entry.controller.signal,
         body: JSON.stringify({session_id: entry.sessionId, request_id: entry.id, text: entry.text,
           source: entry.source, stream: !!this.voice.capture?.ready, client_id: this.clientId,
+          ...(entry.meta.visual_reference ? {visual_reference: entry.meta.visual_reference} : {}),
           ...(entry.meta.transcript_id ? {transcript_id: entry.meta.transcript_id, transcript_revision: entry.meta.transcript_revision} : {}),
           ...(entry.meta.decision_id ? {decision_id: entry.meta.decision_id} : {explicit_send: entry.meta.explicit_send !== false})})
       });

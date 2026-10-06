@@ -918,3 +918,13 @@ test('a primary readback already showing the same original does not duplicate it
   assert.equal(s.records.get('r1').availableReply, null);
   assert.deepEqual(s.spoken, [READBACK.original]);
 });
+
+test('visual reference is a separate payload field and does not replace text, subject or captured recipient', async () => {
+  const reference = {workspace_id: 'wa', creation_id: 'report', version_id: 'v1', source: {thread_id: 'unrelated-author'}};
+  const s = setup({state: snapshot({subject: {tab: '@b', pane: '%b', identity: 'b:original'}}), post: call => json(receipt(call.body.request_id, 'Saved'))});
+  await s.client.submit('Tell B: keep these exact words.', 'typed', {visual_reference: reference});
+  assert.deepEqual(s.posts()[0].body.visual_reference, reference);
+  assert.equal(s.posts()[0].body.text, 'Tell B: keep these exact words.');
+  assert.equal(s.posts()[0].body.capture_target, undefined);
+  assert.equal(s.client.snapshot.subject.tab, '@b');
+});

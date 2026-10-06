@@ -19,7 +19,7 @@ def fixture_state():
              'voice': {'configured': False}, 'latest': None, 'pending_close': None,
              'pending_clarification': None, 'request_results': [], 'reply_notices': [], 'tabs': []}
     for letter in ('a', 'b'):
-        state['tabs'].append({'id': '@' + letter, 'name': letter.upper(), 'index': len(state['tabs']),
+        state['tabs'].append({'id': '@' + letter, 'workspace_id': 'workspace-' + letter, 'name': letter.upper(), 'index': len(state['tabs']),
             'group': 'Workspace', 'group_id': 'workspace', 'state': 'ready', 'agent': True,
             'panes': [{'id': '%' + letter, 'number': 1, 'active': True, 'identity': letter + ':original',
                        'command': 'codex', 'agent': True, 'codex': True, 'thread_id': letter,
@@ -29,7 +29,7 @@ def fixture_state():
 
 
 STATIC_FILES = ('index.html', 'voice.js', 'wake.js', 'readback.js', 'jarvis.js', 'terminal.js',
-                'visual-workspace.js', 'visual-workspace.css', 'vendor/marked.min.js', 'vendor/purify.min.js')
+                'visual-workspace.js', 'visual-workspace.css', 'device-view.js', 'managed-browser.js', 'visual-readers.js', 'vendor/marked.min.js', 'vendor/purify.min.js')
 SUBJECT_B = {'tab': '@b', 'pane': '%b', 'identity': 'b:original', 'label': 'B · pane 1'}
 SPY_SPEECH = """() => {
   window.spoken = [];
@@ -55,10 +55,19 @@ def run():
     def route(r):
         path = r.request.url.split('fixture.test')[-1]
         body = r.request.post_data_json if r.request.method == 'POST' else None
-        if path == '/api/state':
-            return r.fulfill(json=state)
+        if path.startswith('/api/state'):
+            from urllib.parse import parse_qs, urlsplit
+            query = parse_qs(urlsplit(path).query)
+            selected = query.get('tab', [state['selected']])[0]
+            return r.fulfill(json={**state, 'selected': selected, 'selected_pane': query.get('pane', [selected.replace('@', '%')])[0]})
         if path.startswith('/api/visual/workspace?'):
-            return r.fulfill(json={'workspace_id': state['selected'], 'tab': state['selected'], 'creations': [], 'live': None})
+            from urllib.parse import parse_qs, urlsplit
+            tab = parse_qs(urlsplit(path).query)['tab'][0]
+            return r.fulfill(json={'workspace_id': 'workspace-' + tab[1:], 'tab': tab, 'creations': [], 'live': None})
+        if path.startswith('/api/browser/state?'):
+            return r.fulfill(json={'pages': [], 'profiles': []})
+        if path.startswith('/api/apps/state?'):
+            return r.fulfill(json={'apps': []})
         if path == '/api/jarvis/state':
             return r.fulfill(json=jarvis_state)
         if path == '/api/jarvis/turn':
@@ -471,10 +480,19 @@ class ControllerShim:
                 self.wfile.write(data)
 
             def do_GET(self):
-                if self.path == '/api/state':
-                    return self.send(shim.state)
+                if self.path.startswith('/api/state'):
+                    from urllib.parse import parse_qs, urlsplit
+                    query = parse_qs(urlsplit(self.path).query)
+                    selected = query.get('tab', [shim.state['selected']])[0]
+                    return self.send({**shim.state, 'selected': selected, 'selected_pane': query.get('pane', [selected.replace('@', '%')])[0]})
                 if self.path.startswith('/api/visual/workspace?'):
-                    return self.send({'workspace_id': shim.state['selected'], 'tab': shim.state['selected'], 'creations': [], 'live': None})
+                    from urllib.parse import parse_qs, urlsplit
+                    tab = parse_qs(urlsplit(self.path).query)['tab'][0]
+                    return self.send({'workspace_id': 'workspace-' + tab[1:], 'tab': tab, 'creations': [], 'live': None})
+                if self.path.startswith('/api/browser/state?'):
+                    return self.send({'pages': [], 'profiles': []})
+                if self.path.startswith('/api/apps/state?'):
+                    return self.send({'apps': []})
                 if self.path == '/api/jarvis/state':
                     return self.send(shim.controller.snapshot())
                 name = 'index.html' if self.path == '/' else self.path.lstrip('/')

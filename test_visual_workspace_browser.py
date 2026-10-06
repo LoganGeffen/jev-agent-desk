@@ -9,6 +9,21 @@ ROOT = Path(__file__).parent
 PIXEL = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aIh8AAAAASUVORK5CYII=')
 
 
+def pdf_fixture():
+    objects = [b'<< /Type /Catalog /Pages 2 0 R >>', b'<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>']
+    for text in ('First page saved report', 'Second page revision evidence'):
+        objects.append(b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 500] /Resources << /Font << /F1 7 0 R >> >> /Contents ' + str(len(objects) + 2).encode() + b' 0 R >>')
+        stream = f'BT /F1 18 Tf 30 440 Td ({text}) Tj ET'.encode()
+        objects.append(b'<< /Length ' + str(len(stream)).encode() + b' >>\nstream\n' + stream + b'\nendstream')
+    objects.append(b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+    data = b'%PDF-1.4\n'; offsets = [0]
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(data)); data += str(number).encode() + b' 0 obj\n' + obj + b'\nendobj\n'
+    xref = len(data); data += b'xref\n0 8\n0000000000 65535 f \n'
+    data += b''.join(f'{offset:010} 00000 n \n'.encode() for offset in offsets[1:])
+    return data + b'trailer\n<< /Size 8 /Root 1 0 R >>\nstartxref\n' + str(xref).encode() + b'\n%%EOF'
+
+
 def selection(tab='a', identity=None):
     return {'selected': '@' + tab, 'selected_pane': '%' + tab,
             'tabs': [{'id': '@' + tab, 'name': tab.upper(),
@@ -40,6 +55,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
 
     def setUp(self):
         self.page = self.browser.new_page(viewport={'width': 1280, 'height': 900})
+        self.page.set_default_timeout(5000)
         self.errors = []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
         self.contents = {'markdown-1': '# Saved notes\n\n- First point\n- **Second** point\n\n```js\nconst safe = true;\n```\n\n[External](https://example.invalid/)\n\n<img src="https://example.invalid/leak"><script>parent.pwned = true</script>', 'text-1': '<script>literal source</script>'}
@@ -58,7 +74,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
           };
         ''')
         self.page.route('**/*', self.route)
-        self.page.goto('http://visual.test/')
+        self.page.goto('https://visual.test/')
         self.page.evaluate('(state) => view.update(state)', selection())
         self.page.wait_for_selector('.visual-preview iframe')
 
@@ -75,7 +91,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
               <style>:root{--line:#26312c;--line-strong:#3b4a43;--muted:#8d9b94;--accent:#9de2bc;--panel:#0e1211;--attention:#ffc66d}body{margin:0;background:#090c0b;color:#e6ece8;font:14px system-ui}#workspace-body{height:700px}#panes{min-height:0}</style>
               <link rel="stylesheet" href="/visual-workspace.css"></head><body>
               <button id="visual-toggle">Visuals</button><div id="workspace-body"><div id="panes">Terminal</div><section id="visual-workspace"></section></div>
-              <script src="/vendor/marked.min.js"></script><script src="/vendor/purify.min.js"></script><script src="/visual-workspace.js"></script>
+              <script src="/vendor/marked.min.js"></script><script src="/vendor/purify.min.js"></script><script src="/visual-readers.js"></script><script src="/visual-workspace.js"></script>
               <script>const view = new VisualWorkspace(document.getElementById('visual-workspace'), document.getElementById('visual-toggle'));</script></body></html>''')
         if parsed.path == '/api/visual/workspace':
             return route.fulfill(json=self.workspaces[query['tab'][0]])
@@ -84,13 +100,13 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
             if version.startswith('image'):
                 return route.fulfill(body=PIXEL, content_type='image/png')
             if version.startswith('pdf'):
-                return route.fulfill(body=b'%PDF-1.4\n%%EOF', content_type='application/pdf')
+                return route.fulfill(body=pdf_fixture(), content_type='application/pdf')
             return route.fulfill(body=self.contents[version], content_type='text/plain')
         if parsed.path.startswith('/visual-preview/'):
             return route.fulfill(body=f'<h1>Frozen {parsed.path.split("/")[2]}</h1>', content_type='text/html',
                                  headers={'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'"})
         path = ROOT / parsed.path.lstrip('/')
-        if parsed.path in ['/visual-workspace.css', '/visual-workspace.js', '/vendor/marked.min.js', '/vendor/purify.min.js']:
+        if parsed.path in ['/visual-workspace.css', '/visual-workspace.js', '/visual-readers.js', '/vendor/pdfjs/pdf.mjs', '/vendor/pdfjs/pdf.worker.mjs', '/vendor/marked.min.js', '/vendor/purify.min.js']:
             return route.fulfill(body=path.read_bytes(), content_type='text/css' if path.suffix == '.css' else 'text/javascript')
         return route.fulfill(status=404, body='Not found')
 
@@ -108,8 +124,10 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         markdown.get_by_role('heading', name='Saved notes').wait_for()
         self.assertEqual(markdown.locator('li').count(), 2)
         self.assertEqual(markdown.locator('pre code').inner_text().strip(), 'const safe = true;')
-        self.assertEqual(markdown.locator('script, img, a[href]').count(), 0)
-        self.assertEqual(self.page.locator('.visual-preview iframe').get_attribute('sandbox'), '')
+        self.assertEqual(markdown.locator('img').count(), 0)
+        self.assertEqual(markdown.locator('a[href]').get_attribute('target'), '_blank')
+        self.assertEqual(markdown.locator('script').count(), 1)
+        self.assertEqual(self.page.locator('.visual-preview iframe').get_attribute('sandbox'), 'allow-scripts allow-popups allow-popups-to-escape-sandbox')
         self.assertFalse(self.page.evaluate('Boolean(window.pwned)'))
         self.assertFalse(any('/leak' in request for request in self.requests))
         self.page.locator('.visual-creation').select_option('text')
@@ -118,10 +136,14 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.locator('.visual-creation').select_option('image')
         self.page.wait_for_function('document.querySelector(".visual-preview img")?.naturalWidth === 1')
         self.page.locator('.visual-creation').select_option('pdf')
-        self.page.locator('.visual-preview object').wait_for()
-        self.assertIn('PDF reader', self.page.locator('.visual-preview > p').inner_text())
+        self.page.locator('.pdf-page-view canvas[aria-label="PDF page 1"]').wait_for()
+        self.page.locator('.pdf-next').click()
+        self.page.locator('.pdf-page-view canvas[aria-label="PDF page 2"]').wait_for()
+        self.page.get_by_role('searchbox', name='Find in PDF').fill('first page')
+        self.page.get_by_role('button', name='Find next').click()
+        self.page.wait_for_function('document.querySelector(".reader-status").textContent.startsWith("Page 1:")')
         self.page.evaluate('(state) => view.update(state)', selection('b'))
-        self.page.get_by_text('No creations saved yet').wait_for()
+        self.page.wait_for_function('view.workspace?.workspace_id === "workspace-b"')
         self.assertEqual(self.page.locator('.visual-preview iframe, .visual-preview object, .visual-preview img').count(), 0)
         self.assertFalse(self.page.locator('.visual-controls').is_visible())
 
@@ -136,7 +158,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         }''')
         self.page.wait_for_function('Boolean(window.releaseOldWorkspace)')
         self.page.evaluate('(state) => { window.fetch = window.actualFetch; view.update(state); }', selection('b'))
-        self.page.get_by_text('No creations saved yet').wait_for()
+        self.page.wait_for_function('view.workspace?.workspace_id === "workspace-b"')
         self.page.evaluate('releaseOldWorkspace()')
         self.assertEqual(self.page.evaluate('view.workspace.workspace_id'), 'workspace-b')
         self.page.evaluate('(state) => view.update(state)', selection())
@@ -150,7 +172,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.locator('.visual-creation').select_option('text')
         self.page.wait_for_function('Boolean(window.releaseOldText)')
         self.page.evaluate('(state) => view.update(state)', selection('b'))
-        self.page.get_by_text('No creations saved yet').wait_for()
+        self.page.wait_for_function('view.workspace?.workspace_id === "workspace-b"')
         self.page.evaluate('releaseOldText()')
         self.assertNotIn('OLD CONVERSATION CONTENT', self.page.locator('.visual-preview').inner_text())
 

@@ -1245,3 +1245,30 @@ test('repeated wake while awake stops readback but wake alone produces no reques
   assert.equal(s.voice.draft.text, 'Ask Dog Data: include Hey Jarvis in the greeting.');
   s.voice.stop();
 });
+
+test('typed visual reference stays captured while preview changes and never changes recipient or literal words', async () => {
+  const s = setup();
+  const target = {tab: '@a', pane: '%a', identity: 'a:original'};
+  let reference = {workspace_id: 'wa', creation_id: 'report', version_id: 'v1', source: {thread_id: 'other-author'}};
+  s.voice.target = () => target;
+  s.voice.reference = () => reference;
+  s.voice.restoreDraft('Change only this sentence.  Keep spacing.', target);
+  reference = {...reference, version_id: 'v2'};
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions[0].meta.visual_reference.version_id, 'v1');
+  assert.deepEqual(s.submissions[0].target, target);
+  assert.equal(s.submissions[0].text, 'Change only this sentence.  Keep spacing.');
+  s.voice.stop();
+});
+
+test('speech reference binds at onset even when preview changes before the transcript', async () => {
+  const s = setup();
+  let reference = {workspace_id: 'wa', creation_id: 'report', version_id: 'v1'};
+  s.voice.reference = () => reference;
+  s.voice.speechOnset(true);
+  reference = {...reference, version_id: 'v2'};
+  s.voice.committed('Revise this report');
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions[0].meta.visual_reference.version_id, 'v1');
+  s.voice.stop();
+});

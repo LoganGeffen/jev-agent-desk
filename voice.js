@@ -1,7 +1,8 @@
 class VoiceControls {
-  constructor(submit, target = () => null) {
+  constructor(submit, target = () => null, reference = () => null) {
     this.submit = submit;
     this.target = target;
+    this.reference = reference;
     this.draft = null;
     this.drafts = new Map();
     this.draftTimer = null;
@@ -110,7 +111,7 @@ class VoiceControls {
     clearTimeout(this.recognitionTimer);
     this.touchTranscript();
     this.lastSpeechAt = Date.now();
-    if (!this.draft && this.onsetTarget === undefined) this.onsetTarget = this.target();
+    if (!this.draft && this.onsetTarget === undefined) { this.onsetTarget = this.target(); this.onsetReference = this.reference(); }
     if (this.draft) {
       this.draft.awaitingCommit = true;
       if (!recognized && !this.draft.partial) {
@@ -133,10 +134,11 @@ class VoiceControls {
     if (this.draft) { this.draft.held = true; this.draft.wakeResume = false; }
     this.renderDraft();
   }
-  restoreDraft(text, target, reason = '') {
+  restoreDraft(text, target, reason = '', reference = this.reference()) {
     if (this.draft) return false;
-    this.draft = {text, partial: '', target, held: true, recoveryReason: reason};
+    this.draft = {text, partial: '', target, visualReference: reference, held: true, recoveryReason: reason};
     this.onsetTarget = target;
+    this.onsetReference = reference;
     this.renderDraft();
     return true;
   }
@@ -168,14 +170,16 @@ class VoiceControls {
       }
       draft.target = target;
     }
-    if (draft.recognitionStalled) this.lateWordsTarget = draft.target;
+    if (draft.recognitionStalled) { this.lateWordsTarget = draft.target; this.lateWordsReference = draft.visualReference; }
     this.draft = null;
     this.onsetTarget = undefined;
+    this.onsetReference = undefined;
     this.renderDraft();
     const capture = this.capture;
     if (capture?.wake) { capture.requestsPending = (capture.requestsPending || 0) + 1; this.wakeActivity(capture); }
     this.trace('transcript_dispatch', {text: draft.text, transcript_id: draft.transcriptId, transcript_revision: draft.revision, target: draft.target});
-    const transcript = {transcript_id: this.identify(draft).transcriptId, transcript_revision: draft.revision};
+    const transcript = {transcript_id: this.identify(draft).transcriptId, transcript_revision: draft.revision,
+      ...(draft.visualReference ? {visual_reference: draft.visualReference} : {})};
     try {
       await this.submit(draft.text, draft.target, draft.source || 'voice',
         decision ? {...transcript, decision_id: decision.decision_id} : {...transcript, explicit_send: manual});
@@ -216,6 +220,7 @@ class VoiceControls {
     this.cancelEvaluation();
     this.draft = null;
     this.onsetTarget = undefined;
+    this.onsetReference = undefined;
     this.renderDraft();
     if (this.capture?.wake) this.waitForWake(this.capture);
     else this.status('Discarded unsent words');
@@ -225,10 +230,12 @@ class VoiceControls {
     if (!this.draft) {
       const late = this.lateWordsTarget !== undefined;
       this.draft = {text: '', partial: '', target: late ? this.lateWordsTarget : this.onsetTarget ?? this.target(), held: late,
+        visualReference: late ? this.lateWordsReference : this.onsetReference !== undefined ? this.onsetReference : this.reference(),
         transcriptId: this.newId(), revision: 0, outstanding: false,
         ...(this.capture?.wake ? {wakeContext: this.capture.firstRequest ? this.capture.requestContext : this.wakeContext()} : {}),
         recoveryReason: late ? 'These words may have arrived late. Review before sending.' : ''};
       this.lateWordsTarget = undefined;
+      this.lateWordsReference = undefined;
     }
   }
   committed(text) {
@@ -710,6 +717,7 @@ class VoiceControls {
     this.capture = null;
     this.lateWordsTarget = undefined;
     this.onsetTarget = undefined;
+    this.onsetReference = undefined;
     this.stopReadback('voice disabled');
     if (capture) {
       capture.abortActivation?.();

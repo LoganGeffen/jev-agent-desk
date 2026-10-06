@@ -482,10 +482,16 @@
   <script src="/terminal.js"></script>
   <script src="/vendor/marked.min.js"></script>
   <script src="/vendor/purify.min.js"></script>
+  <script src="/visual-readers.js"></script>
+  <script src="/managed-browser.js"></script>
   <script src="/visual-workspace.js"></script>
+  <script src="/device-view.js"></script>
   <script>
     const $ = id => document.getElementById(id);
-    const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'));
+    const deviceView = new DeviceView();
+    const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'), {clientId: deviceView.clientId, selectPane: (tab, pane) => selectTab(tab, pane)});
+    let refreshSequence = 0;
+    let appliedRefresh = 0;
     const activityLabels = {
       needs_you: 'needs you', working: 'working', ready: 'ready', idle: 'idle', open: 'open'
     };
@@ -502,11 +508,14 @@
     let terminalQueue = Promise.resolve();
     const openedAt = Date.now();
     let inputMode = 'jarvis';
-    const voice = new VoiceControls(submitInput, activeTarget);
+    try { if (localStorage.getItem('jev-input-mode') === 'direct') inputMode = 'direct'; } catch {}
+    const voice = new VoiceControls(submitInput, activeTarget, () => visuals.reference());
     const jarvis = new JarvisClient({fetch: (...args) => fetch(...args), newId: () => crypto.randomUUID(), clientId: crypto.randomUUID(),
       retain: record => retainSpeech(record), onChange: renderJarvis});
     jarvis.voice = voice;
-    voice.semantic = jarvis.semantic;
+    voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
+    voice.localWake = inputMode === 'jarvis';
+    $('input-mode').value = inputMode;
     voice.onDiscard = draft => retainSpeech({id: crypto.randomUUID(), text: draft.text, source: 'voice', recipient: 'Jarvis', target: draft.target,
       status: 'Jarvis judged this cancelled before sending. Nothing was sent. Your words are saved.', recoverable: true});
     voice.onChange = renderTurnStatus;
@@ -606,7 +615,7 @@
           review.type = 'button';
           review.textContent = 'Review words';
           review.onclick = () => {
-            if (!voice.restoreDraft(item.text, item.target, item.status)) showError(new Error('Your current draft is still open. Finish or discard it before restoring another.'));
+            if (!voice.restoreDraft(item.text, item.target, item.status, item.visualReference || null)) showError(new Error('Your current draft is still open. Finish or discard it before restoring another.'));
           };
           line.append(document.createElement('br'), review);
         }
@@ -814,6 +823,7 @@
     }
 
     function render(state) {
+      state = deviceView.adopt(state);
       if (currentState && (currentState.selected !== state.selected || currentState.selected_pane !== state.selected_pane)) {
         $('result').textContent = '';
         $('result').className = '';
@@ -976,7 +986,7 @@
       const selected = currentState?.tabs.find(tab => tab.id === currentState.selected);
       const group = selected?.group_id || groupDefinitions(currentState)[0]?.id;
       const state = await mutate('/api/tabs/create', {name, group});
-      if (state) selectedTerminal()?.focus({preventScroll: true});
+      if (state) { await selectTab(state.selected, state.selected_pane); selectedTerminal()?.focus({preventScroll: true}); }
     }
 
     async function renameTab(tab) {
@@ -994,9 +1004,13 @@
     }
 
     async function refresh() {
-      const response = await fetch('/api/state');
+      const generation = deviceView.generation;
+      const sequence = ++refreshSequence;
+      const response = await fetch('/api/state' + deviceView.query);
       const state = await response.json();
       if (!response.ok) throw new Error(state.error);
+      if (generation !== deviceView.generation || sequence < appliedRefresh) return;
+      appliedRefresh = sequence;
       render(state);
     }
 
@@ -1021,22 +1035,19 @@
       renderTurnStatus();
     }
 
-    async function selectTab(tabId) {
-      if (selecting || tabId === currentState?.selected) return;
+    async function selectTab(tabId, paneId = null) {
+      if (selecting || (tabId === currentState?.selected && (!paneId || paneId === currentState?.selected_pane))) return;
       flushTerminalText();
       await terminalQueue;
+      if (!deviceView.select(currentState, tabId, paneId)) return;
       selecting = tabId;
       visuals.suspend();
+      attentionTarget = null;
       tabSignature = null;
-      renderTabs(currentState);
-      try {
-        const state = await post('/api/select', {tab: tabId});
-        attentionTarget = null;
-        render(state);
-        selectedTerminal()?.focus({preventScroll: true});
-      } catch (error) {
-        showError(error);
-      } finally {
+      render(currentState);
+      try { await refresh(); }
+      catch (error) { showError(error); }
+      finally {
         selecting = null;
         tabSignature = null;
         if (currentState) { renderTabs(currentState); visuals.update(currentState); }
@@ -1111,20 +1122,24 @@
     }
 
     async function submitInput(text, captureTarget = null, source = 'voice', meta = {}) {
-      if (inputMode === 'jarvis') return jarvis.submit(text, source, meta);
+      if (inputMode === 'jarvis') {
+        const result = await jarvis.submit(text, source, meta);
+        if (result?.view_target) await selectTab(result.view_target.tab, result.view_target.pane);
+        return result;
+      }
       jarvis.supersedeForDirect();
-      return submitRequest(text, captureTarget, source);
+      return submitRequest(text, captureTarget, source, meta);
     }
 
-    async function submitRequest(text, captureTarget = null, source = 'voice') {
+    async function submitRequest(text, captureTarget = null, source = 'voice', meta = {}) {
       const id = crypto.randomUUID();
       const tab = currentState?.tabs.find(tab => tab.id === captureTarget?.tab);
       const pane = tab?.panes.find(pane => pane.id === captureTarget?.pane);
-      retainSpeech({id, text, source, target: captureTarget,
+      retainSpeech({id, text, source, target: captureTarget, visualReference: meta.visual_reference,
         targetLabel: tab && pane ? `${tab.name} · pane ${pane.number}` : 'Captured conversation', status: 'Waiting to interpret'});
       if (submitting) {
         retainSpeech({id, status: 'Held, not sent — another request is still being processed.', recoverable: true});
-        voice.restoreDraft(text, captureTarget, 'Held, not sent — another request is still being processed.');
+        voice.restoreDraft(text, captureTarget, 'Held, not sent — another request is still being processed.', meta.visual_reference || null);
         showError(new Error('Your new words are saved, but were not sent while Jev was busy.'));
         voice.speak('Your new words are saved, but were not sent while Jev was busy.', voice.stopReadback('held busy input'));
         return;
@@ -1138,7 +1153,7 @@
       try {
         const delivered = fetch('/api/request', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget, attention_target: attentionTarget, stream: !!voice.capture?.ready}),
+          body: JSON.stringify({request: text, source, request_id: id, capture_target: captureTarget, attention_target: attentionTarget, stream: !!voice.capture?.ready, ...(meta.visual_reference ? {visual_reference: meta.visual_reference} : {})}),
           signal: controller.signal
         }).then(async response => {
           const result = await readJSONStream(response, delta => {
@@ -1163,10 +1178,12 @@
         const recoverable = !attentionAction && result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action');
         retainOutcome(id, result);
         if (result.outcome === 'ok') {
+          const requestedView = result.view_target || (['select_tab', 'select_recommended', 'read_recommended'].includes(result.action) ? result.recommendation || {tab: result.target, pane: result.pane} : null);
+          if (requestedView?.tab) await selectTab(requestedView.tab, requestedView.pane);
           if ('recommendation' in result) attentionTarget = result.recommendation;
           else if (['select_tab', 'read_reply', 'send_message', 'create_tab'].includes(result.action)) attentionTarget = null;
         }
-        if (recoverable) voice.restoreDraft(text, captureTarget, outcome);
+        if (recoverable) voice.restoreDraft(text, captureTarget, outcome, meta.visual_reference || null);
         $('result').className = result.outcome === 'error' ? 'error' : '';
         $('result').textContent = outcome;
         refresh().catch(showError);
@@ -1212,8 +1229,8 @@
     };
     $('manage-tabs').onchange = event => $('app').classList.toggle('manage-tabs', event.target.checked);
     const mobileLayout = window.matchMedia('(max-width: 700px)');
-    $('more-controls').open = !mobileLayout.matches;
-    mobileLayout.addEventListener('change', event => { $('more-controls').open = !event.matches; });
+    $('more-controls').open = false;
+    mobileLayout.addEventListener('change', () => { $('more-controls').open = false; });
     $('read-ready-reply').onclick = () => {
       if (readyReply) {
         $('result').textContent = '';
@@ -1233,6 +1250,7 @@
     }
     $('input-mode').onchange = event => {
       inputMode = event.target.value;
+      try { localStorage.setItem('jev-input-mode', inputMode); } catch {}
       voice.stop();
       voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
       voice.localWake = inputMode === 'jarvis';
@@ -1302,12 +1320,7 @@
       if (!event.target.matches('.terminal')) return;
       const {tab, pane} = event.target.dataset;
       if (pane === currentState?.selected_pane) return;
-      flushTerminalText();
-      terminalQueue = terminalQueue.then(async () => {
-        const state = await post('/api/select', {tab, pane});
-        attentionTarget = null;
-        render(state);
-      }).catch(showError);
+      selectTab(tab, pane).catch(showError);
     });
     $('panes').addEventListener('keydown', event => {
       if (!event.target.matches('.terminal')) return;

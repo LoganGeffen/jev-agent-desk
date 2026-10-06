@@ -64,3 +64,77 @@
   #app:not(.show-terminal) #workspace:has(.visuals-open) #composer { max-height: 45dvh; }
   #app:not(.show-terminal) #workspace-body:not(.visuals-open) { display: none; }
 }
+.visual-heading button, .visual-context button, .visual-archive-banner button, .reader-mode button, .browser-controls button, .browser-tools button, .reader-tools button, .pdf-search button, .browser-setup button, .app-card button { padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: #18221c; color: #dce9e0; font: inherit; font-size: 11px; cursor: pointer; }
+.visual-heading .visual-owner { margin-left: auto; }
+.visual-back { display: none; }
+.visual-context { display: flex; align-items: center; gap: 8px; padding: 8px 12px 0; }
+.visual-context .visual-archives { margin-left: auto; }
+.visual-context select, .browser-controls select, .browser-tools select, .reader-tools select, .image-zoom { min-width: 0; max-width: 100%; color: inherit; border: 1px solid var(--line-strong); background: #131d17; border-radius: 5px; padding: 5px; font: inherit; font-size: 11px; }
+.visual-latest { color: var(--accent) !important; }
+.visual-expanded #panes { display: none !important; }
+#workspace-body.visual-expanded.visuals-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.visual-archive-banner { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; background: #253226; color: var(--accent); font-size: 12px; }
+.visual-archive-list { padding: 12px; max-height: 180px; overflow: auto; display: grid; gap: 6px; }
+.visual-archive-list button { text-align: left; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; cursor: pointer; }
+.creation-cards { display: flex; flex: 0 0 auto; overflow: auto; gap: 7px; padding: 0 12px 8px; }
+.creation-card { display: flex; flex-direction: column; gap: 4px; flex: 0 0 150px; min-width: 0; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; text-align: left; background: #121a15; cursor: pointer; }
+.creation-card[aria-pressed="true"] { border-color: #619475; background: #192b20; }
+.creation-card strong { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.creation-card span { color: var(--muted); font-size: 10px; }
+.reader-mode { display: flex; align-items: center; gap: 5px; padding: 0 12px 8px; }
+.reader-mode button[aria-pressed="true"] { color: var(--accent); border-color: #619475; }
+.image-zoom-label { margin-left: auto; font-size: 11px; color: var(--muted); }
+.pdf-reader { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.reader-tools { display: flex; align-items: center; gap: 6px; padding: 8px; flex-wrap: wrap; font-size: 11px; }
+.reader-tools label { display: flex; gap: 5px; align-items: center; }
+.pdf-page { width: 46px; }
+.reader-tools input, .pdf-search input { color: #e6ece8; background: #152119; border: 1px solid var(--line); border-radius: 4px; padding: 5px; font: inherit; }
+.pdf-search { display: flex; gap: 6px; padding: 0 8px 6px; }
+.pdf-search input { min-width: 0; flex: 1; font-size: 12px; }
+.reader-status { margin: 0; padding: 0 10px; font-size: 11px; color: var(--muted); }
+.reader-status:empty { display: none; }
+.pdf-page-view { flex: 1; overflow: auto; min-height: 150px; padding: 12px; background: #242b27; }
+.pdf-page-view canvas { display: block; margin: auto; background: white; box-shadow: 0 2px 12px #0005; }
+.managed-browser { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.browser-controls { display: flex; gap: 7px; align-items: center; padding: 9px 12px; flex-wrap: wrap; }
+.browser-controls label { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; font-size: 10px; color: var(--muted); }
+.browser-account { color: var(--accent); font-size: 11px; max-width: 45%; overflow-wrap: anywhere; }
+.browser-status { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 11px; }
+.browser-stage { position: relative; flex: 1; min-height: 0; margin: 0 12px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 7px; background: #050807; }
+.browser-stage canvas { display: block; object-fit: contain; }
+.browser-stage canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.browser-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 8px 12px; font-size: 11px; }
+.browser-control-note { margin: 0; padding: 0 12px 8px; color: var(--muted); font-size: 10px; }
+.browser-typing { position: absolute; opacity: .01; width: 1px; height: 1px; pointer-events: none; font-size: 16px; }
+.browser-setup { padding: 0 12px 9px; font-size: 11px; color: var(--muted); }
+.browser-setup summary { cursor: pointer; }
+.browser-setup form { display: flex; gap: 8px; flex-wrap: wrap; }
+.browser-setup input { color: inherit; background: #132019; border: 1px solid var(--line); padding: 6px; margin-left: 4px; max-width: 180px; }
+.visual-apps { flex: 0 0 auto; max-height: 150px; overflow: auto; padding: 8px 12px; border-top: 1px solid var(--line); }
+.app-card { font-size: 11px; margin: 5px 0; }
+.app-card pre { max-height: 64px; overflow: auto; white-space: pre-wrap; font: 10px/1.5 monospace; color: var(--muted); }
+.app-card button + button { margin-left: 7px; }
+#more-controls > summary { display: list-item; color: var(--muted); cursor: pointer; }
+#workspace-body.visuals-open + #composer #more-controls:not([open]) { min-height: 0; }
+@media (max-width: 700px) {
+  .visual-heading { flex-wrap: wrap; gap: 6px; }
+  .visual-back { display: block; margin-left: auto; }
+  .visual-expand { display: none; }
+  .visual-heading .visual-owner { display: none; }
+  .visual-heading button, .visual-context button, .browser-controls button, .browser-tools button, .reader-tools button, .pdf-search button { min-height: 34px; }
+  .creation-card { flex-basis: 138px; padding: 7px 9px; }
+  .creation-cards { max-height: 64px; }
+  .visual-controls { gap: 5px; }
+  .visual-controls label { min-width: 95px; }
+  .visual-controls label:first-child { flex-basis: 55%; }
+  .visual-download { margin-left: auto; }
+  .reader-tools select, .browser-tools select { min-height: 34px; }
+  .browser-stage { min-height: 160px; }
+  .browser-tools { gap: 5px; }
+  .pdf-page-view { padding: 8px; }
+  #workspace:has(.visuals-open) #phone-text { min-height: 38px; height: 38px; }
+  #workspace:has(.visuals-open) #composer { max-height: 32dvh; }
+}
+.browser-address { display: flex; gap: 6px; padding: 0 12px 8px; }
+.browser-address input { flex: 1; min-width: 0; padding: 7px; color: inherit; background: #142019; border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 13px; }
+.browser-address button { border: 1px solid var(--line); border-radius: 5px; background: #1d3023; color: var(--accent); padding: 5px 10px; }
