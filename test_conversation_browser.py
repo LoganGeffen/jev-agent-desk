@@ -28,7 +28,8 @@ def fixture_state():
     return state
 
 
-STATIC_FILES = ('index.html', 'voice.js', 'wake.js', 'readback.js', 'jarvis.js', 'terminal.js')
+STATIC_FILES = ('index.html', 'voice.js', 'wake.js', 'readback.js', 'jarvis.js', 'terminal.js',
+                'visual-workspace.js', 'visual-workspace.css', 'vendor/marked.min.js', 'vendor/purify.min.js')
 SUBJECT_B = {'tab': '@b', 'pane': '%b', 'identity': 'b:original', 'label': 'B · pane 1'}
 SPY_SPEECH = """() => {
   window.spoken = [];
@@ -56,6 +57,8 @@ def run():
         body = r.request.post_data_json if r.request.method == 'POST' else None
         if path == '/api/state':
             return r.fulfill(json=state)
+        if path.startswith('/api/visual/workspace?'):
+            return r.fulfill(json={'workspace_id': state['selected'], 'tab': state['selected'], 'creations': [], 'live': None})
         if path == '/api/jarvis/state':
             return r.fulfill(json=jarvis_state)
         if path == '/api/jarvis/turn':
@@ -113,8 +116,8 @@ def run():
             heard.append(body)
             return r.fulfill(json={'ok': True})
         file = ROOT / ('index.html' if path == '/' else path.lstrip('/'))
-        if file.name in STATIC_FILES:
-            return r.fulfill(body=file.read_text(), content_type='text/html' if path == '/' else 'text/javascript')
+        if file.relative_to(ROOT).as_posix() in STATIC_FILES:
+            return r.fulfill(body=file.read_text(), content_type='text/html' if path == '/' else 'text/css' if path.endswith('.css') else 'text/javascript')
         raise AssertionError('Unexpected endpoint: ' + path)
     with sync_playwright() as p:
         browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
@@ -470,11 +473,13 @@ class ControllerShim:
             def do_GET(self):
                 if self.path == '/api/state':
                     return self.send(shim.state)
+                if self.path.startswith('/api/visual/workspace?'):
+                    return self.send({'workspace_id': shim.state['selected'], 'tab': shim.state['selected'], 'creations': [], 'live': None})
                 if self.path == '/api/jarvis/state':
                     return self.send(shim.controller.snapshot())
                 name = 'index.html' if self.path == '/' else self.path.lstrip('/')
                 if name in STATIC_FILES:
-                    return self.send((ROOT / name).read_bytes(), content_type='text/html' if name == 'index.html' else 'text/javascript')
+                    return self.send((ROOT / name).read_bytes(), content_type='text/html' if name == 'index.html' else 'text/css' if name.endswith('.css') else 'text/javascript')
                 self.send({'error': 'unknown endpoint ' + self.path}, 404)
 
             def do_POST(self):

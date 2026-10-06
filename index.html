@@ -386,6 +386,7 @@
       #composer[data-pending="true"]::before { animation: none; }
     }
   </style>
+  <link rel="stylesheet" href="/visual-workspace.css">
 </head>
 <body>
   <div id="app" class="show-terminal tabs-collapsed">
@@ -409,8 +410,12 @@
       <header id="workspace-bar">
         <button id="tabs-toggle" type="button" aria-expanded="false" aria-controls="session-rail">Tabs</button>
         <span id="mobile-title"></span>
+        <button id="visual-toggle" type="button" aria-expanded="false" aria-controls="visual-workspace">Visuals</button>
       </header>
-      <div id="panes" aria-label="Terminal panes"></div>
+      <div id="workspace-body">
+        <div id="panes" aria-label="Terminal panes"></div>
+        <section id="visual-workspace" aria-label="Visual workspace" hidden></section>
+      </div>
       <section id="composer" aria-label="Jev controls" data-pending="false">
         <span id="target-status" role="status"></span>
         <div id="transcript" aria-label="Speech transcript" aria-live="polite"></div>
@@ -475,8 +480,12 @@
   <script src="/voice.js"></script>
   <script src="/jarvis.js"></script>
   <script src="/terminal.js"></script>
+  <script src="/vendor/marked.min.js"></script>
+  <script src="/vendor/purify.min.js"></script>
+  <script src="/visual-workspace.js"></script>
   <script>
     const $ = id => document.getElementById(id);
+    const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'));
     const activityLabels = {
       needs_you: 'needs you', working: 'working', ready: 'ready', idle: 'idle', open: 'open'
     };
@@ -831,6 +840,7 @@
       renderTabs(state);
 
       renderPanes(state);
+      if (!selecting) visuals.update(state);
       observeReplies(state);
       activeTab = state.selected;
 
@@ -996,6 +1006,7 @@
         const status = document.querySelector('.rail-status');
         status.dataset.state = 'offline';
         $('connection').textContent = 'Offline';
+        visuals.offline();
       }
       setTimeout(poll, 500);
     }
@@ -1015,6 +1026,7 @@
       flushTerminalText();
       await terminalQueue;
       selecting = tabId;
+      visuals.suspend();
       tabSignature = null;
       renderTabs(currentState);
       try {
@@ -1027,7 +1039,7 @@
       } finally {
         selecting = null;
         tabSignature = null;
-        if (currentState) renderTabs(currentState);
+        if (currentState) { renderTabs(currentState); visuals.update(currentState); }
       }
     }
 
