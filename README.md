@@ -694,8 +694,9 @@ bounds remain 8 MiB/file, 16 MiB/version and 128 files. A pending download is no
 saved until completion and a successful receipt.
 
 App commands are argument arrays with a `{port}` placeholder and must bind to
-`127.0.0.1`. Desk checks the listener belongs to that exact process tree before
-opening the isolated app browser. Two app processes and two browser profiles are
+`127.0.0.1`. Desk binds the isolated app browser to the exact process generation
+and listener socket. Losing that listener makes the app's pages stale and blocks
+their requests, controls and frames. Two app processes and two browser profiles are
 the current limits; capacity errors do not evict active work. App processes receive
 only basic locale/PATH variables plus an isolated HOME, PORT and HOST. Readiness
 and bounded error output appear in Desk. Source identity is a supplied exact
@@ -704,6 +705,10 @@ excluding dependency/cache directories. Initial and final screenshots are labele
 saved outputs with source/process/build provenance; stopping an app preserves
 them. Screenshot or browser cleanup failure is reported while the verified app
 process still stops.
+
+Managed browser requests carry a runtime-enforced marker that Desk rejects,
+including direct navigation and embedded frames through aliases or a proxy.
+Managed profiles disable service workers so requests cannot bypass interception.
 
 Visual selection is local to each device. A selected saved version can travel as
 structured reference context for the actual message recipient through the managed

@@ -16,6 +16,8 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
+from app_runtime_identity import listener_matches
+
 from playwright.async_api import async_playwright, Error as PlaywrightError
 
 
@@ -75,6 +77,9 @@ class BrowserRuntime:
             for profile in saved.get('profiles', []):
                 self.profiles[profile['profile_id']] = self.profile_record(profile['profile_id'], profile['account_label'])
                 self.profiles[profile['profile_id']]['epoch'] = profile.get('account_epoch', 0)
+                self.profiles[profile['profile_id']]['app_binding'] = profile.get('app_binding')
+                self.profiles[profile['profile_id']]['app_owner'] = profile.get('app_owner')
+                self.profiles[profile['profile_id']]['app_stale'] = profile.get('app_stale', False)
                 if profile.get('status') in ('human', 'waiting', 'pausing'):
                     self.profiles[profile['profile_id']]['mode'] = 'waiting'
         self.playwright = None
@@ -99,7 +104,7 @@ class BrowserRuntime:
     def receipt(self, record):
         profile = record['profile']
         page = record['page']
-        status = 'closed' if page.is_closed() else profile['mode']
+        status = 'closed' if page.is_closed() else 'stale' if not self.app_valid(profile) else profile['mode']
         return {**self.profile_view(profile), 'page_id': record['id'], 'run_id': record['run'],
                 'status': 'ready' if status == 'agent' else status, 'url': page.url,
                 'title': record.get('title', ''), 'target': record['owner']['target'],
@@ -108,7 +113,7 @@ class BrowserRuntime:
 
     def save(self):
         records = [{**self.receipt(page), 'url': '', 'title': ''} for page in self.pages.values()]
-        write_private(self.state_path, {'profiles': [self.profile_view(p) for p in self.profiles.values()],
+        write_private(self.state_path, {'profiles': [{**self.profile_view(p), 'app_binding': p.get('app_binding'), 'app_owner': p.get('app_owner'), 'app_stale': p.get('app_stale', False)} for p in self.profiles.values()],
                                        'pages': (self.history + records)[-128:]})
 
     async def get_profile(self, profile_id, label=None):
@@ -136,7 +141,15 @@ class BrowserRuntime:
             profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             context = await self.playwright.chromium.launch_persistent_context(
                 str(profile_dir), headless=True, viewport={'width': 1280, 'height': 800},
-                accept_downloads=True, args=['--disable-extensions', '--disable-sync', '--no-first-run', '--no-default-browser-check'])
+                accept_downloads=True, service_workers='block', args=['--disable-extensions', '--disable-sync', '--no-first-run', '--no-default-browser-check'])
+            async def route_request(route):
+                if not self.app_valid(profile):
+                    await route.abort('blockedbyclient')
+                    return
+                headers = await route.request.all_headers()
+                headers['x-jev-managed-browser'] = '1'
+                await route.continue_(headers=headers)
+            await context.route('**/*', route_request)
             context.set_default_timeout(10000)
             profile['context'] = context
             profile['storage_digest'] = await self.storage_digest(profile)
@@ -186,10 +199,13 @@ class BrowserRuntime:
 
     async def download(self, record, download):
         try:
+            self.app_ready(record['profile'])
             failure = await download.failure()
+            self.app_ready(record['profile'])
             if failure or record['profile']['mode'] != 'agent':
                 return
             path = await download.path()
+            self.app_ready(record['profile'])
             if record['profile']['mode'] != 'agent':
                 return
             if path is None or path.stat().st_size > 8 * 1024 * 1024:
@@ -205,7 +221,7 @@ class BrowserRuntime:
                 'name': download.suggested_filename, 'data': base64.b64encode(path.read_bytes()).decode(),
                 'page_id': record['id'], 'run_id': record['run']})
             await download.delete()
-        except (PlaywrightError, OSError):
+        except (PlaywrightError, OSError, BrowserError):
             record['download_error'] = 'Download failed before completion'
 
     def owned(self, args, allow_closed=False):
@@ -217,7 +233,19 @@ class BrowserRuntime:
             raise BrowserError('Browser run ended; old controls cannot resume')
         if record['page'].is_closed() and not allow_closed:
             raise BrowserError('That browser page is closed')
+        self.app_ready(record['profile'])
         return record
+
+    def app_valid(self, profile):
+        binding = profile.get('app_binding')
+        if binding and (profile.get('app_stale') or not listener_matches(binding)):
+            profile['app_stale'] = True
+            return False
+        return True
+
+    def app_ready(self, profile):
+        if not self.app_valid(profile):
+            raise BrowserError('App listener ownership changed; this app browser is stale')
 
     def agent_ready(self, profile):
         if profile['mode'] != 'agent':
@@ -257,8 +285,27 @@ class BrowserRuntime:
         async def guard():
             if _guard is not None and not await _guard(args.get('owner')):
                 raise BrowserError('Conversation identity changed before browser action')
+            page = self.pages.get(args.get('page_id'))
+            profile = page['profile'] if page else self.profiles.get(args.get('profile_id'))
+            if profile and op not in ('stop_profile', 'bind_app'):
+                self.app_ready(profile)
         if args.get('owner'):
             await guard()
+        if op == 'bind_app':
+            owner_key(args.get('owner'))
+            profile_id, binding = args.get('profile_id'), args.get('binding')
+            if not isinstance(profile_id, str) or not profile_id.startswith('app-') or not listener_matches(binding):
+                raise BrowserError('A verified app listener is required')
+            profile = await self.get_profile(profile_id)
+            if profile.get('app_binding') and profile['app_binding'] != binding:
+                raise BrowserError('App profile already belongs to another runtime')
+            if profile.get('app_owner') and profile['app_owner'] != owner_key(args['owner']):
+                raise BrowserError('App profile belongs to another conversation')
+            profile['app_binding'] = binding
+            profile['app_owner'] = owner_key(args['owner'])
+            self.app_ready(profile)
+            self.save()
+            return {'bound': True}
         if op == 'profiles':
             return {'profiles': [self.profile_view(p) for p in self.profiles.values()]}
         if op in ('pages', 'view_pages'):
@@ -277,6 +324,8 @@ class BrowserRuntime:
                 raise BrowserError('Only a validated resume of the same conversation can reclaim pages')
             changed = []
             matching = [record for record in self.pages.values() if record['key'] == old_key and not record['page'].is_closed()]
+            for record in matching:
+                self.app_ready(record['profile'])
             if any(record['profile']['mode'] != 'agent' or record['profile']['lock'].locked() for record in matching):
                 raise BrowserError('Finish browser activity and human sign-in before resuming ownership', 423)
             ids = {record['id']: str(uuid.uuid4()) for record in matching}
@@ -293,7 +342,7 @@ class BrowserRuntime:
             return {'pages': changed}
         if op in ('downloads', 'ack_download'):
             key = owner_key(args.get('owner'))
-            records = [r for r in self.pages.values() if r['key'] == key]
+            records = [r for r in self.pages.values() if r['key'] == key and self.app_valid(r['profile'])]
             for record in records:
                 self.agent_ready(record['profile'])
             if op == 'downloads':
@@ -301,6 +350,7 @@ class BrowserRuntime:
                 if pending:
                     await asyncio.wait(pending, timeout=15)
                 await guard()
+                records = [r for r in records if self.app_valid(r['profile'])]
                 for record in records:
                     self.agent_ready(record['profile'])
                 return {'downloads': [d for r in records for d in r.get('downloads', [])],
@@ -314,6 +364,9 @@ class BrowserRuntime:
             owner_key(owner)
             url = valid_url(args.get('url', 'about:blank'))
             profile = await self.get_profile(args.get('profile_id', 'desk'), args.get('account_label'))
+            if profile.get('app_owner') and profile['app_owner'] != owner_key(owner):
+                raise BrowserError('App profile belongs to another conversation')
+            self.app_ready(profile)
             self.agent_ready(profile)
             async with profile['lock']:
                 self.agent_ready(profile)
@@ -325,6 +378,7 @@ class BrowserRuntime:
                 await guard()
                 if url != 'about:blank':
                     await page.goto(url, wait_until='domcontentloaded', timeout=20000)
+                await guard()
                 record['title'] = await page.title()
                 await self.refresh_account(profile)
                 self.save()

@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, build_opener
 
+from app_runtime_identity import listener_identity, listener_matches
 from visual import read_file
 from visual_workspace import MAX_VERSION, MAX_FILES, VisualError, fields, process_stamp, safe_components, visible
 
@@ -50,26 +51,7 @@ def build_identity(cwd, command):
 
 
 def owns_listener(pid, port):
-    pending, inodes = [str(pid)], set()
-    while pending:
-        current = pending.pop()
-        proc = Path('/proc') / current
-        try:
-            pending.extend((proc / 'task' / current / 'children').read_text().split())
-            for fd in (proc / 'fd').iterdir():
-                try:
-                    link = os.readlink(fd)
-                    if link.startswith('socket:['):
-                        inodes.add(link[8:-1])
-                except OSError:
-                    pass
-        except OSError:
-            pass
-    for row in Path('/proc/net/tcp').read_text().splitlines()[1:]:
-        cells = row.split()
-        if cells[1] == f'0100007F:{port:04X}' and cells[3] == '0A' and cells[9] in inodes:
-            return True
-    return False
+    return listener_identity(pid, port) is not None
 
 
 class ManagedApps:
@@ -98,6 +80,8 @@ class ManagedApps:
     def view(self, record):
         if record['status'] in ('ready', 'starting') and not self.alive(record):
             record.update(status='stopped', error='App process ended')
+        if record['status'] == 'ready' and not listener_matches(record.get('listener')):
+            record.update(status='error', error='App listener ownership changed; browser preview stopped')
         return {key: record.get(key) for key in ('id', 'title', 'target', 'workspace_id', 'status', 'error', 'log_excerpt', 'page_id', 'run_id', 'source', 'saved_export')}
 
     def state(self, tab=None, owner=None):
@@ -161,11 +145,16 @@ class ManagedApps:
                 owner = browser_owner(self.app.visual, record['target'])
                 if owner != record['owner']:
                     raise VisualError('App conversation changed before readiness', 409)
-                if owns_listener(record['pid'], record['port']):
+                binding = listener_identity(record['pid'], record['port'])
+                if binding:
                     url = f"http://127.0.0.1:{record['port']}{path}"
                     try:
                         with build_opener(ProxyHandler({})).open(url, timeout=1) as response:
                             if response.status < 400:
+                                if not listener_matches(binding):
+                                    raise VisualError('App listener changed during readiness', 409)
+                                record['listener'] = binding
+                                self.app.browser.request('bind_app', owner=owner, profile_id='app-' + record['id'], binding=binding)
                                 page = self.app.browser.request('open', owner=owner, profile_id='app-' + record['id'], url=url)
                                 if browser_owner(self.app.visual, record['target']) != owner:
                                     raise VisualError('App conversation changed during readiness', 409)
@@ -216,9 +205,12 @@ class ManagedApps:
                             except Exception as error:
                                 errors.append('Final screenshot was not saved: ' + str(error))
                             self.app.browser.request('action', owner=owner, page_id=page['page_id'], run_id=page['run_id'], account_epoch=page['account_epoch'], action='close')
-                    self.app.browser.request('stop_profile', profile_id='app-' + app_id)
                 except Exception as error:
                     errors.append('App browser cleanup failed: ' + str(error))
+                try:
+                    self.app.browser.request('stop_profile', profile_id='app-' + app_id)
+                except Exception as error:
+                    errors.append('App profile cleanup failed: ' + str(error))
             if browser_owner(self.app.visual, owner['target']) != owner:
                 raise VisualError('App owner changed before stop', 409)
             if self.alive(record) and os.getpgid(record['pid']) == record['pid']:

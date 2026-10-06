@@ -162,7 +162,8 @@ class VisualTests(unittest.TestCase):
         self.visual.register(self.body())
         version = self.visual.list('@1')['creations'][0]['versions'][0]
         with urlopen(url) as response:
-            self.assertEqual(response.headers['Content-Security-Policy'], "frame-src 'self' blob:")
+            self.assertEqual(response.headers['Content-Security-Policy'], "frame-src 'self' blob:; frame-ancestors 'none'")
+            self.assertEqual(response.headers['X-Frame-Options'], 'DENY')
         for destination in ('document', 'empty', ''):
             with self.subTest(destination=destination), self.assertRaises(HTTPError) as error:
                 urlopen(Request(url + version['preview_url'], headers={'Sec-Fetch-Dest': destination}))

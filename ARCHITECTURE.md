@@ -410,3 +410,11 @@ state checks PID start time; a saved screenshot is a version, not an executable
 historical app. Process environment filtering excludes Desk/provider credentials.
 App stop validates ownership again after capture and reports capture/cleanup
 failures separately from termination.
+
+`app_runtime_identity.py` captures the exact process generation, cwd and owned
+loopback listener inode. App profiles retain this binding; request interception,
+delayed controls and completed frame capture revalidate it. Listener replacement
+invalidates only that app profile, including its background requests. All managed
+requests receive a forced marker that Desk rejects before dispatch, independent
+of Host aliases. Service workers are blocked to preserve interception, and Desk
+also denies framing its control UI.

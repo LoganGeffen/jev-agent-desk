@@ -922,7 +922,8 @@ def make_server(playground, port=0, public_origin=None):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             if self.path == "/" and content_type.startswith("text/html"):
-                self.send_header("Content-Security-Policy", "frame-src 'self' blob:")
+                self.send_header("Content-Security-Policy", "frame-src 'self' blob:; frame-ancestors 'none'")
+            self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
             try:
                 self.wfile.write(data)
@@ -952,6 +953,9 @@ def make_server(playground, port=0, public_origin=None):
             return self.headers.get("Origin", origin) == origin
 
         def do_GET(self):
+            if self.headers.get("X-Jev-Managed-Browser") == "1":
+                self.send(403, {"error": "Managed browsers cannot access Desk controls"})
+                return
             try:
                 if playground is not None and browser_get(self, visual, playground.browser):
                     return
@@ -997,6 +1001,9 @@ def make_server(playground, port=0, public_origin=None):
                 self.send(404, {"error": "Not found"})
 
         def do_POST(self):
+            if self.headers.get("X-Jev-Managed-Browser") == "1":
+                self.send(403, {"error": "Managed browsers cannot access Desk controls"})
+                return
             if not self.local_request():
                 self.send(403, {"error": "Cross-origin requests are not allowed"})
                 return
