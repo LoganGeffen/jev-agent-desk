@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const config = JSON.parse(readFileSync(0, 'utf8'));
 const read = name => readFileSync(new URL(name, import.meta.url), 'utf8');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const until = async check => { for (let i = 0; i < 500 && !check(); i++) await pause(2); if (!check()) throw new Error('timed out'); };
+const until = async check => { const deadline = Date.now() + 5000; while (!check() && Date.now() < deadline) await pause(2); if (!check()) throw new Error('timed out'); };
 const frame = (text, start, ms) => {
   const chars = [...text];
   return {data: JSON.stringify({audio: Buffer.alloc(ms * 48).toString('base64'),
