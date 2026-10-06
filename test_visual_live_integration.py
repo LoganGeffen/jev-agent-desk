@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import queue
+import shlex
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +18,7 @@ from urllib.request import urlopen
 import uuid
 
 from playwright.sync_api import sync_playwright
+from server import tmux
 from test_visual_integration import VisualHttpFixture
 
 
@@ -69,6 +72,41 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
         self.assertIsNone(self.workspace('Controller')['live'])
         state_expression = 'JSON.stringify({url:location.href,width:innerWidth,height:innerHeight,text:document.body.textContent})'
         before = json.loads(command('eval', state_expression)['result'])
+        self.app.focus(identity['tab'])
+        with sync_playwright() as playwright:
+            viewer_browser = playwright.chromium.launch()
+            try:
+                page = viewer_browser.new_page(viewport={'width': 1440, 'height': 900})
+                page.goto(self.url)
+                page.locator('#visual-live-tab').click()
+                page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
+                first_canvas = page.locator('.visual-live-stage canvas').evaluate('(canvas) => canvas.toDataURL()')
+                command('eval', "document.body.style.background='#090';document.body.textContent='LIVE UI CHANGE'")
+                page.wait_for_function("image => document.querySelector('.visual-live-stage canvas').toDataURL() !== image", arg=first_canvas)
+                page.evaluate('tab => selectTab(tab)', self.targets['Controller']['tab'])
+                page.wait_for_function("document.querySelector('.visual-live-stage canvas').hidden")
+                self.assertIsNone(self.workspace('Controller')['live'])
+                deadline = time.monotonic() + 4
+                while self.app.visual.streaming and time.monotonic() < deadline:
+                    page.wait_for_timeout(100)
+                page.evaluate('tab => selectTab(tab)', identity['tab'])
+                page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
+                page.evaluate('visuals.stream.onerror()')
+                page.locator('.visual-retry').wait_for(state='visible')
+                deadline = time.monotonic() + 4
+                while self.app.visual.streaming and time.monotonic() < deadline:
+                    page.wait_for_timeout(100)
+                page.locator('.visual-retry').click()
+                page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
+                output = Path(__file__).parent / '.run/visual-integration'
+                output.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(output / 'live-real-browser.png'), full_page=True)
+            finally:
+                viewer_browser.close()
+        deadline = time.monotonic() + 4
+        while self.app.visual.streaming and time.monotonic() < deadline:
+            time.sleep(.1)
+        command('eval', "document.body.style.background='#900';document.body.textContent='LIVE ONE'")
         messages = queue.Queue()
         stop = threading.Event()
         stream = attachment['live']['stream_url']
@@ -133,6 +171,32 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
             self.get(attachment['live']['stream_url'])
         self.assertEqual(error.exception.code, 409)
         self.assertEqual(json.loads(command('eval', state_expression)['result']), after)
+        attachment = self.post('/api/visual/attach', {'target': identity, 'name': 'Identity replacement test',
+                                                    'session': session, 'port': port, 'pid': pid})
+        stream = attachment['live']['stream_url']
+        messages = queue.Queue()
+        stop = threading.Event()
+        thread = threading.Thread(target=observe, daemon=True)
+        thread.start()
+        try:
+            next_frame()
+            fixture = 'exec -a codex ' + shlex.join([sys.executable, str(self.root / 'fixture.py'),
+                                                   str(self.root / 'live-replacement.input')])
+            tmux(self.socket, 'respawn-pane', '-k', '-t', identity['pane'], fixture)
+            deadline = time.monotonic() + 6
+            identity_stale = False
+            while time.monotonic() < deadline:
+                event, data = messages.get(timeout=5)
+                self.assertIn(event, ('status', 'frame'), data)
+                if event == 'status' and data['status'] == 'stale':
+                    identity_stale = True
+                    break
+            self.assertTrue(identity_stale, 'Replacement conversation must terminate the actual stream as stale')
+        finally:
+            stop.set()
+            thread.join(7)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(json.loads(command('eval', state_expression)['result']), after)
         output = Path(__file__).parent / '.run/visual-integration'
         output.mkdir(parents=True, exist_ok=True)
         (output / 'installed-browser.json').write_text(json.dumps({
@@ -140,9 +204,10 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
             'session': session, 'pid': pid, 'port': port, 'first_frame_hash': hashlib.sha256(first['data'].encode()).hexdigest(),
             'changed_frame_hash': hashlib.sha256(second['data'].encode()).hexdigest(),
             'relay_event_types': sorted(set(events)), 'viewport_before': before, 'viewport_after': after,
-            'checks': ['actual HTTP attachment validation', 'actual native JPEG frame relay', 'agent-controlled content change',
+            'checks': ['actual HTTP attachment validation', 'actual native JPEG frame relay', 'first-open viewer attaches', 'real UI canvas follows agent change',
+                       'tab switch clears live canvas', 'explicit reconnect resumes view', 'agent-controlled content change',
                        'other tab has no attachment', 'viewer disconnect preserves browser', 'detach preserves browser',
-                       'same PID/port replacement listener becomes stale', 'old generation refuses reconnection'],
+                       'same PID/port replacement listener becomes stale', 'old generation refuses reconnection', 'replaced conversation terminates active stream as stale'],
         }, indent=2) + '\n')
 
 

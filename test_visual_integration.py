@@ -41,8 +41,8 @@ class VisualHttpFixture(DisposableDesk):
             self.thread.join(2)
             self.server = None
 
-    def get(self, path):
-        with urlopen(self.url + path, timeout=5) as response:
+    def get(self, path, headers=None):
+        with urlopen(Request(self.url + path, headers=headers or {}), timeout=5) as response:
             return response.read(), response.headers
 
     def post(self, path, payload, origin=None):
@@ -164,7 +164,7 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
         </script></body></html>'''
         self.register({'index.html': attack})
         version = self.workspace()['creations'][0]['versions'][0]
-        _, headers = self.get(version['preview_url'])
+        _, headers = self.get(version['preview_url'], {'Sec-Fetch-Dest': 'iframe'})
         self.assertIn('sandbox allow-scripts', headers['Content-Security-Policy'])
         self.assertIn("connect-src 'none'", headers['Content-Security-Policy'])
         with sync_playwright() as playwright:
@@ -223,6 +223,11 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                     frame.src = url; document.body.append(frame); }""", self.url + version['preview_url'])
                 page.wait_for_timeout(700)
                 self.assertEqual(captured, [], 'Hostile preview self-navigation reached an external receiver')
+                top_level = browser.new_page()
+                response = top_level.goto(self.url + version['preview_url'])
+                self.assertEqual(response.status, 403)
+                top_level.wait_for_timeout(400)
+                self.assertEqual(captured, [], 'A directly opened preview must not execute hostile HTML')
             finally:
                 browser.close()
 
@@ -257,7 +262,7 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
             self.assertEqual(data, fixtures[creation['kind']][1])
             self.assertIn('attachment', headers['Content-Disposition'])
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = playwright.chromium.launch(executable_path=playwright.chromium.executable_path)
             try:
                 page = browser.new_page(viewport={'width': 1500, 'height': 1000})
                 page.goto(self.url)
