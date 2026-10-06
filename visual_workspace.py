@@ -52,12 +52,18 @@ def safe_path(value):
     path = PurePosixPath(value)
     if not value or path.is_absolute() or str(path) != value or any(part.startswith('.') for part in path.parts):
         raise VisualError('Relative non-hidden bundle paths are required')
-    for part in path.parts:
-        if re.search(r'(^|[-_.])(credentials?|secrets?|tokens?|private[-_]?keys?|id_rsa|id_ed25519)([-_.]|$)', part, re.I):
-            raise VisualError('Credential and private runtime files cannot be captured')
+    safe_components(path.parts)
     if path.suffix.lower() not in EXTENSIONS:
         raise VisualError('Unsupported bundle file type')
     return value
+
+
+def safe_components(parts):
+    for part in parts:
+        if part.startswith('.'):
+            raise VisualError('Hidden credential and runtime directories cannot be captured')
+        if re.search(r'(^|[-_.])(credentials?|secrets?|tokens?|private[-_]?keys?|id_rsa|id_ed25519)([-_.]|$)', part, re.I):
+            raise VisualError('Credential and private runtime files cannot be captured')
 
 
 def process_stamp(pid):
@@ -292,7 +298,7 @@ class VisualWorkspace:
         workspace = self.workspace(body['target']['tab'])
         endpoint = endpoint_identity(body['pid'], body['port'], body['session'])
         live = {**body, 'name': visible(body['name'], 'browser name'), 'endpoint': endpoint, 'agent_process': pane['agent_process'],
-                'id': str(uuid.uuid4()), 'generation': str(uuid.uuid4()), 'status': 'disconnected'}
+                'id': str(uuid.uuid4()), 'generation': str(uuid.uuid4()), 'status': 'ready'}
         with self.lock:
             if self.target(body['target'])['agent_process'] != pane['agent_process']:
                 raise VisualError('Agent process changed before attachment', 409)
@@ -426,6 +432,9 @@ def get_route(handler, visual, public_origin):
             raise VisualError('Preview not found', 404)
         token, name = parts[2], unquote(parts[3])
         data, mime = visual.preview(token, name)
+        destination = handler.headers.get('Sec-Fetch-Dest')
+        if destination == 'document' or (mime in ('text/html', 'image/svg+xml') and destination not in ('iframe', 'image')):
+            raise VisualError('Open active previews inside the Desk visual workspace', 403)
         origin = public_origin if handler.headers.get('Host') == expected_host else f'http://127.0.0.1:{handler.server.server_port}'
         prefix = origin + '/visual-preview/' + token + '/'
         csp = (f"sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' {prefix}; "

@@ -616,7 +616,9 @@ Capture allows up to 128 files, 8 MiB per file and 16 MiB per version. Use a sma
 export directory: symlinks, hidden directories, credential-like names and runtime
 files are rejected. HTML runs in an opaque sandbox, with scripts/CSS/images/fonts
 limited to its captured bundle and inline resources; remote resources, network
-requests, forms, embedded frames and privileged Desk access are blocked. This is
+requests, external iframe navigation, forms, embedded frames and privileged Desk
+access are blocked. Open active previews through Desk; direct document navigation
+to their capability URLs is rejected. This is
 for self-contained static pages, not a development server or a general app runtime.
 PDF display depends on browser support; the original download remains available.
 

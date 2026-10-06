@@ -125,7 +125,7 @@ class VisualTests(unittest.TestCase):
         url = self.start_http()
         registered = self.visual.register(self.body(b'<script>parent.document.body.textContent="bad"</script>'))
         version = self.visual.list('@1')['creations'][0]['versions'][0]
-        with urlopen(url + version['preview_url']) as response:
+        with urlopen(Request(url + version['preview_url'], headers={'Sec-Fetch-Dest': 'iframe'})) as response:
             policy = response.headers['Content-Security-Policy']
             self.assertIn('sandbox allow-scripts;', policy)
             self.assertNotIn('allow-same-origin', policy)
@@ -144,6 +144,29 @@ class VisualTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 403)
         self.assertEqual(registered['workspace_id'], self.visual.workspace('@1'))
 
+    def test_private_ancestry_cannot_be_removed_by_selecting_capture_root(self):
+        for directory in ('credentials', 'secrets', 'private-key'):
+            folder = self.root / directory
+            folder.mkdir()
+            source = folder / 'config.json'
+            source.write_text('{"fixture":"synthetic-only"}')
+            with self.subTest(directory=directory):
+                with self.assertRaises(VisualError):
+                    capture(source)
+                with self.assertRaises(VisualError):
+                    capture(folder, 'config.json')
+
+    def test_parent_policy_and_standalone_preview_navigation(self):
+        url = self.start_http()
+        self.visual.register(self.body())
+        version = self.visual.list('@1')['creations'][0]['versions'][0]
+        with urlopen(url) as response:
+            self.assertEqual(response.headers['Content-Security-Policy'], "frame-src 'self' blob:")
+        for destination in ('document', 'empty', ''):
+            with self.subTest(destination=destination), self.assertRaises(HTTPError) as error:
+                urlopen(Request(url + version['preview_url'], headers={'Sec-Fetch-Dest': destination}))
+            self.assertEqual(error.exception.code, 403)
+
     def test_endpoint_rejects_other_process_and_default_session(self):
         import os
         with self.assertRaises(VisualError):
@@ -155,7 +178,7 @@ class VisualTests(unittest.TestCase):
         body = {'target': self.target, 'name': 'Preview browser', 'session': 'synthetic-only', 'pid': 123, 'port': 12345}
         with patch('visual_workspace.endpoint_identity', return_value={'process': '123:1', 'inode': 'first'}):
             result = self.visual.attach(body)
-            self.assertEqual(self.visual.list('@1')['live']['status'], 'disconnected')
+            self.assertEqual(self.visual.list('@1')['live']['status'], 'ready')
             self.assertIsNone(self.visual.list('@2')['live'])
         with patch('visual_workspace.endpoint_identity', return_value={'process': '123:2', 'inode': 'second'}):
             self.assertEqual(self.visual.list('@1')['live']['status'], 'stale')

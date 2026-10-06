@@ -7,13 +7,12 @@ import stat
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from visual_workspace import KINDS, MAX_FILE, MAX_FILES, MAX_VERSION, safe_path
+from visual_workspace import KINDS, MAX_FILE, MAX_FILES, MAX_VERSION, safe_components, safe_path
 
 
 def read_file(path):
     absolute = Path(os.path.abspath(path))
-    if any(part.startswith('.') for part in absolute.parts):
-        raise ValueError('Hidden credential and runtime directories cannot be captured; use an export directory')
+    safe_components(absolute.parts)
     descriptors = []
     try:
         current = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
@@ -43,6 +42,7 @@ def read_file(path):
 
 def capture(path, entrypoint=None):
     path = Path(path).absolute()
+    safe_components(path.parts)
     if path.is_symlink():
         raise ValueError('Symlinks cannot be captured')
     if path.is_dir():

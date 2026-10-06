@@ -358,8 +358,10 @@ missing tab, with archival navigation deferred.
 
 HTML capability responses set `Content-Security-Policy: sandbox allow-scripts`
 without `allow-same-origin`, and the iframe repeats that sandbox. This makes the
-content's effective origin opaque, including when the capability URL is opened
-directly. The resource policy permits only this version's immutable assets plus
+content's effective origin opaque. Active capability documents are accepted only
+as iframe/image requests; standalone browser document navigation is rejected.
+Desk's parent `frame-src 'self' blob:` policy blocks a preview from navigating its
+own frame to an external origin. The resource policy permits only this version's immutable assets plus
 inline scripts/styles/data images; `connect-src`, `form-action`, `frame-src` and
 `object-src` are denied. Capabilities expose no directory listing or filesystem.
 Preview routes validate Host and capability; all privileged visual API routes
