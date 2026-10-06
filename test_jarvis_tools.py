@@ -54,6 +54,7 @@ class DisposableDesk(unittest.TestCase):
         self.stores = []
         self.addCleanup(lambda: [store.close() for store in self.stores if not getattr(store, 'closed', False)])
         self.open_app()
+        self.addCleanup(self.stop_browser)
         self.targets = {item['label']: {key: value for key, value in item.items() if key != 'number'}
                         for item in self.app.jarvis_tools.sessions()}
         self.assertEqual(set(self.targets), {'Dog Data', 'Controller', 'Notes'})
@@ -65,6 +66,13 @@ class DisposableDesk(unittest.TestCase):
             mocked.start()
             self.addCleanup(mocked.stop)
         self.history = history
+
+    def stop_browser(self):
+        browser = getattr(self.app, 'browser', None)
+        if browser and browser.record_path.exists():
+            record = json.loads(browser.record_path.read_text())
+            if browser.valid_record(record):
+                browser.shutdown()
 
     def open_app(self):
         self.app = Playground(self.socket, self.root / 'events.jsonl', self.evaluate,

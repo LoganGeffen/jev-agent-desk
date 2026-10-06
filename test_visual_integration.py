@@ -288,8 +288,8 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                 chooser.select_option(registered['image']['creation_id'])
                 page.wait_for_function("document.querySelector('.visual-preview img')?.naturalWidth === 1")
                 chooser.select_option(registered['pdf']['creation_id'])
-                page.locator('.visual-preview object[type="application/pdf"]').wait_for()
-                self.assertIn('Download original', page.locator('.visual-preview').inner_text())
+                page.locator('.pdf-page-view canvas[aria-label="PDF page 1"]').wait_for()
+                self.assertEqual(page.locator('.visual-download').inner_text(), 'Download original')
                 deadline = time.monotonic() + 12
                 red_pixels = 0
                 while time.monotonic() < deadline and red_pixels < 500:
@@ -309,10 +309,12 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                 output = Path(__file__).parent / '.run/visual-integration'
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / 'pdf-rendered.png'), full_page=True)
-                self.assertGreater(red_pixels, 500, 'The native PDF did not paint its red fixture rectangle')
+                self.assertGreater(red_pixels, 500, 'The PDF reader did not paint its red fixture rectangle')
                 self.assertEqual(page.locator('.visual-download').inner_text(), 'Download original')
                 page.evaluate('tab => selectTab(tab)', self.targets['Controller']['tab'])
-                page.locator('.visual-preview').filter(has_text='No creations saved yet').wait_for()
+                page.wait_for_function('tab => currentState.selected === tab && visuals.workspace?.tab === tab',
+                                       arg=self.targets['Controller']['tab'])
+                self.assertEqual(page.locator('.visual-preview iframe, .visual-preview img, .visual-preview canvas').count(), 0)
                 self.assertFalse(page.locator('.visual-controls').is_visible())
                 self.assertEqual(self.workspace('Controller')['creations'], [])
             finally:
