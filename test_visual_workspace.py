@@ -208,6 +208,23 @@ class VisualTests(unittest.TestCase):
             self.assertEqual(self.visual.list('@1')['live']['status'], 'disconnected')
             self.assertEqual(self.visual.streaming, set())
 
+    def test_immediate_final_static_frame_is_never_discarded(self):
+        frames = [base64.b64encode(b'\xff\xd8\xff' + value).decode() for value in (b'initial', b'final-change')]
+        packets = iter(json.dumps({'type': 'frame', 'data': data, 'metadata': {'deviceWidth': 640, 'deviceHeight': 480}}) for data in frames)
+        class Upstream:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def recv(self, timeout): return next(packets)
+        with patch('visual_workspace.endpoint_identity', return_value={'process': '123:1', 'inode': 'same'}), patch('visual_workspace.connect', return_value=Upstream()):
+            result = self.visual.attach({'target': self.target, 'name': 'Browser', 'session': 'test', 'pid': 123, 'port': 12345})
+            handler = SimpleNamespace(send_response=lambda *args: None, send_header=lambda *args: None,
+                                      end_headers=lambda: None, wfile=io.BytesIO())
+            attachment = result['live']
+            self.visual.stream(handler, result['workspace_id'], attachment['id'], attachment['generation'])
+            events = handler.wfile.getvalue().decode()
+            self.assertEqual(events.count('event: frame'), 2)
+            self.assertIn(frames[-1], events)
+
     def test_stream_receives_only_and_fences_late_frames(self):
         url = self.start_http()
         sent = []

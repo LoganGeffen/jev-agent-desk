@@ -377,7 +377,8 @@ frame. Any mismatch latches stale and never reconnects to a replacement endpoint
 The SSE route opens a receive-only WebSocket; only validated JPEG/PNG frame packets
 are forwarded, with local sequence numbers and an attachment generation. Provider
 command/result traffic is discarded. There is no viewer-to-upstream channel.
-Frames are capped at five forwarded frames per second and bounded in size.
+Frames are bounded in size and the upstream receive queue is bounded; updates are
+not dropped, so a static page’s final repaint remains observable.
 A client disconnect closes only its observation socket; it never kills a browser.
 The frontend fences requests, stream callbacks and image decoding by selection and
 generation. The live connection is ephemeral, whereas creation history is durable.

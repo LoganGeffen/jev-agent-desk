@@ -357,7 +357,6 @@ class VisualWorkspace:
                          open_timeout=3, close_timeout=1, max_size=MAX_FILE, max_queue=2) as upstream:
                 self.validate_live(workspace, live)
                 sequence = 0
-                next_frame = 0
                 last_check = 0
                 while True:
                     if time.monotonic() - last_check >= 1:
@@ -376,9 +375,6 @@ class VisualWorkspace:
                         emit('status', {'status': 'disconnected', 'error': 'Browser has no connected page'})
                     if packet.get('type') != 'frame':
                         continue
-                    if time.monotonic() < next_frame:
-                        continue
-                    next_frame = time.monotonic() + 0.2
                     data = packet.get('data')
                     sequence += 1
                     if not isinstance(data, str) or len(data) > MAX_FILE:
