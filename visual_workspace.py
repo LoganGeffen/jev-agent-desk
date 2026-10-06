@@ -29,6 +29,10 @@ KINDS = {'html': {'.html', '.htm'}, 'markdown': {'.md', '.markdown'},
 EXTENSIONS = set().union(*KINDS.values()) | {'.js', '.mjs', '.css', '.svg', '.woff', '.woff2', '.ttf', '.json'}
 
 
+class ViewerClosed(Exception):
+    pass
+
+
 class VisualError(ValueError):
     def __init__(self, message, status=400):
         super().__init__(message)
@@ -341,8 +345,11 @@ class VisualWorkspace:
         handler.end_headers()
         handler.close_connection = True
         def emit(event, body):
-            handler.wfile.write(('event: ' + event + '\ndata: ' + json.dumps({'generation': generation, **body}) + '\n\n').encode())
-            handler.wfile.flush()
+            try:
+                handler.wfile.write(('event: ' + event + '\ndata: ' + json.dumps({'generation': generation, **body}) + '\n\n').encode())
+                handler.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                raise ViewerClosed from None
         try:
             live['status'] = 'connecting'
             emit('status', {'status': 'connecting'})
@@ -388,19 +395,19 @@ class VisualWorkspace:
                     live['status'] = 'live'
                     emit('status', {'status': 'live'})
                     emit('frame', {'seq': sequence, 'data': data, 'mime': mime, 'width': width, 'height': height})
-        except (BrokenPipeError, ConnectionResetError):
+        except ViewerClosed:
             pass
         except Exception as error:
             live['status'] = 'stale' if isinstance(error, VisualError) and error.status == 409 else 'disconnected'
             live['error'] = str(error) if isinstance(error, VisualError) else 'Browser stream disconnected; reopen the view to retry'
             try:
                 emit('status', {'status': live['status'], 'error': live['error']})
-            except (BrokenPipeError, ConnectionResetError):
+            except ViewerClosed:
                 pass
         finally:
-            if live['status'] in ('connecting', 'live'):
-                live['status'] = 'disconnected'
             with self.lock:
+                if live['status'] in ('connecting', 'live'):
+                    live['status'] = 'ready'
                 self.streaming.discard(attachment)
 
 

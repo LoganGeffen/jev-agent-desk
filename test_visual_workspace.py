@@ -1,5 +1,6 @@
 import base64
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -186,6 +187,26 @@ class VisualTests(unittest.TestCase):
             self.assertEqual(self.visual.list('@1')['live']['status'], 'stale')
         self.visual.detach({'tab': '@1', 'attachment_id': result['live']['id']})
         self.assertIsNone(self.visual.list('@1')['live'])
+
+    def test_viewer_close_keeps_ready_but_upstream_failure_requires_reconnect(self):
+        body = {'target': self.target, 'name': 'Browser', 'session': 'test', 'pid': 123, 'port': 12345}
+        class ClosedViewer:
+            def write(self, data):
+                raise BrokenPipeError('Viewer left the tab')
+        with patch('visual_workspace.endpoint_identity', return_value={'process': '123:1', 'inode': 'same'}):
+            result = self.visual.attach(body)
+            attachment = result['live']
+            handler = SimpleNamespace(send_response=lambda *args: None, send_header=lambda *args: None,
+                                      end_headers=lambda: None, wfile=ClosedViewer())
+            with patch('visual_workspace.connect') as connect:
+                self.visual.stream(handler, result['workspace_id'], attachment['id'], attachment['generation'])
+                connect.assert_not_called()
+            self.assertEqual(self.visual.list('@1')['live']['status'], 'ready')
+            handler.wfile = io.BytesIO()
+            with patch('visual_workspace.connect', side_effect=ConnectionResetError('Upstream failed')):
+                self.visual.stream(handler, result['workspace_id'], attachment['id'], attachment['generation'])
+            self.assertEqual(self.visual.list('@1')['live']['status'], 'disconnected')
+            self.assertEqual(self.visual.streaming, set())
 
     def test_stream_receives_only_and_fences_late_frames(self):
         url = self.start_http()
