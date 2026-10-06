@@ -685,6 +685,17 @@ handles are not reassigned across tabs. Saved outputs stay in the original
 read-only archive. Uninstrumented browser tools cannot be adopted by URL, title
 or whichever page is active.
 
+Running Codex conversations can also be explicitly registered with
+`live_connection.register` and the optional `desk_mcp.py --live` server. Each call
+uses native MCP thread metadata and pinned pane, agent and server process
+generations; unknown or replaced conversations cannot use another connection.
+This leaves existing model, permission, plugin and credential settings in place.
+In Codex 0.160.1, `/mcp` can display a newly configured server before its tools are
+available to the agent. A verified idle, empty conversation can switch with
+`/new` then `/resume EXACT_UUID` to refresh tools while retaining native history;
+do not perform that switch during a turn or over an unsent draft. Verify an actual
+native tool call after discovery before reporting the connection ready.
+
 Managed tools open exact owned browser pages, create/publish completed files,
 finish browser downloads, and start/stop app previews. Publication returns an
 immutable receipt; identical receipt-key retries return the same version, while

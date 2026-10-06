@@ -98,9 +98,11 @@ class Bridge:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--run-dir', required=True)
-    parser.add_argument('--session-id', required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--session-id')
+    mode.add_argument('--live', action='store_true')
     args = parser.parse_args()
-    bridge = Bridge(args.run_dir, args.session_id)
+    bridge = Bridge(args.run_dir, args.session_id) if args.session_id else None
     for line in sys.stdin:
         message = json.loads(line)
         identifier = message.get('id')
@@ -118,7 +120,11 @@ def main():
                 params = message['params']
                 if params['name'] not in {tool['name'] for tool in TOOLS}:
                     raise ValueError('Unknown Desk tool')
-                value = bridge.call(params['name'], params.get('arguments', {}))
+                caller = bridge
+                if args.live:
+                    from live_connection import resolve
+                    caller = resolve(args.run_dir, params.get('_meta'))
+                value = caller.call(params['name'], params.get('arguments', {}))
                 image = value.get('result') if isinstance(value, dict) else None
                 if isinstance(image, dict) and image.get('mime') in ('image/jpeg', 'image/png') and image.get('data'):
                     result = {'content': [{'type': 'text', 'text': json.dumps({key: item for key, item in value.items() if key != 'result'})},
