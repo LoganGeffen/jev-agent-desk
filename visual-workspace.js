@@ -6,6 +6,7 @@ class VisualWorkspace {
     this.epoch = 0;
     this.previewEpoch = 0;
     this.choices = new Map();
+    this.staleLiveKeys = new Set();
     this.mode = 'creations';
     this.open = !window.matchMedia('(max-width: 700px)').matches;
     this.lastRefresh = 0;
@@ -59,7 +60,7 @@ class VisualWorkspace {
     }
     this.toggle.onclick = () => { this.open = !this.open; this.renderOpen(); };
     this.find('.visual-retry').onclick = () => {
-      this.failedLiveKey = null;
+      this.retryLiveKey = this.failedLiveKey;
       this.lastRefresh = 0;
       this.refresh();
     };
@@ -100,6 +101,7 @@ class VisualWorkspace {
     this.lastRefresh = 0;
     this.stopLive();
     this.failedLiveKey = null;
+    this.retryLiveKey = null;
     this.clearPreview();
     this.find('.visual-controls').hidden = true;
     this.find('.visual-provenance').textContent = '';
@@ -319,14 +321,26 @@ class VisualWorkspace {
       return;
     }
     const key = `${this.workspace.workspace_id}:${live.id}:${live.generation}:${this.context.key}`;
-    if (['stale', 'disconnected'].includes(live.status)) {
+    if (live.status === 'stale' || this.staleLiveKeys.has(key)) {
       this.stopLive();
       this.failedLiveKey = key;
-      this.liveStatus(live.status, live.error || 'The browser connection ended. Register a current session to continue.');
+      this.staleLiveKeys.add(key);
+      this.retryLiveKey = null;
+      this.liveStatus('stale', live.error || 'The browser identity changed. Register a current session to continue.');
       return;
     }
-    if (this.liveKey === key || this.failedLiveKey === key) return;
+    if (this.liveKey === key) return;
+    const retry = this.retryLiveKey === key;
+    if (live.status === 'disconnected' && !retry) {
+      this.stopLive();
+      this.failedLiveKey = key;
+      this.liveStatus('disconnected', live.error || 'Browser disconnected. Reconnect the view when it is available.');
+      return;
+    }
+    if (this.failedLiveKey === key && !retry) return;
     this.stopLive();
+    this.retryLiveKey = null;
+    this.failedLiveKey = null;
     this.liveKey = key;
     this.frameSequence = -1;
     this.liveStatus('connecting', `Connecting to ${live.name || live.session}…`);
@@ -368,6 +382,7 @@ class VisualWorkspace {
   failLive(key, status, message) {
     this.stopLive();
     this.failedLiveKey = key;
+    if (status === 'stale') this.staleLiveKeys.add(key);
     this.liveStatus(status, message);
   }
 

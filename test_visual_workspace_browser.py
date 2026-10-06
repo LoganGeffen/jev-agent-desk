@@ -45,7 +45,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.contents = {'markdown-1': '# Saved notes\n\n- First point\n- **Second** point\n\n```js\nconst safe = true;\n```\n\n[External](https://example.invalid/)\n\n<img src="https://example.invalid/leak"><script>parent.pwned = true</script>', 'text-1': '<script>literal source</script>'}
         self.workspaces = {
             '@a': {'workspace_id': 'workspace-a', 'tab': '@a', 'creations': [creation('html', 2), creation('markdown'), creation('text'), creation('image'), creation('pdf')],
-                   'live': {'id': 'browser-a', 'generation': 'generation-a', 'status': 'connecting', 'name': 'Browser A', 'pane': '%a', 'identity': 'a:original', 'session': 'session-a', 'stream_url': '/api/visual/live?attachment=browser-a'}},
+                   'live': {'id': 'browser-a', 'generation': 'generation-a', 'status': 'ready', 'name': 'Browser A', 'pane': '%a', 'identity': 'a:original', 'session': 'session-a', 'stream_url': '/api/visual/live?attachment=browser-a'}},
             '@b': {'workspace_id': 'workspace-b', 'tab': '@b', 'creations': [], 'live': None}}
         self.requests = []
         self.page.add_init_script('''
@@ -172,6 +172,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.evaluate('pendingImages[0].onload()')
         self.assertEqual(self.page.evaluate('paints'), 0)
         self.assertFalse(self.page.locator('canvas').is_visible())
+
         self.page.evaluate('(state) => view.update(state)', selection())
         self.page.wait_for_function('streams.length === 2')
         self.page.evaluate("streams[1].emit('frame', {generation:'generation-a', seq:2, mime:'image/png',data:'abc'}); pendingImages[1].onload();")
@@ -190,6 +191,35 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.get_by_text('This browser belongs to another pane. Select its pane to view it.', exact=True).first.wait_for()
         self.assertEqual(self.page.evaluate('streams.length'), 3)
         self.assertFalse(self.page.locator('canvas').is_visible())
+
+    def test_disconnected_metadata_manual_retry_and_stale_latch(self):
+        self.workspaces['@a']['live']['status'] = 'disconnected'
+        self.page.evaluate("() => { view.workspace.live.status = 'disconnected'; }")
+        self.page.locator('#visual-live-tab').click()
+        self.assertEqual(self.page.evaluate('streams.length'), 0)
+        self.page.locator('.visual-retry').click()
+        self.page.wait_for_function('streams.length === 1')
+        self.page.evaluate('view.renderLive()')
+        self.assertFalse(self.page.evaluate('streams[0].closed'))
+        self.page.evaluate("streams[0].emit('status', {generation:'generation-a', status:'disconnected', error:'Socket closed'})")
+        self.assertTrue(self.page.evaluate('streams[0].closed'))
+        self.page.evaluate('view.renderLive()')
+        self.page.locator('#visual-toggle').click()
+        self.page.locator('#visual-toggle').click()
+        self.assertEqual(self.page.evaluate('streams.length'), 1)
+        self.page.locator('.visual-retry').click()
+        self.page.wait_for_function('streams.length === 2')
+        self.page.evaluate("streams[1].emit('status', {generation:'generation-a', status:'stale', error:'Browser process replaced'})")
+        self.page.evaluate('view.renderLive()')
+        self.assertEqual(self.page.locator('.visual-status').get_attribute('data-status'), 'stale')
+        self.assertFalse(self.page.locator('.visual-retry').is_visible())
+        self.workspaces['@a']['live']['status'] = 'ready'
+        self.page.evaluate("() => { view.workspace.live.status = 'ready'; view.renderLive(); }")
+        self.page.locator('#visual-toggle').click()
+        self.page.locator('#visual-toggle').click()
+        self.assertEqual(self.page.evaluate('streams.length'), 2)
+        self.page.evaluate("() => { view.workspace.live.generation = 'new-generation'; view.renderLive(); }")
+        self.assertEqual(self.page.evaluate('streams.length'), 3)
 
 
 if __name__ == '__main__':
