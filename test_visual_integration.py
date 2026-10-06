@@ -149,6 +149,8 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
         self.assertNotEqual(replacement['workspace_id'], saved['workspace_id'])
         self.assertEqual(replacement['creations'], [])
         self.assertIsNone(replacement['live'])
+        archived, _ = self.get('/api/visual/content?' + urlencode({'workspace': saved['workspace_id'], 'version': saved['version_id']}))
+        self.assertEqual(archived, b'Archived original')
 
     def test_hostile_html_cannot_access_parent_or_issue_api_or_external_requests(self):
         attack = b'''<!doctype html><html><body><p id="result">running</p><script>

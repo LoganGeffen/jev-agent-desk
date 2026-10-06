@@ -77,6 +77,9 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
             viewer_browser = playwright.chromium.launch()
             try:
                 page = viewer_browser.new_page(viewport={'width': 1440, 'height': 900})
+                stream_responses = []
+                page.on('response', lambda response: stream_responses.append(response.status)
+                        if '/api/visual/live?' in response.url else None)
                 page.goto(self.url)
                 page.locator('#visual-live-tab').click()
                 page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
@@ -86,11 +89,11 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
                 page.evaluate('tab => selectTab(tab)', self.targets['Controller']['tab'])
                 page.wait_for_function("document.querySelector('.visual-live-stage canvas').hidden")
                 self.assertIsNone(self.workspace('Controller')['live'])
-                deadline = time.monotonic() + 4
-                while self.app.visual.streaming and time.monotonic() < deadline:
-                    page.wait_for_timeout(100)
                 page.evaluate('tab => selectTab(tab)', identity['tab'])
-                page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
+                try:
+                    page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
+                except Exception:
+                    self.fail(f"Immediate tab return failed: stream HTTP statuses={stream_responses}; UI={page.locator('.visual-status').inner_text()}")
                 page.evaluate('visuals.stream.onerror()')
                 page.locator('.visual-retry').wait_for(state='visible')
                 deadline = time.monotonic() + 4
