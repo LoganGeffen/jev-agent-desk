@@ -139,12 +139,24 @@ class BrowserRuntime:
                 accept_downloads=True, args=['--disable-extensions', '--disable-sync', '--no-first-run', '--no-default-browser-check'])
             context.set_default_timeout(10000)
             profile['context'] = context
+            profile['storage_digest'] = await self.storage_digest(profile)
             profile['run'] = str(uuid.uuid4())
             context.on('close', lambda: self.context_closed(profile, context))
             for page in context.pages:
                 await page.close()
             self.save()
             return profile
+
+    async def storage_digest(self, profile):
+        state = await profile['context'].storage_state()
+        return hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest()
+
+    async def refresh_account(self, profile):
+        digest = await self.storage_digest(profile)
+        if digest != profile.get('storage_digest'):
+            profile['epoch'] += 1
+            profile['storage_digest'] = digest
+            self.save()
 
     def context_closed(self, profile, context):
         if profile['context'] is context:
@@ -155,14 +167,22 @@ class BrowserRuntime:
             self.save()
 
     def add_page(self, page, owner, profile, parent=None):
+        if parent and sum(not r['page'].is_closed() for r in self.pages.values() if r['profile'] is profile) >= 12:
+            asyncio.create_task(page.close())
+            return None
         record = {'id': str(uuid.uuid4()), 'run': profile['run'], 'owner': owner,
                   'key': owner_key(owner), 'page': page, 'profile': profile, 'parent': parent}
         self.pages[record['id']] = record
         page.on('popup', lambda popup: self.add_page(popup, record['owner'], profile, record['id']))
         page.on('close', self.save)
-        page.on('download', lambda download: asyncio.create_task(self.download(record, download)))
+        page.on('download', lambda download: self.start_download(record, download))
         self.save()
         return record
+
+    def start_download(self, record, download):
+        task = asyncio.create_task(self.download(record, download))
+        record.setdefault('pending_downloads', set()).add(task)
+        task.add_done_callback(record['pending_downloads'].discard)
 
     async def download(self, record, download):
         try:
@@ -175,11 +195,16 @@ class BrowserRuntime:
             if path is None or path.stat().st_size > 8 * 1024 * 1024:
                 record['download_error'] = 'Download exceeds the capture limit or is unavailable'
                 return
+            pending_bytes = sum(len(d['data']) for r in self.pages.values() for d in r.get('downloads', []))
+            if pending_bytes + path.stat().st_size * 4 // 3 > 24 * 1024 * 1024 or len(record.get('downloads', [])) >= 4:
+                record['download_error'] = 'Pending downloads reached the capture limit; publish or clear them before downloading again'
+                await download.delete()
+                return
             download_id = str(uuid.uuid4())
             record.setdefault('downloads', []).append({'download_id': download_id, 'receipt_key': 'download-' + download_id,
                 'name': download.suggested_filename, 'data': base64.b64encode(path.read_bytes()).decode(),
                 'page_id': record['id'], 'run_id': record['run']})
-            record['downloads'] = record['downloads'][-4:]
+            await download.delete()
         except (PlaywrightError, OSError):
             record['download_error'] = 'Download failed before completion'
 
@@ -203,6 +228,11 @@ class BrowserRuntime:
         lease = profile['lease']
         if profile['mode'] != 'human' or not lease or lease['id'] != args.get('lease_id') or lease['client'] != args.get('client_id') or lease['owner'] != record['key']:
             raise BrowserError('Human browser control expired or changed', 423)
+        ancestor = record
+        while ancestor['id'] != lease['page'] and ancestor.get('parent'):
+            ancestor = self.pages[ancestor['parent']]
+        if ancestor['id'] != lease['page']:
+            raise BrowserError('Human control is limited to the sign-in page and its popups', 423)
         if lease['until'] <= time.monotonic():
             profile['lease'] = None
             profile['mode'] = 'waiting'
@@ -267,8 +297,15 @@ class BrowserRuntime:
             for record in records:
                 self.agent_ready(record['profile'])
             if op == 'downloads':
+                pending = [task for record in records for task in record.get('pending_downloads', set())]
+                if pending:
+                    await asyncio.wait(pending, timeout=15)
+                await guard()
+                for record in records:
+                    self.agent_ready(record['profile'])
                 return {'downloads': [d for r in records for d in r.get('downloads', [])],
-                        'errors': [r['download_error'] for r in records if r.get('download_error')]}
+                        'errors': [r['download_error'] for r in records if r.get('download_error')],
+                        'pending': sum(len(r.get('pending_downloads', [])) for r in records)}
             for record in records:
                 record['downloads'] = [d for d in record.get('downloads', []) if d['download_id'] != args.get('download_id')]
             return {'acknowledged': True}
@@ -289,6 +326,7 @@ class BrowserRuntime:
                 if url != 'about:blank':
                     await page.goto(url, wait_until='domcontentloaded', timeout=20000)
                 record['title'] = await page.title()
+                await self.refresh_account(profile)
                 self.save()
                 return self.receipt(record)
         if op == 'stop_profile':
@@ -300,6 +338,16 @@ class BrowserRuntime:
             async with profile['lock']:
                 await self.stop_profile(profile)
             return self.profile_view(profile)
+        recovered = False
+        if op == 'lease' and args.get('page_id') not in self.pages:
+            previous = next((p for p in self.history if p['page_id'] == args.get('page_id') and p['run_id'] == args.get('run_id') and owner_key(p['owner']) == owner_key(args.get('owner'))), None)
+            if previous and self.profiles[previous['profile_id']]['mode'] == 'waiting':
+                profile = await self.get_profile(previous['profile_id'])
+                async with profile['lock']:
+                    await guard()
+                    record = self.add_page(await profile['context'].new_page(), args['owner'], profile)
+                    args.update(page_id=record['id'], run_id=record['run'])
+                    recovered = True
         record = self.owned(args)
         profile, page = record['profile'], record['page']
         profile['last_used'] = time.monotonic()
@@ -316,10 +364,11 @@ class BrowserRuntime:
                     await guard()
                     self.owned(args)
                     profile['mode'] = 'human'
-                    profile['lease'] = {'id': secrets.token_urlsafe(24), 'client': client, 'owner': record['key'],
+                    profile['lease'] = {'id': secrets.token_urlsafe(24), 'client': client, 'owner': record['key'], 'page': record['id'],
                                         'sequence': 0, 'until': time.monotonic() + self.lease_seconds}
                     self.save()
-                    return {**self.receipt(record), 'lease_id': profile['lease']['id'], 'client_id': client, 'expires_in': self.lease_seconds}
+                    return {**self.receipt(record), 'lease_id': profile['lease']['id'], 'client_id': client, 'expires_in': self.lease_seconds, 'recovered': recovered,
+                            'message': 'Browser restarted. Sign-in state was retained; unsaved page state was lost.' if recovered else ''}
             except BaseException:
                 profile['mode'], profile['lease'] = 'waiting', None
                 self.save()
@@ -327,6 +376,7 @@ class BrowserRuntime:
         if op == 'frame':
             self.owned(args)
             data = await page.screenshot(type='jpeg', quality=65, timeout=5000)
+            await guard()
             self.owned(args)
             return {'page_id': record['id'], 'run_id': record['run'], 'mime': 'image/jpeg',
                     'data': base64.b64encode(data).decode(), 'width': 1280, 'height': 800,
@@ -348,6 +398,8 @@ class BrowserRuntime:
                     record['title'] = await page.title()
                     await guard()
                     self.lease_valid(args, record)
+                    profile['storage_digest'] = await self.storage_digest(profile)
+                    self.lease_valid(args, record)
                     profile['epoch'] += 1
                     profile['mode'], profile['lease'] = 'agent', None
                     self.save()
@@ -366,11 +418,19 @@ class BrowserRuntime:
             await guard()
             self.owned(args)
             self.agent_ready(profile)
+            await self.refresh_account(profile)
+            await guard()
+            self.agent_ready(profile)
             action = args.get('action')
+            account_changed = args.get('account_epoch') != profile['epoch']
             if action != 'snapshot' and args.get('account_epoch') != profile['epoch']:
                 raise BrowserError('Account state changed; inspect the page before another action')
             result = await self.agent_action(record, action, args.get('args', {}), guard)
             self.agent_ready(profile)
+            await self.refresh_account(profile)
+            if action == 'snapshot':
+                result['account_review_required'] = account_changed
+                result['account_epoch'] = profile['epoch']
             if action != 'close':
                 self.owned(args)
                 record['title'] = await page.title()
@@ -436,7 +496,9 @@ class BrowserRuntime:
         return x, y
 
     async def human_input(self, page, action, args):
-        if action == 'click':
+        if action == 'navigate':
+            await page.goto(valid_url(args.get('url')), wait_until='domcontentloaded', timeout=20000)
+        elif action == 'click':
             await page.mouse.click(*self.coordinates(args))
         elif action == 'text':
             text = args.get('text')

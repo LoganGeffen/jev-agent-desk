@@ -23,6 +23,8 @@ class FakeSite(BaseHTTPRequestHandler):
             self.wfile.write(b'completed disposable report')
             return
         self.send_header('Content-Type', 'text/html')
+        if self.path == '/logout':
+            self.send_header('Set-Cookie', 'account=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')
         if self.path == '/login':
             self.send_header('Set-Cookie', 'account=disposable; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax')
         self.end_headers()
@@ -179,6 +181,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.profiles['desk']['mode'], 'waiting')
         with self.assertRaises(BrowserError):
             await self.action('a', a, 'snapshot')
+        await self.runtime.close()
+        self.runtime = await BrowserRuntime(Path(self.temporary.name) / 'browser').start()
+        recovered = await self.runtime.request('lease', owner=owner('a'), page_id=a['page_id'], run_id=a['run_id'], client_id='desktop')
+        self.assertTrue(recovered['recovered'])
+        self.assertNotEqual(recovered['run_id'], a['run_id'])
+        self.assertEqual(recovered['url'], 'about:blank')
+        with self.assertRaises(BrowserError):
+            await self.runtime.request('input', **human, sequence=3, action='key', args={'key': 'Tab'})
+
 
     async def test_same_conversation_rebind_fences_old_handles_and_new_popups(self):
         a = await self.runtime.request('open', owner=owner('a'), url=self.url + '/a')
@@ -193,6 +204,24 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.1)
         self.assertEqual(len((await self.runtime.request('pages', owner=resumed))['pages']), 2)
         self.assertEqual((await self.runtime.request('pages', owner=owner('a')))['pages'], [])
+
+
+    async def test_shared_account_logout_invalidates_peer_epoch(self):
+        a = await self.runtime.request('open', owner=owner('a'), url=self.url + '/login')
+        b = await self.runtime.request('open', owner=owner('b'), url=self.url + '/b')
+        await self.action('a', a, 'navigate', url=self.url + '/logout')
+        with self.assertRaises(BrowserError):
+            await self.action('b', b, 'click', selector='#change')
+        refreshed = await self.action('b', b, 'snapshot')
+        self.assertTrue(refreshed['result']['account_review_required'])
+        self.assertGreater(refreshed['account_epoch'], b['account_epoch'])
+        reloaded = await self.action('b', refreshed, 'reload')
+        self.assertIn('signed out', (await self.action('b', reloaded, 'snapshot'))['result']['text'])
+        other = await self.runtime.request('open', owner=owner('a'), url=self.url + '/other')
+        lease = await self.runtime.request('lease', owner=owner('a'), page_id=a['page_id'], run_id=a['run_id'], client_id='phone')
+        with self.assertRaises(BrowserError):
+            await self.runtime.request('input', owner=owner('a'), page_id=other['page_id'], run_id=other['run_id'],
+                client_id='phone', lease_id=lease['lease_id'], sequence=1, action='key', args={'key': 'Tab'})
 
 
 class ServiceTests(unittest.TestCase):

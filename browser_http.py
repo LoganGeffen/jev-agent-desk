@@ -70,6 +70,7 @@ def get_route(handler, visual, browser):
     if not STREAMS.acquire(blocking=False):
         raise BrowserError('Browser observer limit reached', 429)
     sequence = 0
+    started = False
     try:
         first = browser.request('frame', owner=owner, **args)
         handler.send_response(200)
@@ -77,11 +78,14 @@ def get_route(handler, visual, browser):
         handler.send_header('Cache-Control', 'no-store')
         handler.send_header('X-Accel-Buffering', 'no')
         handler.end_headers()
+        started = True
         sequence = 0
         while True:
             if browser_owner(visual, target) != owner:
                 raise BrowserError('Conversation identity changed; browser observation stopped')
             frame = first if sequence == 0 else browser.request('frame', owner=owner, **args)
+            if browser_owner(visual, target) != owner:
+                raise BrowserError('Conversation identity changed before browser frame delivery')
             sequence += 1
             frame['sequence'] = sequence
             handler.wfile.write(('event: frame\ndata: ' + json.dumps(frame) + '\n\n').encode())
@@ -90,7 +94,7 @@ def get_route(handler, visual, browser):
     except (BrokenPipeError, ConnectionResetError):
         pass
     except (BrowserError, VisualError, OSError) as error:
-        if sequence:
+        if started:
             try:
                 handler.wfile.write(('event: status\ndata: ' + json.dumps({'page_id': args['page_id'], 'run_id': args['run_id'], 'status': 'stale', 'error': str(error)}) + '\n\n').encode())
                 handler.wfile.flush()
