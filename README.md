@@ -642,7 +642,8 @@ resize or other application commands. It follows that agent-browser session's
 active page. Closing the view or detaching leaves the browser running. Replacement
 of the pane/conversation, tmux server, daemon or stream listener invalidates the
 attachment, which must then be attached explicitly again. A disconnected unchanged
-session can be viewed again. One simultaneous viewer per attachment is supported.
+session can be viewed again. Opening a new viewer for an attachment replaces its previous observer; switching
+away closes only that observer, leaving the registration ready.
 This integration targets native Linux agent-browser 0.33.0; other browser providers
 and older Node-based agent-browser daemons are not supported by this first slice.
 

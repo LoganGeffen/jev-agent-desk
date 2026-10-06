@@ -380,5 +380,7 @@ command/result traffic is discarded. There is no viewer-to-upstream channel.
 Frames are bounded in size and the upstream receive queue is bounded; updates are
 not dropped, so a static page’s final repaint remains observable.
 A client disconnect closes only its observation socket; it never kills a browser.
+A new observer supersedes the previous connection using a per-connection cancellation
+event. Old callbacks and cleanup cannot reset the replacement observer or its state.
 The frontend fences requests, stream callbacks and image decoding by selection and
 generation. The live connection is ephemeral, whereas creation history is durable.

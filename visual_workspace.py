@@ -134,7 +134,7 @@ class VisualWorkspace:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.live = {}
-        self.streaming = set()
+        self.streaming = {}
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, owner TEXT UNIQUE NOT NULL);
@@ -333,10 +333,12 @@ class VisualWorkspace:
         if live is None or live['id'] != attachment or live['generation'] != generation:
             raise VisualError('Browser attachment changed', 409)
         self.validate_live(workspace, live)
+        observer = threading.Event()
         with self.lock:
-            if attachment in self.streaming:
-                raise VisualError('This browser already has an active viewer', 409)
-            self.streaming.add(attachment)
+            previous = self.streaming.get(attachment)
+            if previous is not None:
+                previous.set()
+            self.streaming[attachment] = observer
         handler.send_response(200)
         handler.send_header('Content-Type', 'text/event-stream')
         handler.send_header('Cache-Control', 'no-store')
@@ -344,21 +346,33 @@ class VisualWorkspace:
         handler.send_header('Connection', 'close')
         handler.end_headers()
         handler.close_connection = True
+        def update_status(status, error=None):
+            with self.lock:
+                if observer.is_set():
+                    raise ViewerClosed
+                live['status'] = status
+                if error is None:
+                    live.pop('error', None)
+                else:
+                    live['error'] = error
+
         def emit(event, body):
+            if observer.is_set():
+                raise ViewerClosed
             try:
                 handler.wfile.write(('event: ' + event + '\ndata: ' + json.dumps({'generation': generation, **body}) + '\n\n').encode())
                 handler.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 raise ViewerClosed from None
         try:
-            live['status'] = 'connecting'
+            update_status('connecting')
             emit('status', {'status': 'connecting'})
             with connect(f"ws://127.0.0.1:{live['port']}", origin=f"http://127.0.0.1:{live['port']}", proxy=None,
                          open_timeout=3, close_timeout=1, max_size=MAX_FILE, max_queue=2) as upstream:
                 self.validate_live(workspace, live)
                 sequence = 0
                 last_check = 0
-                while True:
+                while not observer.is_set():
                     if time.monotonic() - last_check >= 1:
                         self.validate_live(workspace, live)
                         last_check = time.monotonic()
@@ -371,7 +385,7 @@ class VisualWorkspace:
                     if not isinstance(packet, dict):
                         continue
                     if packet.get('type') == 'status' and packet.get('connected') is False:
-                        live['status'] = 'disconnected'
+                        update_status('disconnected', 'Browser has no connected page')
                         emit('status', {'status': 'disconnected', 'error': 'Browser has no connected page'})
                     if packet.get('type') != 'frame':
                         continue
@@ -388,23 +402,24 @@ class VisualWorkspace:
                     if any(type(d) not in (int, float) or not 0 < d <= 16384 for d in (width, height)):
                         raise VisualError('Browser frame dimensions are invalid', 502)
                     self.validate_live(workspace, live)
-                    live['status'] = 'live'
+                    update_status('live')
                     emit('status', {'status': 'live'})
                     emit('frame', {'seq': sequence, 'data': data, 'mime': mime, 'width': width, 'height': height})
         except ViewerClosed:
             pass
         except Exception as error:
-            live['status'] = 'stale' if isinstance(error, VisualError) and error.status == 409 else 'disconnected'
-            live['error'] = str(error) if isinstance(error, VisualError) else 'Browser stream disconnected; reopen the view to retry'
             try:
+                update_status('stale' if isinstance(error, VisualError) and error.status == 409 else 'disconnected',
+                              str(error) if isinstance(error, VisualError) else 'Browser stream disconnected; reopen the view to retry')
                 emit('status', {'status': live['status'], 'error': live['error']})
             except ViewerClosed:
                 pass
         finally:
             with self.lock:
-                if live['status'] in ('connecting', 'live'):
-                    live['status'] = 'ready'
-                self.streaming.discard(attachment)
+                if self.streaming.get(attachment) is observer:
+                    if live['status'] in ('connecting', 'live'):
+                        live['status'] = 'ready'
+                    self.streaming.pop(attachment)
 
 
 def send_bytes(handler, data, mime, filename=None, csp=None):

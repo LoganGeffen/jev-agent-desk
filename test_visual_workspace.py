@@ -206,7 +206,61 @@ class VisualTests(unittest.TestCase):
             with patch('visual_workspace.connect', side_effect=ConnectionResetError('Upstream failed')):
                 self.visual.stream(handler, result['workspace_id'], attachment['id'], attachment['generation'])
             self.assertEqual(self.visual.list('@1')['live']['status'], 'disconnected')
-            self.assertEqual(self.visual.streaming, set())
+            self.assertEqual(self.visual.streaming, {})
+
+    def test_new_view_supersedes_old_without_old_cleanup_resetting_state(self):
+        old_waiting = threading.Event()
+        new_waiting = threading.Event()
+        release_old = threading.Event()
+        release_new = threading.Event()
+        class Upstream:
+            def __init__(self, waiting, release):
+                self.waiting, self.release = waiting, release
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def recv(self, timeout):
+                self.waiting.set()
+                if not self.release.wait(3):
+                    raise AssertionError('Test receiver was not released')
+                raise TimeoutError
+        class Output(io.BytesIO):
+            closed_view = False
+            def write(self, data):
+                if self.closed_view:
+                    raise BrokenPipeError('Viewer closed')
+                return super().write(data)
+        def handler():
+            return SimpleNamespace(send_response=lambda *args: None, send_header=lambda *args: None,
+                                   end_headers=lambda: None, wfile=Output())
+        old_handler, new_handler = handler(), handler()
+        with patch('visual_workspace.endpoint_identity', return_value={'process': '123:1', 'inode': 'same'}), patch('visual_workspace.connect', side_effect=[Upstream(old_waiting, release_old), Upstream(new_waiting, release_new)]):
+            result = self.visual.attach({'target': self.target, 'name': 'Browser', 'session': 'test', 'pid': 123, 'port': 12345})
+            attachment = result['live']
+            args = (result['workspace_id'], attachment['id'], attachment['generation'])
+            old = threading.Thread(target=self.visual.stream, args=(old_handler, *args))
+            new = threading.Thread(target=self.visual.stream, args=(new_handler, *args))
+            try:
+                old.start()
+                self.assertTrue(old_waiting.wait(2))
+                first_observer = self.visual.streaming[attachment['id']]
+                new.start()
+                self.assertTrue(new_waiting.wait(2))
+                second_observer = self.visual.streaming[attachment['id']]
+                self.assertTrue(first_observer.is_set())
+                release_old.set()
+                old.join(2)
+                self.assertFalse(old.is_alive())
+                self.assertIs(self.visual.streaming[attachment['id']], second_observer)
+                self.assertEqual(self.visual.list('@1')['live']['status'], 'connecting')
+            finally:
+                new_handler.wfile.closed_view = True
+                release_old.set()
+                release_new.set()
+                old.join(3)
+                if new.ident:
+                    new.join(3)
+            self.assertEqual(self.visual.list('@1')['live']['status'], 'ready')
+            self.assertEqual(self.visual.streaming, {})
 
     def test_immediate_final_static_frame_is_never_discarded(self):
         frames = [base64.b64encode(b'\xff\xd8\xff' + value).decode() for value in (b'initial', b'final-change')]
