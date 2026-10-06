@@ -642,7 +642,7 @@ resize or other application commands. It follows that agent-browser session's
 active page. Closing the view or detaching leaves the browser running. Replacement
 of the pane/conversation, tmux server, daemon or stream listener invalidates the
 attachment, which must then be attached explicitly again. A disconnected unchanged
-session can be viewed again. Opening a new viewer for an attachment replaces its previous observer; switching
+session can be viewed again. For the legacy unmanaged agent-browser relay, opening a new viewer replaces its previous observer; switching
 away closes only that observer, leaving the registration ready.
 This integration targets native Linux agent-browser 0.33.0; other browser providers
 and older Node-based agent-browser daemons are not supported by this first slice.
@@ -650,9 +650,10 @@ and older Node-based agent-browser daemons are not supported by this first slice
 Saved bytes and provenance live in owner-only `<run-dir>/visual.sqlite3`. Restarting
 Desk with the same run directory preserves versions and tab ownership while that
 tmux server/window still exists. A new tmux server does not inherit history from a
-reused socket path or window number. Closed-tab archives retain their bytes, but
-archive browsing, reassociation and automatic migration are deferred. Live browser
-attachments are deliberately not restored on Desk restart. The visual API uses the
+reused socket path or window number. Closed-tab outputs retain their bytes and can be opened in the read-only archive.
+Reassociation and automatic migration to recycled tabs remain excluded. Legacy
+unmanaged agent-browser attachments are not restored on Desk restart; managed
+browser ownership is retained by the private daemon and revalidated on observation. The visual API uses the
 same loopback/private-proxy access boundary as Desk; it is not a multi-user service.
 
 ## Managed browser, outputs and app sessions

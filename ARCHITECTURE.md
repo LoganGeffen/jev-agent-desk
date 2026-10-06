@@ -354,7 +354,7 @@ are checked before capture and again before publication. A creation can gain a
 version only in its existing workspace and kind; source provenance remains on each
 version even after the agent changes. UI content/download requests include both
 workspace and version; cross-workspace combinations fail. Archived bytes survive a
-missing tab, with archival navigation deferred.
+missing tab and remain accessible through read-only archive navigation.
 
 HTML capability responses set `Content-Security-Policy: sandbox allow-scripts`
 without `allow-same-origin`, and the iframe repeats that sandbox. This makes the
@@ -380,10 +380,10 @@ command/result traffic is discarded. There is no viewer-to-upstream channel.
 Frames are bounded in size and the upstream receive queue is bounded; updates are
 not dropped, so a static page’s final repaint remains observable.
 A client disconnect closes only its observation socket; it never kills a browser.
-A new observer supersedes the previous connection using a per-connection cancellation
+For the legacy unmanaged agent-browser relay, a new observer supersedes the previous connection using a per-connection cancellation
 event. Old callbacks and cleanup cannot reset the replacement observer or its state.
 The frontend fences requests, stream callbacks and image decoding by selection and
-generation. The live connection is ephemeral, whereas creation history is durable.
+generation. The legacy live connection is ephemeral, whereas creation history is durable. Managed browser streams support multiple independent observers and revalidate daemon-owned pages across Desk restart.
 
 ## Managed sessions and runtimes
 
