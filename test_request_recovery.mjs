@@ -108,7 +108,7 @@ test('only confirmed not-attempted failures restore exact words and captured rec
     const target = {tab: '@fixture', pane: '%fixture', identity: 'original-conversation'};
     await s.context.submit('Original words.', target);
     assert.equal(s.restored.length, delivery === 'not_attempted' ? 1 : 0);
-    if (delivery === 'not_attempted') assert.deepEqual(s.restored[0], ['Original words.', target, 'Recipient unavailable']);
+    if (delivery === 'not_attempted') assert.deepEqual(s.restored[0], ['Original words.', target, 'Recipient unavailable', null]);
   }
 });
 

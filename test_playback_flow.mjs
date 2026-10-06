@@ -21,6 +21,11 @@ const REF = {id: 'att-1', tab: '@b', pane: '%b', identity: 'b:original', label: 
 const ORIGINAL = 'Café 🐕. Next sentence here. ';
 const FIRST = 'Café 🐕. ', SECOND = 'Next sentence here. ';
 const TERMINAL = new Set(['completed', 'cancelled', 'failed']);
+const voices = new Set();
+test.afterEach(() => {
+  for (const voice of voices) voice.stop();
+  voices.clear();
+});
 
 function pushable(signal) {
   const encoder = new TextEncoder(), chunks = [];
@@ -151,6 +156,7 @@ async function desk({style = 'original', server = backend()} = {}) {
     TextDecoder, TextEncoder, btoa, atob, fetch, crypto: webcrypto});
   vm.runInContext(read('readback.js') + read('voice.js') + read('jarvis.js') + '\nglobalThis.Controls = VoiceControls; globalThis.JarvisClient = JarvisClient;', context);
   const voice = new context.Controls(async () => {});
+  voices.add(voice);
   voice.localWake = false;
   voice.autoAttempted = true;
   voice.configure({configured: true, websocket_url: 'ws://test'});
