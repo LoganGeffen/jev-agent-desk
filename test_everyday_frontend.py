@@ -346,8 +346,9 @@ class EverydayFrontendTests(unittest.TestCase):
                 click_header('#tabs-toggle')
                 self.assertFalse(page.locator('#session-rail').is_visible())
                 click_header('#visual-toggle')
+                self.assertTrue(page.locator('#panes').is_visible())
                 page.locator('#more-controls > summary').click()
-                page.locator('#terminal-toggle').click()
+                self.assertTrue(page.locator('#phone-escape').is_visible())
                 page.locator('#more-controls > summary').click()
                 click_header('#visual-toggle')
                 for width, height in ((390, 360), (701, 844), (320, 568), (390, 844), (700, 844)):

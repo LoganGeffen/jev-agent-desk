@@ -60,9 +60,6 @@
   .visual-preview iframe, .visual-preview object { min-height: 160px; }
   .visual-download { min-height: 30px; }
   .visual-help { padding-bottom: 4px; }
-  #app:not(.show-terminal) #workspace:has(.visuals-open) { grid-template-rows: auto minmax(0, 1fr) auto; }
-  #app:not(.show-terminal) #workspace:has(.visuals-open) #composer { max-height: 45dvh; }
-  #app:not(.show-terminal) #workspace-body:not(.visuals-open) { display: none; }
 }
 .visual-heading button, .visual-context button, .visual-archive-banner button, .reader-mode button, .browser-controls button, .browser-tools button, .reader-tools button, .pdf-search button, .browser-setup button, .app-card button { padding: 5px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: #18221c; color: #dce9e0; font: inherit; font-size: 11px; cursor: pointer; }
 .visual-heading .visual-owner { margin-left: auto; }

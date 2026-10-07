@@ -4,8 +4,8 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-const submit = html.slice(html.indexOf('    async function submitRequest'), html.indexOf("    $('terminal-toggle').onclick"));
-const router = html.slice(html.indexOf('    async function submitInput'), html.indexOf("    $('terminal-toggle').onclick"));
+const submit = html.slice(html.indexOf('    async function submitRequest'), html.indexOf("    $('tabs-toggle').onclick"));
+const router = html.slice(html.indexOf('    async function submitInput'), html.indexOf("    $('tabs-toggle').onclick"));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(fetch, refresh = () => new Promise(() => {})) {
   const elements = new Map(['transcript', 'result'].map(id => [id, {}]));

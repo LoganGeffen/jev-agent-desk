@@ -225,20 +225,29 @@ def run():
         page.wait_for_function('!submitting && speechRecords.length === 3')
         assert requests[-1]['capture_target']['identity'] == 'a:replacement'
         assert requests[-1]['request'] == 'Keep this draft in A.'
+        assert not page.locator('#more-controls').evaluate('(el) => el.open')
+        assert page.locator('#phone-escape').is_visible()
+        assert not page.locator('#phone-enter').count()
+        assert not page.locator('#terminal-toggle').count()
         page.locator('#more-controls').evaluate('(el) => el.open = true')
+        assert 'Closing a tab ends its running processes.' in page.locator('#more-controls').inner_text()
+        page.locator('#manage-tabs').check()
+        assert page.locator('#app').evaluate("el => el.classList.contains('manage-tabs')")
+        page.locator('#manage-tabs').uncheck()
+        page.locator('#more-controls').evaluate('(el) => el.open = false')
         page.locator('#phone-escape').click()
         assert raw[-1]['key'] == 'Escape'
-        page.locator('#phone-enter').click()
-        assert raw[-1]['key'] == 'Enter'
+        assert len(raw) == 1
         assert not page.locator('#paste-terminal').count()
         assert page.locator('textarea').count() == 1
-        page.locator('#terminal-toggle').click()
-        assert not page.locator('#panes').is_visible() and page.locator('#phone-text').is_visible()
-        page.locator('#terminal-toggle').click()
-        page.locator('#more-controls').evaluate('(el) => el.open = false')
         for width in (320, 390, 700, 1280):
             page.set_viewport_size({'width': width, 'height': 844})
             terminal_readable()
+            assert page.locator('#panes').is_visible(), width
+            field = page.locator('#phone-text').bounding_box()
+            escape = page.locator('#phone-escape').bounding_box()
+            assert field and escape and field['x'] + field['width'] <= escape['x']
+            assert escape['x'] + escape['width'] <= width and escape['height'] >= 40
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
         page.set_viewport_size({'width': 320, 'height': 844})
         page.locator('#push-controls').evaluate('(element) => element.open = true')
@@ -471,7 +480,7 @@ def run():
                              'separate drafts per pane', 'background original during draft',
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
-                             'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow',
+                             'terminal height above 550px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
                              '320px notification controls', 'authenticated manifest fetch',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
