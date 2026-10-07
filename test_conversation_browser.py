@@ -229,12 +229,12 @@ def run():
         assert page.locator('#phone-escape').is_visible()
         assert not page.locator('#phone-enter').count()
         assert not page.locator('#terminal-toggle').count()
-        page.locator('#more-controls').evaluate('(el) => el.open = true')
-        assert 'Closing a tab ends its running processes.' in page.locator('#more-controls').inner_text()
-        page.locator('#manage-tabs').check()
-        assert page.locator('#app').evaluate("el => el.classList.contains('manage-tabs')")
-        page.locator('#manage-tabs').uncheck()
-        page.locator('#more-controls').evaluate('(el) => el.open = false')
+        assert not page.locator('#manage-tabs').count()
+        page.locator('#tabs-toggle').click()
+        assert page.locator('.tab-action').first.is_visible()
+        assert page.locator('.group-action').first.is_visible()
+        assert page.locator('#new-tab').is_visible()
+        page.locator('#tabs-toggle').click()
         page.locator('#phone-escape').click()
         assert raw[-1]['key'] == 'Escape'
         assert len(raw) == 1
