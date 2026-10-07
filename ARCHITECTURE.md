@@ -409,7 +409,7 @@ are checked before capture and again before publication. A creation can gain a
 version only in its existing workspace and kind; source provenance remains on each
 version even after the agent changes. UI content/download requests include both
 workspace and version; cross-workspace combinations fail. Archived bytes survive a
-missing tab and remain accessible through read-only archive navigation.
+missing tab and remain available through the read-only archive API.
 
 HTML capability responses set `Content-Security-Policy: sandbox allow-scripts`
 without `allow-same-origin`, and the iframe repeats that sandbox. This makes the

@@ -635,6 +635,9 @@ trace with two requests sharing one capture, not a live user recording.
 ## Visual workspace
 
 Each selected tab has a **Creations** view and a passive **Live browser** view.
+Use the adjacent Conversation and Visuals buttons in the tab header to switch
+views. Creations shows saved outputs in one collapsible, time-ordered list;
+selecting a row previews that exact version.
 Creations are explicitly captured files, with immutable versions; changing or
 removing the original does not change a saved version. A tab with several panes
 shares its creations, with the source conversation shown. Its live browser appears

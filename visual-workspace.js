@@ -2,6 +2,7 @@ class VisualWorkspace {
   constructor(root, toggle, options = {}) {
     this.root = root;
     this.toggle = toggle;
+    this.conversationToggle = options.conversationToggle;
     this.options = options;
     try { this.preferences = JSON.parse(localStorage.getItem('jev-visual-preferences') || '{}'); } catch { this.preferences = {}; }
     this.context = null;
@@ -13,39 +14,26 @@ class VisualWorkspace {
     this.open = false;
     this.lastRefresh = 0;
     this.root.innerHTML = `
-      <div class="visual-heading"><h2>Visual workspace</h2><span class="visual-owner"></span><button class="visual-expand" type="button" aria-pressed="false">Expand</button><button class="visual-back" type="button">Conversation</button></div><div class="visual-context"><select class="visual-pane" aria-label="Visual workspace pane"></select><button class="visual-archives" type="button">Archives</button><button class="visual-latest" type="button" hidden>New activity</button></div><div class="visual-archive-banner" hidden><span>Read-only archive</span><button type="button">Return to live tab</button></div><div class="visual-archive-list" hidden></div>
+      <div class="visual-context"><select class="visual-pane" aria-label="Visual workspace pane"></select></div>
       <div class="visual-tabs" role="tablist" aria-label="Visual workspace views">
         <button type="button" id="visual-creations-tab" role="tab" aria-controls="visual-creations" aria-selected="true">Creations<span class="visual-count"></span></button>
         <button type="button" id="visual-live-tab" role="tab" aria-controls="visual-live" aria-selected="false" tabindex="-1">Live browser</button>
       </div>
       <section id="visual-creations" class="visual-panel" role="tabpanel" aria-labelledby="visual-creations-tab">
-        <div class="visual-controls" hidden>
-          <label>Creation<select class="visual-creation" aria-label="Saved creation"></select></label>
-          <label>Version<select class="visual-version" aria-label="Saved version"></select></label>
-          <a class="visual-download" download>Download original</a>
-        </div>
-        <div class="creation-cards" aria-label="Saved outputs"></div><div class="reader-mode"><button type="button" data-reader="read" aria-pressed="true">Read</button><button type="button" data-reader="source" aria-pressed="false">Source</button><label class="image-zoom-label" hidden>Local zoom<select class="image-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="2">200%</option><option value="3">300%</option></select></label></div><div class="visual-preview"></div>
+        <details class="creation-picker" hidden><summary>Saved outputs <span class="creation-selected"></span></summary><div class="creation-list" role="group" aria-label="Saved outputs"></div></details><div class="reader-mode"><button type="button" data-reader="read" aria-pressed="true">Read</button><button type="button" data-reader="source" aria-pressed="false">Source</button><label class="image-zoom-label" hidden>Local zoom<select class="image-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="2">200%</option><option value="3">300%</option></select></label></div><div class="visual-preview"></div>
         <div class="visual-provenance"></div>
       </section>
       <section id="visual-live" class="visual-panel" role="tabpanel" aria-labelledby="visual-live-tab" hidden><div class="managed-browser" hidden></div><div class="legacy-browser visual-panel">
         <p class="visual-status" role="status"></p>
         <div class="visual-live-stage"><canvas aria-label="Live browser view" hidden></canvas><p class="visual-message"></p></div>
         <div class="visual-live-footer"><span>View only · follows the selected pane</span><button type="button" class="visual-retry" hidden>Reconnect view</button></div></div>
-      </section><section class="visual-apps" hidden></section>
-      <details class="visual-help"><summary>About this workspace</summary><p>Ask a managed conversation to browse, run an app or publish an output. Completed outputs appear here with their original bytes and source. Existing uninstrumented sessions need the supported managed-resume setup.</p></details>`;
+      </section><section class="visual-apps" hidden></section>`;
     this.find = selector => this.root.querySelector(selector);
     this.preview = this.find('.visual-preview');
     this.canvas = this.find('.legacy-browser canvas');
     if (typeof ManagedBrowserView !== 'undefined') this.browser = new ManagedBrowserView(this.find('.managed-browser'), {clientId: options.clientId || crypto.randomUUID(), activity: (id, mode) => this.activity(id, mode), preference: () => this.preference(), save: () => this.savePreferences()});
-    this.find('.visual-back').onclick = () => this.close();
-    this.find('.visual-expand').onclick = event => {
-      const expanded = this.root.parentElement.classList.toggle('visual-expanded');
-      event.target.setAttribute('aria-pressed', String(expanded)); event.target.textContent = expanded ? 'Split view' : 'Expand';
-    };
+    if (this.conversationToggle) this.conversationToggle.onclick = () => this.close();
     this.find('.visual-pane').onchange = event => this.options.selectPane?.(event.target.dataset.tab, event.target.value);
-    this.find('.visual-archives').onclick = () => this.archives();
-    this.find('.visual-archive-banner button').onclick = () => { this.archiveId = null; this.find('.visual-archive-banner').hidden = true; this.lastRefresh = 0; this.refresh(); };
-    this.find('.visual-latest').onclick = () => { Object.assign(this.preference(), {closed: false, historical: false}); this.open = true; this.activitySeen = null; this.workspace && this.activity(this.workspace.creations[0]?.versions[0]?.id || 'latest', this.pendingMode || 'creations', true); };
     for (const button of this.root.querySelectorAll('[data-reader]')) button.onclick = () => { this.preference().readerMode = button.dataset.reader; this.savePreferences(); this.clearPreview(); this.renderCreations(); };
     this.find('.image-zoom').onchange = event => { this.readingPreference().imageZoom = event.target.value; this.savePreferences(); this.zoomImage(); };
     this.preview.onscroll = () => { if (this.previewKey) { this.readingPreference().scroll = this.preview.scrollTop; this.savePreferences(); } };
@@ -53,18 +41,6 @@ class VisualWorkspace {
       if (!this.readerFrame || event.source !== this.readerFrame.contentWindow || event.data?.type !== 'jev-reader-scroll' || event.data.token !== this.readerToken || !Number.isFinite(event.data.y)) return;
       this.readingPreference().scroll = Math.max(0, event.data.y); this.savePreferences();
     });
-    this.find('.visual-creation').onchange = event => {
-      this.choice().creation = event.target.value;
-      this.choice().version = null;
-      this.preference().historical = false; this.savePreferences();
-      this.renderCreations();
-    };
-    this.find('.visual-version').onchange = event => {
-      this.choice().version = event.target.value;
-      const creation = this.workspace.creations.find(item => item.id === this.choice().creation);
-      this.preference().historical = creation?.versions[0]?.id !== event.target.value; this.savePreferences();
-      this.renderCreations();
-    };
     for (const mode of ['creations', 'live']) {
       const button = this.find(`#visual-${mode}-tab`);
       button.onclick = () => this.setMode(mode);
@@ -76,7 +52,20 @@ class VisualWorkspace {
         this.find(`#visual-${next}-tab`).focus();
       };
     }
-    this.toggle.onclick = () => { if (this.open) this.close(); else { this.open = true; this.preference().closed = false; this.savePreferences(); this.renderOpen(); } };
+    this.toggle.onclick = () => {
+      if (this.toggle.textContent.includes('new')) {
+        if (this.pendingMode === 'creations') {
+          const latest = this.workspace?.creations.flatMap(creation => creation.versions.map(version => ({creation, version})))
+            .sort((a, b) => new Date(b.version.created_at) - new Date(a.version.created_at))[0];
+          if (latest) Object.assign(this.choice(), {creation: latest.creation.id, version: latest.version.id});
+        }
+        this.preference().historical = false;
+        this.toggle.textContent = 'Visuals';
+        this.setMode(this.pendingMode || 'creations');
+        this.pendingMode = null;
+      }
+      this.open = true; this.preference().closed = false; this.savePreferences(); this.renderOpen();
+    };
     this.find('.visual-retry').onclick = () => {
       this.retryLiveKey = this.failedLiveKey;
       this.lastRefresh = 0;
@@ -97,16 +86,16 @@ class VisualWorkspace {
     if (key !== this.context?.key) {
       this.suspend();
       this.context = tab && pane ? {key, tab: tab.id, pane: pane.id, identity: pane.identity, name: tab.name, workspace_id: tab.workspace_id} : null;
-      this.archiveId = null;
       this.workspace = null;
       this.creationSignature = null;
-      this.find('.visual-controls').hidden = true;
+      this.pendingMode = null;
+      this.toggle.textContent = 'Visuals';
+      this.find('.creation-picker').hidden = true;
       this.find('.visual-count').textContent = '';
       this.find('.visual-provenance').textContent = '';
       this.empty('Loading this tab’s creations…');
     }
     if (!this.context) return;
-    this.find('.visual-owner').textContent = tab.name;
     const paneSelect = this.find('.visual-pane');
     paneSelect.dataset.tab = tab.id;
     const signature = JSON.stringify(tab.panes.map(item => [item.id, item.identity]));
@@ -129,11 +118,10 @@ class VisualWorkspace {
     this.failedLiveKey = null;
     this.retryLiveKey = null;
     this.clearPreview();
-    this.find('.visual-controls').hidden = true;
+    this.find('.creation-picker').hidden = true;
     this.find('.visual-provenance').textContent = '';
-    this.find('.visual-owner').textContent = '';
     this.find('.visual-count').textContent = '';
-    this.find('.creation-cards').replaceChildren();
+    this.find('.creation-list').replaceChildren();
     this.find('.reader-mode').hidden = true;
     this.find('.visual-apps').hidden = true;
     this.liveStatus('connecting', 'Waiting for the selected conversation.');
@@ -153,12 +141,11 @@ class VisualWorkspace {
     this.request = request;
     this.lastRefresh = Date.now();
     try {
-      const archiveId = this.archiveId;
-      const response = await fetch(archiveId ? '/api/visual/archive?' + new URLSearchParams({workspace: archiveId}) : '/api/visual/workspace?' + new URLSearchParams({tab: context.tab}), {signal: request.signal});
+      const response = await fetch('/api/visual/workspace?' + new URLSearchParams({tab: context.tab}), {signal: request.signal});
       const data = await response.json();
       if (epoch !== this.epoch || this.context !== context) return;
       if (!response.ok) throw new Error(data.error || 'Visual workspace unavailable.');
-      if ((!this.archiveId && data.tab !== context.tab) || !data.workspace_id) throw new Error('The workspace identity could not be verified.');
+      if (data.tab !== context.tab || !data.workspace_id) throw new Error('The workspace identity could not be verified.');
       if (this.workspace && this.workspace.workspace_id !== data.workspace_id) {
         this.clearPreview();
         this.stopLive();
@@ -174,8 +161,8 @@ class VisualWorkspace {
         this.setMode(this.mode, false); this.renderOpen();
       }
       const latest = data.creations.flatMap(item => item.versions).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
-      if (!this.archiveId && latest && !latest.source?.app) this.activity(latest.id, 'creations');
-      this.find('.visual-count').textContent = String(data.creations.length);
+      if (latest && !latest.source?.app) this.activity(latest.id, 'creations');
+      this.find('.visual-count').textContent = String(data.creations.reduce((total, item) => total + item.versions.length, 0));
       this.renderCreations();
       this.renderLive();
     } catch (error) {
@@ -183,7 +170,7 @@ class VisualWorkspace {
       this.workspace = null;
       this.clearPreview();
       this.stopLive();
-      this.find('.visual-controls').hidden = true;
+      this.find('.creation-picker').hidden = true;
       this.find('.visual-provenance').textContent = '';
       this.empty('Visual workspace unavailable', error.message);
       this.liveStatus('disconnected', error.message);
@@ -195,7 +182,8 @@ class VisualWorkspace {
   renderOpen() {
     this.root.hidden = !this.open;
     this.root.parentElement.classList.toggle('visuals-open', this.open);
-    this.toggle.setAttribute('aria-expanded', String(this.open));
+    this.toggle.setAttribute('aria-pressed', String(this.open));
+    this.conversationToggle?.setAttribute('aria-pressed', String(!this.open));
     this.preference().open = this.open; this.savePreferences();
     if (this.open) { this.refresh(); this.renderLive(); }
     else { this.stopLive(); this.clearPreview(); this.browser?.show(false); }
@@ -223,41 +211,42 @@ class VisualWorkspace {
 
   renderCreations() {
     if (!this.workspace || !this.open || this.mode !== 'creations') return;
-    const creations = this.workspace.creations.filter(item => item.versions.length);
-    if (!creations.length) {
+    const outputs = this.workspace.creations.flatMap(creation => creation.versions.map(version => ({creation, version})))
+      .sort((a, b) => new Date(b.version.created_at) - new Date(a.version.created_at) || b.version.number - a.version.number);
+    if (!outputs.length) {
       this.clearPreview();
-      this.find('.visual-controls').hidden = true;
+      this.find('.creation-picker').hidden = true;
       this.find('.visual-provenance').textContent = '';
-      this.find('.creation-cards').replaceChildren(); this.find('.reader-mode').hidden = true;
+      this.find('.creation-list').replaceChildren(); this.find('.reader-mode').hidden = true;
       this.empty('No creations saved yet', 'Save an output from this tab to keep a copy and revisit each version.');
       return;
     }
     const choice = this.choice();
-    const creation = creations.find(item => item.id === choice.creation) || creations[0];
-    const version = creation.versions.find(item => item.id === choice.version) || creation.versions[0];
+    const selected = outputs.find(item => item.creation.id === choice.creation && item.version.id === choice.version) || outputs[0];
+    const {creation, version} = selected;
     choice.creation = creation.id;
     choice.version = version.id;
     this.savePreferences();
-    const signature = JSON.stringify([this.workspace.workspace_id, creations, choice]);
+    const signature = JSON.stringify([this.workspace.workspace_id, this.workspace.creations]);
     if (signature !== this.creationSignature) {
       this.creationSignature = signature;
-      const options = creations.map(item => new Option(item.title, item.id));
-      this.find('.visual-creation').replaceChildren(...options);
-      this.find('.visual-creation').value = creation.id;
-      this.find('.visual-version').replaceChildren(...creation.versions.map(item => new Option(`v${item.number} · ${this.date(item.created_at)}`, item.id)));
-      this.find('.visual-version').value = version.id;
-      this.find('.creation-cards').replaceChildren(...creations.map(item => {
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'creation-card';
-        button.setAttribute('aria-pressed', String(item.id === creation.id));
-        const title = document.createElement('strong'); title.textContent = item.title;
-        const info = document.createElement('span'); info.textContent = `${item.kind.toUpperCase()} · v${item.versions[0].number} · ${item.versions[0].source?.provider || 'import'}`;
-        button.append(title, info); button.onclick = () => { choice.creation = item.id; choice.version = null; this.preference().historical = false; this.savePreferences(); this.renderCreations(); };
+      this.find('.creation-list').replaceChildren(...outputs.map(item => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'creation-item';
+        button.dataset.version = item.version.id;
+        const title = document.createElement('strong'); title.textContent = item.creation.title;
+        const info = document.createElement('span'); info.textContent = `${this.date(item.version.created_at)}${item.creation.versions.length > 1 ? ` · v${item.version.number}` : ''}`;
+        button.append(title, info); button.onclick = () => {
+          Object.assign(choice, {creation: item.creation.id, version: item.version.id});
+          this.preference().historical = item.version.id !== outputs[0].version.id;
+          this.find('.creation-picker').open = false;
+          this.savePreferences(); this.renderCreations();
+        };
         return button;
       }));
     }
-    this.find('.visual-controls').hidden = false;
-    const download = this.find('.visual-download');
-    download.href = this.deskUrl(version.download_url, '/api/visual/download');
+    this.find('.creation-picker').hidden = false;
+    this.find('.creation-selected').textContent = `${creation.title} · ${this.date(version.created_at)}`;
+    for (const button of this.root.querySelectorAll('.creation-item')) button.setAttribute('aria-pressed', String(button.dataset.version === version.id));
     const source = version.source || {};
     this.find('.visual-provenance').textContent = [source.mode === 'imported' ? 'Imported' : 'Captured', this.date(version.created_at), source.provider,
       source.thread_id && `conversation …${source.thread_id.slice(-8)}`, source.pane && `pane ${source.pane}`, this.size(version.byte_size)].filter(Boolean).join(' · ');
@@ -295,7 +284,7 @@ class VisualWorkspace {
       }
       this.previewRequest = new AbortController();
       const response = await fetch(this.deskUrl(version.content_url, '/api/visual/content'), {signal: this.previewRequest.signal});
-      if (!response.ok) throw new Error('This saved version could not be loaded. Try downloading the original.');
+      if (!response.ok) throw new Error('This saved output could not be loaded.');
       if (['markdown', 'text', 'html'].includes(creation.kind)) {
         const text = await response.text();
         if (epoch !== this.previewEpoch) return;
@@ -317,15 +306,15 @@ class VisualWorkspace {
       }
       const bytes = await response.arrayBuffer();
       if (epoch !== this.previewEpoch) return;
-      if (!['image', 'pdf'].includes(creation.kind)) throw new Error('Preview unavailable. Download the original to open it.');
+      if (!['image', 'pdf'].includes(creation.kind)) throw new Error('Preview unavailable for this file type.');
       const mime = creation.kind === 'pdf' ? 'application/pdf' : response.headers.get('Content-Type')?.split(';')[0];
-      if (creation.kind === 'image' && !['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(mime)) throw new Error('This image format is available as an original download.');
+      if (creation.kind === 'image' && !['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(mime)) throw new Error('Preview unavailable for this image format.');
       this.blobUrl = URL.createObjectURL(new Blob([bytes], {type: mime}));
       if (creation.kind === 'image') {
         const image = document.createElement('img');
         image.alt = creation.title;
         image.src = this.blobUrl;
-        image.onerror = () => { if (epoch === this.previewEpoch) this.empty('Image preview unavailable', 'Download the original to open this file.'); };
+        image.onerror = () => { if (epoch === this.previewEpoch) this.empty('Image preview unavailable'); };
         this.preview.replaceChildren(image); this.zoomImage();
         this.preview.scrollTop = this.readingPreference().scroll || 0;
       } else {
@@ -369,8 +358,8 @@ class VisualWorkspace {
     if (!this.open || this.mode !== 'live' || document.hidden) return;
     const managed = this.browser && (!this.workspace?.live || this.browser.pages.length > 0);
     this.find('.legacy-browser').hidden = !!managed;
-    this.browser?.show(!!managed && !this.archiveId);
-    if (managed || this.archiveId) { this.stopLive(); return; }
+    this.browser?.show(!!managed);
+    if (managed) { this.stopLive(); return; }
     const live = this.workspace?.live;
     if (!live || live.pane !== this.context?.pane || live.identity !== this.context?.identity) {
       this.stopLive();
@@ -461,7 +450,7 @@ class VisualWorkspace {
     this.find('.visual-retry').hidden = status !== 'disconnected';
   }
 
-  preference(id = this.archiveId || this.workspace?.workspace_id || this.context?.workspace_id || this.context?.tab || 'initial') {
+  preference(id = this.workspace?.workspace_id || this.context?.workspace_id || this.context?.tab || 'initial') {
     return this.preferences[id] ||= {};
   }
 
@@ -479,21 +468,21 @@ class VisualWorkspace {
     this.open = false; this.preference().closed = true; this.savePreferences(); this.renderOpen();
   }
 
-  activity(id, mode, force = false) {
-    if (!id || !this.context || this.archiveId) return;
+  activity(id, mode) {
+    if (!id || !this.context) return;
     const preference = this.preference();
     const key = 'seen_' + mode;
-    if (!force && preference[key] === id) return;
+    if (preference[key] === id) return;
     preference[key] = id;
-    if (!force && (preference.closed || preference.historical)) {
-      this.find('.visual-latest').hidden = false; this.pendingMode = mode;
+    if (!this.open || preference.historical || this.mode !== mode) {
+      this.pendingMode = mode;
       this.toggle.textContent = 'Visuals · new'; this.savePreferences(); return;
     }
-    this.find('.visual-latest').hidden = true; this.toggle.textContent = 'Visuals';
+    this.toggle.textContent = 'Visuals';
     this.open = true;
     if (mode === 'creations' && this.workspace?.creations.length) {
       const creation = this.workspace.creations.find(item => item.versions.some(version => version.id === id)) || this.workspace.creations[0];
-      Object.assign(this.choice(), {creation: creation.id, version: creation.versions[0].id});
+      Object.assign(this.choice(), {creation: creation.id, version: id});
     }
     this.setMode(mode); this.renderOpen(); this.savePreferences();
   }
@@ -512,24 +501,8 @@ class VisualWorkspace {
     image.style.maxWidth = 'none'; image.style.height = value === 'fit' ? '100%' : 'auto';
   }
 
-  async archives() {
-    const list = this.find('.visual-archive-list');
-    list.hidden = !list.hidden; if (list.hidden) return;
-    list.textContent = 'Loading saved workspaces…';
-    try {
-      const response = await fetch('/api/visual/archives'); const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Archives unavailable.');
-      list.replaceChildren(...result.workspaces.filter(item => item.closed).map(item => {
-        const button = document.createElement('button'); button.type = 'button'; button.textContent = `${item.title || item.tab || 'Closed tab'} · ${item.creations_count} creations`;
-        button.onclick = () => { this.request?.abort(); this.request = null; this.epoch += 1; this.archiveId = item.workspace_id; Object.assign(this.preference(), {open: true, closed: false, mode: 'creations'}); this.find('.visual-archive-banner span').textContent = 'Read-only archive · ' + (item.title || item.tab || 'Closed tab'); this.find('.visual-archive-banner').hidden = false; list.hidden = true; this.open = true; this.stopLive(); this.browser?.show(false); this.clearPreview(); this.lastRefresh = 0; this.setMode('creations'); this.refresh(); };
-        return button;
-      }));
-      if (!list.children.length) list.textContent = 'No closed-tab outputs have been saved.';
-    } catch (error) { list.textContent = error.message; }
-  }
-
   async refreshApps() {
-    if (!this.context || this.archiveId || this.appLoading || Date.now() - (this.lastApps || 0) < 2000) return;
+    if (!this.context || this.appLoading || Date.now() - (this.lastApps || 0) < 2000) return;
     const epoch = this.epoch; this.appLoading = true; this.lastApps = Date.now();
     try {
       const response = await fetch('/api/apps/state?' + new URLSearchParams({tab: this.context.tab}));

@@ -428,7 +428,7 @@
         <button id="tabs-toggle" type="button" aria-expanded="false" aria-controls="session-rail">Tabs</button>
         <button id="mobile-title" type="button" title="Rename selected tab"></button>
         <details id="tab-menu" hidden><summary aria-label="Tab actions" title="Tab actions">⋯</summary><div><button id="close-current-tab" type="button">Close tab</button></div></details>
-        <button id="visual-toggle" type="button" aria-expanded="false" aria-controls="visual-workspace">Visuals</button>
+        <div id="view-switch"><button id="conversation-toggle" type="button" aria-pressed="true" aria-controls="panes">Conversation</button><button id="visual-toggle" type="button" aria-pressed="false" aria-controls="visual-workspace">Visuals</button></div>
       </header>
       <div id="workspace-body">
         <div id="panes" aria-label="Terminal panes"></div>
@@ -523,7 +523,7 @@
     const notifications = new PushNotificationClient({fetch: (...args) => fetch(...args), storage: localStorage,
       serviceWorker: navigator.serviceWorker, NotificationApi: window.Notification, location, history,
       onChange: renderNotifications});
-    const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'), {clientId: deviceView.clientId, selectPane: (tab, pane) => selectTab(tab, pane)});
+    const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'), {conversationToggle: $('conversation-toggle'), clientId: deviceView.clientId, selectPane: (tab, pane) => selectTab(tab, pane)});
     let refreshSequence = 0;
     let appliedRefresh = 0;
     const activityLabels = {

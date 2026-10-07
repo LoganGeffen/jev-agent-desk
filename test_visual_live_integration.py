@@ -81,6 +81,7 @@ class InstalledBrowserIntegrationTests(VisualHttpFixture):
                 page.on('response', lambda response: stream_responses.append(response.status)
                         if '/api/visual/live?' in response.url else None)
                 page.goto(self.url)
+                page.locator('#visual-toggle').click()
                 page.locator('#visual-live-tab').click()
                 page.locator('.visual-live-stage canvas').wait_for(state='visible', timeout=8000)
                 first_canvas = page.locator('.visual-live-stage canvas').evaluate('(canvas) => canvas.toDataURL()')

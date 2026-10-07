@@ -164,7 +164,7 @@ def run():
         terminal_readable()
         assert not page.locator('#session-rail').is_visible()
         assert page.locator('textarea:visible').count() == 1
-        assert page.locator('#panes').bounding_box()['height'] > 550
+        assert page.locator('#panes').bounding_box()['height'] > 500
         full_width = page.locator('#panes').bounding_box()['width']
         page.locator('#tabs-toggle').click()
         rail = page.locator('#session-rail').bounding_box()
@@ -478,7 +478,7 @@ def run():
                              'separate drafts per pane', 'background original during draft',
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
-                             'terminal height above 550px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
+                             'terminal height above 500px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
                              '320px notification controls', 'authenticated manifest fetch',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',

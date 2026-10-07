@@ -269,12 +269,17 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                 page = browser.new_page(viewport={'width': 1500, 'height': 1000})
                 page.goto(self.url)
                 page.wait_for_function('currentState !== null')
-                chooser = page.locator('.visual-creation')
-                chooser.wait_for(state='visible')
-                chooser.select_option(registered['html']['creation_id'])
+                page.locator('#visual-toggle').click()
+                picker = page.locator('.creation-picker')
+                picker.wait_for(state='visible')
+                def pick(version):
+                    if not picker.evaluate('(element) => element.open'):
+                        picker.locator('summary').click()
+                    page.locator(f'.creation-item[data-version="{version}"]').click()
+                pick(registered['html']['version_id'])
                 self.assertEqual(page.frame_locator('.visual-preview iframe').locator('#saved-html').inner_text(),
                                  'VISIBLE HTML FIXTURE')
-                chooser.select_option(registered['markdown']['creation_id'])
+                pick(registered['markdown']['version_id'])
                 page.wait_for_function("""() => {
                     const preview = document.querySelector('.visual-preview');
                     return preview.querySelector('iframe') || preview.textContent.includes('VISIBLE MARKDOWN FIXTURE');
@@ -283,13 +288,13 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                     self.assertIn('VISIBLE MARKDOWN FIXTURE', page.frame_locator('.visual-preview iframe').locator('body').inner_text())
                 else:
                     self.assertIn('VISIBLE MARKDOWN FIXTURE', page.locator('.visual-preview').inner_text())
-                chooser.select_option(registered['text']['creation_id'])
+                pick(registered['text']['version_id'])
                 page.locator('.visual-preview pre').filter(has_text='VISIBLE TEXT FIXTURE').wait_for()
-                chooser.select_option(registered['image']['creation_id'])
+                pick(registered['image']['version_id'])
                 page.wait_for_function("document.querySelector('.visual-preview img')?.naturalWidth === 1")
-                chooser.select_option(registered['pdf']['creation_id'])
+                pick(registered['pdf']['version_id'])
                 page.locator('.pdf-page-view canvas[aria-label="PDF page 1"]').wait_for()
-                self.assertEqual(page.locator('.visual-download').inner_text(), 'Download original')
+                self.assertEqual(page.locator('.visual-download, .visual-version, .visual-creation').count(), 0)
                 deadline = time.monotonic() + 12
                 red_pixels = 0
                 while time.monotonic() < deadline and red_pixels < 500:
@@ -310,12 +315,12 @@ class VisualHttpIntegrationTests(VisualHttpFixture):
                 output.mkdir(parents=True, exist_ok=True)
                 page.screenshot(path=str(output / 'pdf-rendered.png'), full_page=True)
                 self.assertGreater(red_pixels, 500, 'The PDF reader did not paint its red fixture rectangle')
-                self.assertEqual(page.locator('.visual-download').inner_text(), 'Download original')
+                self.assertEqual(page.locator('.creation-item[aria-pressed="true"]').get_attribute('data-version'), registered['pdf']['version_id'])
                 page.evaluate('tab => selectTab(tab)', self.targets['Controller']['tab'])
                 page.wait_for_function('tab => currentState.selected === tab && visuals.workspace?.tab === tab',
                                        arg=self.targets['Controller']['tab'])
                 self.assertEqual(page.locator('.visual-preview iframe, .visual-preview img, .visual-preview canvas').count(), 0)
-                self.assertFalse(page.locator('.visual-controls').is_visible())
+                self.assertFalse(page.locator('.creation-picker').is_visible())
                 self.assertEqual(self.workspace('Controller')['creations'], [])
             finally:
                 browser.close()

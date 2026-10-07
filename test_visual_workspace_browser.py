@@ -32,7 +32,7 @@ def selection(tab='a', identity=None):
 
 def creation(kind, number=1):
     def version(value):
-        return {'id': f'{kind}-{value}', 'number': value, 'created_at': '2026-10-06T14:00:00Z',
+        return {'id': f'{kind}-{value}', 'number': value, 'created_at': f'2026-10-06T14:{value:02d}:00Z',
                 'entrypoint': 'index.html', 'byte_size': 2048,
                 'source': {'mode': 'captured', 'provider': 'codex', 'thread_id': 'conversation-a', 'pane': '%a'},
                 'download_url': f'/api/visual/download?version={kind}-{value}',
@@ -76,6 +76,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.route('**/*', self.route)
         self.page.goto('https://visual.test/')
         self.page.evaluate('(state) => view.update(state)', selection())
+        self.page.locator('#visual-toggle').click()
         self.page.wait_for_selector('.visual-preview iframe')
 
     def tearDown(self):
@@ -90,9 +91,9 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
             return route.fulfill(content_type='text/html', body='''<!doctype html><html><head>
               <style>:root{--line:#26312c;--line-strong:#3b4a43;--muted:#8d9b94;--accent:#9de2bc;--panel:#0e1211;--attention:#ffc66d}body{margin:0;background:#090c0b;color:#e6ece8;font:14px system-ui}#workspace-body{height:700px}#panes{min-height:0}</style>
               <link rel="stylesheet" href="/visual-workspace.css"></head><body>
-              <button id="visual-toggle">Visuals</button><div id="workspace-body"><div id="panes">Terminal</div><section id="visual-workspace"></section></div>
+              <button id="conversation-toggle">Conversation</button><button id="visual-toggle">Visuals</button><div id="workspace-body"><div id="panes">Terminal</div><section id="visual-workspace"></section></div>
               <script src="/vendor/marked.min.js"></script><script src="/vendor/purify.min.js"></script><script src="/visual-readers.js"></script><script src="/visual-workspace.js"></script>
-              <script>const view = new VisualWorkspace(document.getElementById('visual-workspace'), document.getElementById('visual-toggle'));</script></body></html>''')
+              <script>const view = new VisualWorkspace(document.getElementById('visual-workspace'), document.getElementById('visual-toggle'), {conversationToggle: document.getElementById('conversation-toggle')});</script></body></html>''')
         if parsed.path == '/api/visual/workspace':
             return route.fulfill(json=self.workspaces[query['tab'][0]])
         if parsed.path == '/api/visual/content':
@@ -111,15 +112,22 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         return route.fulfill(status=404, body='Not found')
 
     def test_saved_renderers_versions_and_isolation(self):
+        def pick(version):
+            self.page.locator('.creation-picker summary').click()
+            self.page.locator(f'.creation-item[data-version="{version}"]').click()
+
         frame = self.page.locator('.visual-preview iframe')
         self.assertEqual(frame.get_attribute('sandbox'), 'allow-scripts')
         self.assertNotIn('allow-same-origin', frame.get_attribute('sandbox'))
-        self.page.locator('.visual-version').select_option('html-1')
+        self.assertEqual(self.page.locator('.creation-item').first.get_attribute('data-version'), 'html-2')
+        self.assertFalse(self.page.locator('.creation-picker').evaluate('(picker) => picker.open'))
+        self.assertFalse(self.page.locator('.visual-creation, .visual-version, .visual-download, .visual-archives, .visual-help').count())
+        self.page.locator('.creation-picker summary').click()
+        self.page.locator('.creation-item[data-version="html-1"]').click()
         self.page.frame_locator('.visual-preview iframe').get_by_text('Frozen html-1').wait_for()
         self.page.evaluate('() => { view.lastRefresh = 0; view.refresh(); }')
-        self.assertEqual(self.page.locator('.visual-version').input_value(), 'html-1')
-        self.assertIn('version=html-1', self.page.locator('.visual-download').get_attribute('href'))
-        self.page.locator('.visual-creation').select_option('markdown')
+        self.assertEqual(self.page.locator('.creation-item[aria-pressed="true"]').get_attribute('data-version'), 'html-1')
+        pick('markdown-1')
         markdown = self.page.frame_locator('.visual-preview iframe')
         markdown.get_by_role('heading', name='Saved notes').wait_for()
         self.assertEqual(markdown.locator('li').count(), 2)
@@ -130,12 +138,12 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.locator('.visual-preview iframe').get_attribute('sandbox'), 'allow-scripts allow-popups allow-popups-to-escape-sandbox')
         self.assertFalse(self.page.evaluate('Boolean(window.pwned)'))
         self.assertFalse(any('/leak' in request for request in self.requests))
-        self.page.locator('.visual-creation').select_option('text')
+        pick('text-1')
         self.page.locator('.visual-preview pre').wait_for()
         self.assertEqual(self.page.locator('.visual-preview pre').inner_text(), '<script>literal source</script>')
-        self.page.locator('.visual-creation').select_option('image')
+        pick('image-1')
         self.page.wait_for_function('document.querySelector(".visual-preview img")?.naturalWidth === 1')
-        self.page.locator('.visual-creation').select_option('pdf')
+        pick('pdf-1')
         self.page.locator('.pdf-page-view canvas[aria-label="PDF page 1"]').wait_for()
         self.page.locator('.pdf-next').click()
         self.page.locator('.pdf-page-view canvas[aria-label="PDF page 2"]').wait_for()
@@ -145,7 +153,18 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.evaluate('(state) => view.update(state)', selection('b'))
         self.page.wait_for_function('view.workspace?.workspace_id === "workspace-b"')
         self.assertEqual(self.page.locator('.visual-preview iframe, .visual-preview object, .visual-preview img').count(), 0)
-        self.assertFalse(self.page.locator('.visual-controls').is_visible())
+        self.assertFalse(self.page.locator('.creation-picker').is_visible())
+
+    def test_header_buttons_choose_a_view_without_toggling_back(self):
+        self.assertTrue(self.page.locator('#visual-workspace').is_visible())
+        self.assertFalse(self.page.locator('#panes').is_visible())
+        self.page.locator('#visual-toggle').click()
+        self.assertTrue(self.page.locator('#visual-workspace').is_visible())
+        self.page.locator('#conversation-toggle').click()
+        self.assertTrue(self.page.locator('#panes').is_visible())
+        self.assertFalse(self.page.locator('#visual-workspace').is_visible())
+        self.page.locator('#visual-toggle').click()
+        self.assertTrue(self.page.locator('#visual-workspace').is_visible())
 
     def test_delayed_metadata_and_content_cannot_cross_selection(self):
         self.page.evaluate('''() => {
@@ -162,14 +181,15 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.evaluate('releaseOldWorkspace()')
         self.assertEqual(self.page.evaluate('view.workspace.workspace_id'), 'workspace-b')
         self.page.evaluate('(state) => view.update(state)', selection())
-        self.page.locator('.visual-creation').wait_for()
+        self.page.locator('.creation-picker').wait_for()
         self.page.evaluate('''() => {
           const actual = window.fetch;
           window.fetch = (url, opts) => String(url).includes('version=text-1')
             ? new Promise(resolve => window.releaseOldText = () => resolve(new Response('OLD CONVERSATION CONTENT')))
             : actual(url, opts);
         }''')
-        self.page.locator('.visual-creation').select_option('text')
+        self.page.locator('.creation-picker summary').click()
+        self.page.locator('.creation-item[data-version="text-1"]').click()
         self.page.wait_for_function('Boolean(window.releaseOldText)')
         self.page.evaluate('(state) => view.update(state)', selection('b'))
         self.page.wait_for_function('view.workspace?.workspace_id === "workspace-b"')
@@ -226,7 +246,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.page.evaluate("streams[0].emit('status', {generation:'generation-a', status:'disconnected', error:'Socket closed'})")
         self.assertTrue(self.page.evaluate('streams[0].closed'))
         self.page.evaluate('view.renderLive()')
-        self.page.locator('#visual-toggle').click()
+        self.page.locator('#conversation-toggle').click()
         self.page.locator('#visual-toggle').click()
         self.assertEqual(self.page.evaluate('streams.length'), 1)
         self.page.locator('.visual-retry').click()
@@ -237,7 +257,7 @@ class VisualWorkspaceBrowserTests(unittest.TestCase):
         self.assertFalse(self.page.locator('.visual-retry').is_visible())
         self.workspaces['@a']['live']['status'] = 'ready'
         self.page.evaluate("() => { view.workspace.live.status = 'ready'; view.renderLive(); }")
-        self.page.locator('#visual-toggle').click()
+        self.page.locator('#conversation-toggle').click()
         self.page.locator('#visual-toggle').click()
         self.assertEqual(self.page.evaluate('streams.length'), 2)
         self.page.evaluate("() => { view.workspace.live.generation = 'new-generation'; view.renderLive(); }")
