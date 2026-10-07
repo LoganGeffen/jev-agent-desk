@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from server import make_server
+from push_notifications import PushNotifications
 from visual import capture
 from visual_workspace import VisualError, VisualWorkspace, endpoint_identity, safe_path
 
@@ -24,7 +25,8 @@ class VisualTests(unittest.TestCase):
         self.panes = {'%1': {'provider': 'codex', 'thread_id': 'conversation-a', 'process': '100:200', 'identity': 'exact-a'},
                       '%2': {'provider': 'claude', 'thread_id': 'conversation-b', 'process': '300:400', 'identity': 'exact-b'}}
         self.owner_generation = 'server-generation-one'
-        self.app = SimpleNamespace(log=self.root / 'events.jsonl', validate_pane=self.validate_pane)
+        self.app = SimpleNamespace(log=self.root / 'events.jsonl', validate_pane=self.validate_pane,
+                                   push=PushNotifications(self.root))
         self.owner_patch = patch.object(VisualWorkspace, 'owner', side_effect=lambda tab: self.owner_generation + tab)
         self.owner_patch.start()
         self.addCleanup(self.owner_patch.stop)

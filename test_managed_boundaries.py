@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from app_runtime_identity import listener_identity
 from browser_runtime import BrowserRuntime, BrowserError
 from server import make_server
+from push_notifications import PushNotifications
 from test_browser_runtime import owner
 from test_conversation_browser import fixture_state
 
@@ -50,7 +51,8 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_managed_requests_cannot_embed_navigate_or_spoof_access_to_desk(self):
         inputs, state = [], fixture_state()
-        app = SimpleNamespace(log=self.root / 'events.jsonl', state=lambda *args: state)
+        app = SimpleNamespace(log=self.root / 'events.jsonl', state=lambda *args: state,
+                              push=PushNotifications(self.root))
         app.terminal_input = lambda tab, **kwargs: inputs.append(tab) or state
         desk = make_server(app, public_origin='https://desk.example.test')
         threading.Thread(target=desk.serve_forever, daemon=True).start()

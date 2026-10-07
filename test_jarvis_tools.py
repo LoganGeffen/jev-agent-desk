@@ -46,6 +46,11 @@ class DisposableDesk(unittest.TestCase):
             mocked = patch(target, side_effect=identity)
             mocked.start()
             self.addCleanup(mocked.stop)
+        activity = patch('agent_activity.AgentActivity.read', side_effect=lambda agent, thread=None:
+                         {'state': 'ready', 'turn_id': 'reply-' + agent['thread_id'],
+                          'source': 'synthetic', 'observed_at': None})
+        activity.start()
+        self.addCleanup(activity.stop)
         deadline = time.monotonic() + 3
         while 'codex' not in tmux(self.socket, 'list-panes', '-a', '-F', '#{pane_current_command}'):
             if time.monotonic() > deadline:

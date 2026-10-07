@@ -9,13 +9,14 @@ from urllib.request import Request, urlopen
 
 from browser_runtime import BrowserError
 from server import make_server
+from push_notifications import PushNotifications
 from visual_workspace import VisualError
 
 
 class BrowserHTTPTests(unittest.TestCase):
     def test_two_observers_lease_origin_identity_and_http_restart(self):
         with tempfile.TemporaryDirectory() as directory:
-            app = SimpleNamespace(log=Path(directory) / 'events.jsonl')
+            app = SimpleNamespace(log=Path(directory) / 'events.jsonl', push=PushNotifications(directory))
             live_identity = ['a']
             app.panes = lambda tab: [{'id': '%a', 'identity': live_identity[0], 'thread_id': 'thread-a', 'provider': 'codex'}]
             def start(port=0):
