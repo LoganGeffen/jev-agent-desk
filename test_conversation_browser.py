@@ -180,9 +180,7 @@ def run():
         assert page.locator('#phone-text').is_visible()
         assert page.locator('#speech-style').input_value() == 'spoken'
         assert page.evaluate('inputMode') == 'jarvis'
-        page.locator('#more-controls').evaluate('(el) => el.open = true')
-        page.locator('#input-mode').select_option('direct')
-        page.locator('#more-controls').evaluate('(el) => el.open = false')
+        page.locator('#mode-pane').click()
         assert page.evaluate('inputMode') == 'direct'
         page.locator('#phone-text').fill('Please inspect B without changing my recipient.')
         page.evaluate("voice.committed('Then report back.'); voice.holdDraft()")
@@ -350,9 +348,7 @@ def run():
         assert page.evaluate("audioEvents.filter(kind => kind === 'playback_started').length") == 1
         page.evaluate('voice.capture.playback.close(); voice.capture = null')
         assert not jarvis_posts and not jarvis_cancels
-        page.locator('#more-controls').evaluate('(el) => el.open = true')
-        page.locator('#input-mode').select_option('jarvis')
-        page.locator('#more-controls').evaluate('(el) => el.open = false')
+        page.locator('#mode-jarvis').click()
         jarvis_state.update(revision=2, subject=SUBJECT_B)
         page.wait_for_function("document.getElementById('jarvis-status').textContent === 'Subject: B'")
         direct_requests = len(requests)

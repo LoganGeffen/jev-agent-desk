@@ -218,7 +218,7 @@ class EverydayDeskUITests(unittest.TestCase):
                         self.assertEqual(reader.locator('img').evaluate('(image) => image.naturalWidth'), 1)
                         self.assertEqual(reader.get_by_role('link', name='Source').get_attribute('target'), '_blank')
                         desktop.locator('#more-controls').evaluate('(element) => element.open = true')
-                        desktop.locator('#input-mode').select_option('direct')
+                        desktop.locator('#mode-pane').click()
                         desktop.locator('#more-controls').evaluate('(element) => element.open = false')
                         desktop.locator('#phone-text').fill('Keep  these exact words about this report.')
                         captured = desktop.evaluate('voice.draft')

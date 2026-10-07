@@ -28,11 +28,17 @@ class VoiceControls {
     this.config = {};
     this.wakeIdleMs = 60000;
     this.loudFrames = 0;
-    document.getElementById('voice-toggle').onclick = () => this.capture ? this.stop() : this.start();
-    this.localWake = true;
+    document.getElementById('voice-toggle').onclick = () => this.capture ? this.stop({manual: true}) : this.start();
+    this.activation = 'tap';
+    this.localWake = false;
+    this.manualOff = false;
     this.autoAttempted = false;
-    document.addEventListener('visibilitychange', () => { if (document.hidden) this.stop(); });
-    window.addEventListener('pagehide', () => this.stop());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) { this.stop(); this.autoAttempted = false; }
+      else this.resumeAutomatic();
+    });
+    window.addEventListener('pagehide', () => { this.stop(); this.autoAttempted = false; });
+    window.addEventListener('pageshow', () => this.resumeAutomatic());
     document.getElementById('stop-readback').onclick = () => this.stopReadback('stop and listen');
     document.getElementById('replay-reply').onclick = () => {
       const text = document.getElementById('reply-original').textContent;
@@ -84,7 +90,9 @@ class VoiceControls {
     const target = this.target();
     const key = value => this.draftKey(value);
     if (this.draft?.target?.tab === 'jarvis' && !this.draft.target.mode) { this.holdDraft(); return; }
+    let resume = false;
     if (this.draft && key(this.draft.target) !== key(target)) {
+      resume = !!this.capture && this.activation !== 'tap' && !this.manualOff;
       this.stop();
       this.drafts.set(key(this.draft.target), this.draft);
       this.draft = null;
@@ -102,6 +110,7 @@ class VoiceControls {
     }
     if (this.draft && (this.draftContextChanged(this.draft) || JSON.stringify(this.draft.target) !== JSON.stringify(target))) this.holdDraft();
     this.renderDraft();
+    if (resume && this.config.configured && !document.hidden) this.start();
   }
   cancelEvaluation() {
     this.evalSeq++;
@@ -284,10 +293,8 @@ class VoiceControls {
   toggleState(active) {
     const button = document.getElementById('voice-toggle');
     button.setAttribute('aria-pressed', String(active));
-    button.setAttribute('aria-label', active ? 'Stop Jarvis' : this.localWake ? 'Enable Jarvis' : 'Start voice input');
-    button.title = active ? 'Stop Jarvis' : this.localWake ? 'Enable Jarvis' : 'Start voice input';
-    const label = document.getElementById('voice-toggle-label');
-    if (label) label.textContent = button.title;
+    button.setAttribute('aria-label', active ? 'Stop microphone' : 'Start microphone');
+    button.title = active ? 'Stop microphone' : 'Start microphone';
   }
   playbackStatus(text) {
     if (this.capture?.wake && this.capture.wakeState === 'listening') this.wakeActivity(this.capture);
@@ -311,17 +318,18 @@ class VoiceControls {
     this.config = config;
     document.getElementById('voice-toggle').disabled = !config.configured;
     if (!config.configured && !this.capture) this.status('Voice unavailable');
-    if (config.configured && !this.autoAttempted && !document.hidden) {
-      this.autoAttempted = true;
-      const generation = this.generation;
-      this.automaticallyEnable(generation);
-    }
+    this.resumeAutomatic();
+  }
+  resumeAutomatic() {
+    if (this.activation === 'tap' || this.manualOff || this.autoAttempted || !this.config.configured || document.hidden || this.capture) return;
+    this.autoAttempted = true;
+    this.automaticallyEnable(this.generation);
   }
   async automaticallyEnable(generation) {
     let permission;
     try { permission = await navigator.permissions?.query({name: 'microphone'}); } catch {}
     if (this.capture || this.generation !== generation || document.hidden) return;
-    if (permission?.state === 'denied') { this.status('Microphone permission denied · Enable Jarvis after allowing access'); return; }
+    if (permission?.state === 'denied') { this.status('Microphone permission denied · Tap the mic after allowing access'); return; }
     await this.start({automatic: true});
   }
   stopReadback(reason) {
@@ -508,6 +516,7 @@ class VoiceControls {
   }
   async start({automatic = false} = {}) {
     this.autoAttempted = true;
+    this.manualOff = false;
     const capture = {id: globalThis.crypto?.randomUUID?.() ?? 'capture-' + Date.now() + '-' + Math.random().toString(36).slice(2)};
     this.capture = capture;
     this.toggleState(true);
@@ -529,14 +538,14 @@ class VoiceControls {
       if (automatic) {
         await Promise.race([Promise.all([capture.context.resume(), capture.playback.resume()]),
           new Promise((_, reject) => {
-            capture.abortActivation = () => reject(new Error('Enable Jarvis once to activate audio'));
+            capture.abortActivation = () => reject(new Error('Tap the mic once to activate audio'));
             capture.activationTimer = setTimeout(capture.abortActivation, 1500);
           })]);
         clearTimeout(capture.activationTimer);
         capture.abortActivation = null;
         if (this.capture !== capture) return;
         if (capture.context.state !== 'running' || capture.playback.state !== 'running')
-          throw new Error('Enable Jarvis once to activate audio');
+          throw new Error('Tap the mic once to activate audio');
       }
       if (capture.context.sampleRate !== 16000) throw new Error('This browser cannot capture at 16 kHz');
       await capture.context.audioWorklet.addModule('/microphone.js');
@@ -726,7 +735,7 @@ class VoiceControls {
       } else if (message.message_type === 'error') this.fail(capture, message.error);
     };
     capture.ws.onerror = () => { if (capture.ws === socket) this.fail(capture, 'Local speech relay connection failed'); };
-    capture.ws.onclose = () => { if (capture.ws === socket) this.fail(capture, 'Speech connection closed; enable voice to reconnect'); };
+    capture.ws.onclose = () => { if (capture.ws === socket) this.fail(capture, 'Speech connection closed; tap the mic to reconnect'); };
   }
   fail(capture, message) {
     if (capture !== this.capture) return;
@@ -734,8 +743,9 @@ class VoiceControls {
     this.status(message);
     this.log('voice_error', message);
   }
-  stop() {
+  stop({manual = false} = {}) {
     this.autoAttempted = true;
+    if (manual) this.manualOff = true;
     this.preservePartial();
     this.holdDraft();
     const capture = this.capture;

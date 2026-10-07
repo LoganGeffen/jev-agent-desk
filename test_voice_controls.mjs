@@ -29,9 +29,10 @@ function fakeClock() {
   return clock;
 }
 
-function setup({clock = null, automatic = false, saved = {}} = {}) {
+function setup({clock = null, saved = {}} = {}) {
   const elements = new Map();
   const listeners = {};
+  const windowListeners = {};
   const logs = [];
   const submitted = [];
   const submissions = [];
@@ -72,7 +73,7 @@ function setup({clock = null, automatic = false, saved = {}} = {}) {
     },
     addEventListener(name, callback) { listeners[name] = callback; }
   };
-  const context = vm.createContext({document, window: {addEventListener() {}},
+  const context = vm.createContext({document, window: {addEventListener(name, callback) { windowListeners[name] = callback; }},
     sessionStorage: {getItem: key => saved[key], setItem: (key, value) => { saved[key] = value; }, removeItem: key => { delete saved[key]; }},
     navigator: {mediaDevices: {getUserMedia: async () => stream}},
     AudioContext: Context, WebSocket: Socket,
@@ -91,9 +92,8 @@ function setup({clock = null, automatic = false, saved = {}} = {}) {
     submissions.push(JSON.parse(JSON.stringify({text, target, source, meta})));
   });
   voice.localWake = false;
-  voice.autoAttempted = !automatic;
   voice.configure({configured: true, websocket_url: 'ws://test'});
-  return {voice, context, document, elements, listeners, logs, submitted, submissions, sources, tracks, stream, sockets};
+  return {voice, context, document, elements, listeners, windowListeners, logs, submitted, submissions, sources, tracks, stream, sockets};
 }
 
 async function listening(s) {
@@ -169,6 +169,49 @@ test('voice toggle state preserves icon content', async () => {
   s.voice.stop();
   assert.equal(button.textContent, 'icon');
   assert.equal(button['aria-pressed'], 'false');
+});
+
+test('tap only never requests the microphone on load or return to the page', async () => {
+  const s = setup();
+  let grants = 0;
+  s.context.navigator.mediaDevices.getUserMedia = async () => { grants++; return s.stream; };
+  s.voice.configure({configured: true, websocket_url: 'ws://test'});
+  s.document.hidden = true; s.listeners.visibilitychange();
+  s.document.hidden = false; s.listeners.visibilitychange();
+  s.windowListeners.pageshow();
+  await Promise.resolve();
+  assert.equal(grants, 0);
+  assert.equal(s.voice.capture, null);
+});
+
+test('wake word and always on reactivate on return; manual mic stop holds', async () => {
+  for (const mode of ['wake', 'always']) {
+    const s = setup();
+    let grants = 0;
+    s.voice.activation = mode;
+    s.voice.localWake = mode === 'wake';
+    s.voice.autoAttempted = false;
+    s.context.LocalWakeDetector = {create: async () => ({feed() {return false;}, close() {}})};
+    s.context.navigator.permissions = {query: async () => ({state: 'granted'})};
+    s.context.navigator.mediaDevices.getUserMedia = async () => {grants++; return s.stream;};
+    s.voice.configure({configured: true, websocket_url: 'ws://test'});
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(grants, 1);
+    assert.equal(s.voice.capture.wakeMode, mode === 'wake');
+    s.document.hidden = true; s.listeners.visibilitychange();
+    assert.equal(s.voice.capture, null);
+    s.document.hidden = false; s.listeners.visibilitychange();
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(grants, 2);
+    assert.equal(s.voice.capture.wakeMode, mode === 'wake');
+    s.elements.get('voice-toggle').onclick();
+    assert.equal(s.voice.manualOff, true);
+    s.windowListeners.pagehide();
+    s.windowListeners.pageshow();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(grants, 2);
+    assert.equal(s.voice.capture, null);
+  }
 });
 
 test('stop cancels audible readback without submitting an agent action', async () => {
@@ -1243,6 +1286,7 @@ test('automatic activation tries granted, prompt and unsupported permission quer
     const s = setup({clock: fakeClock()});
     let grants = 0;
     s.voice.localWake = true;
+    s.voice.activation = 'wake';
     s.voice.autoAttempted = false;
     s.context.LocalWakeDetector = {create: async () => ({feed() {return false;}, close() {}})};
     s.context.navigator.permissions = state === 'unsupported' ? undefined : {query: async () => ({state: state === 'suspended' ? 'granted' : state})};
@@ -1267,7 +1311,7 @@ test('Stop before delayed automatic permission or microphone grant prevents late
   for (const delayed of ['permission', 'microphone']) {
     const s = setup({clock: fakeClock()});
     let finish, grants = 0, models = 0;
-    s.voice.localWake = true; s.voice.autoAttempted = false;
+    s.voice.localWake = true; s.voice.activation = 'wake'; s.voice.autoAttempted = false;
     s.context.LocalWakeDetector = {create: async () => {models++;return {feed() {return false;}, close() {}};}};
     s.context.navigator.permissions = {query: delayed === 'permission' ? () => new Promise(resolve => {finish = resolve;}) : async () => ({state:'granted'})};
     s.context.navigator.mediaDevices.getUserMedia = () => {grants++;return delayed === 'microphone' ? new Promise(resolve => {finish = resolve;}) : Promise.resolve(s.stream);};

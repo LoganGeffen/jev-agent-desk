@@ -272,7 +272,12 @@
     .icon-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .icon-button:disabled { opacity: .34; cursor: default; }
     .icon-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; }
-    #voice-toggle { width: auto; display: flex; gap: 6px; padding: 0 10px; }
+    #voice-toggle { width: 40px; flex: 0 0 40px; }
+    #mode-switch { display: flex; min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; }
+    #mode-switch button { min-height: 38px; padding: 6px 10px; border: 0; background: #151b19; color: var(--muted); cursor: pointer; }
+    #mode-switch button + button { border-left: 1px solid var(--line-strong); }
+    #mode-switch button[aria-pressed="true"] { color: var(--accent); background: #173024; }
+    #mode-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     #voice-status { grid-column: 1 / -1; font-size: 12px; overflow-wrap: anywhere; color: var(--muted); }
     #voice-toggle[aria-pressed="true"] {
       border-color: var(--accent);
@@ -375,7 +380,7 @@
       #phone-input { order: -1; display: flex; gap: 6px; flex-wrap: wrap; }
       #phone-input textarea { width: auto; height: 52px; min-height: 52px; max-height: 20dvh; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: #070a09; }
       #composer button:not(.icon-button) { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; cursor: pointer; }
-      #voice-toggle { height: 40px; width: auto; }
+      #voice-toggle { height: 40px; }
       #voice-toggle svg { width: 19px; height: 19px; }
       #primary-actions { display: flex; flex-wrap: wrap; }
       #turn-status { display: block; font-size: 12px; overflow-wrap: anywhere; }
@@ -454,9 +459,13 @@
             <button id="phone-escape" type="button" aria-label="Send Escape to selected terminal">Escape</button>
           </div>
           <div id="composer-actions">
-        <button class="icon-button" id="voice-toggle" type="button" disabled aria-pressed="false" aria-label="Enable Jarvis" title="Enable Jarvis">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg><span id="voice-toggle-label">Enable Jarvis</span>
+        <button class="icon-button" id="voice-toggle" type="button" disabled aria-pressed="false" aria-label="Start microphone" title="Start microphone">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"></path></svg>
         </button>
+            <div id="mode-switch" role="group" aria-label="Message destination">
+              <button id="mode-jarvis" type="button" aria-pressed="true">Jarvis</button>
+              <button id="mode-pane" type="button" aria-pressed="false">Pane</button>
+            </div>
             <button type="submit">Send</button>
           </div>
         </form>
@@ -477,8 +486,8 @@
         <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
         <div id="speech-records"></div></details>
         <details id="more-controls"><summary>Options</summary>
-        <label id="input-mode-label">Send to <select id="input-mode"><option value="jarvis">Jarvis</option><option value="direct">Selected pane (direct dictation)</option></select></label>
-        <small>Listens on-device. After wake, sends a short audio buffer and your request to ElevenLabs.</small>
+        <label id="mic-activation-label">Microphone <select id="mic-activation"><option value="tap">Tap only</option><option value="wake">Wake word</option><option value="always">Always on</option></select></label>
+        <small>Wake word listens locally for “Hey Jarvis.” Always on transcribes while the app is open. Your choice is saved on this device.</small>
         <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
         <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
         <label id="speech-style-label">Read replies as <select id="speech-style"><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
@@ -529,13 +538,18 @@
     const openedAt = Date.now();
     let inputMode = 'jarvis';
     try { if (localStorage.getItem('jev-input-mode') === 'direct') inputMode = 'direct'; } catch {}
+    let micActivation = 'tap';
+    try { if (['wake', 'always'].includes(localStorage.getItem('jev-mic-activation'))) micActivation = localStorage.getItem('jev-mic-activation'); } catch {}
     const jarvis = new JarvisClient({fetch: (...args) => fetch(...args), newId: () => crypto.randomUUID(), clientId: crypto.randomUUID(),
       retain: record => retainSpeech(record), onChange: renderJarvis});
     const voice = new VoiceControls(submitInput, activeTarget, () => visuals.reference());
     jarvis.voice = voice;
     voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
-    voice.localWake = inputMode === 'jarvis';
-    $('input-mode').value = inputMode;
+    voice.activation = micActivation;
+    voice.localWake = micActivation === 'wake';
+    $('mic-activation').value = micActivation;
+    $('mode-jarvis').setAttribute('aria-pressed', String(inputMode === 'jarvis'));
+    $('mode-pane').setAttribute('aria-pressed', String(inputMode === 'direct'));
     voice.onDiscard = draft => retainSpeech({id: crypto.randomUUID(), text: draft.text, source: 'voice', recipient: 'Jarvis', target: draft.target,
       status: 'Jarvis judged this cancelled before sending. Nothing was sent. Your words are saved.', recoverable: true});
     voice.onChange = renderTurnStatus;
@@ -1292,15 +1306,30 @@
     function activeTarget() {
       return inputMode === 'jarvis' ? jarvis.target : phoneTarget();
     }
-    $('input-mode').onchange = event => {
-      inputMode = event.target.value;
+    function setInputMode(mode) {
+      if (mode === inputMode) return;
+      const resume = !!voice.capture || (voice.activation !== 'tap' && !voice.manualOff);
+      inputMode = mode;
       try { localStorage.setItem('jev-input-mode', inputMode); } catch {}
       voice.stop();
       voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
-      voice.localWake = inputMode === 'jarvis';
       voice.selectTarget();
+      $('mode-jarvis').setAttribute('aria-pressed', String(inputMode === 'jarvis'));
+      $('mode-pane').setAttribute('aria-pressed', String(inputMode === 'direct'));
       renderJarvis();
       if (currentState) render(currentState);
+      if (resume && voice.config.configured && !document.hidden) voice.start();
+    }
+    $('mode-jarvis').onclick = () => setInputMode('jarvis');
+    $('mode-pane').onclick = () => setInputMode('direct');
+    $('mic-activation').onchange = event => {
+      micActivation = event.target.value;
+      try { localStorage.setItem('jev-mic-activation', micActivation); } catch {}
+      voice.stop();
+      voice.activation = micActivation;
+      voice.localWake = micActivation === 'wake';
+      voice.manualOff = false;
+      if (micActivation !== 'tap' && voice.config.configured && !document.hidden) voice.start();
     };
     function phoneTarget() {
       const tab = currentState?.tabs.find(tab => tab.id === currentState.selected);

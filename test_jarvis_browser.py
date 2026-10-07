@@ -49,7 +49,7 @@ class RealBrowserTests(DisposableDesk):
                 page.on('request', lambda req: requests.append(req.post_data_json) if req.url.endswith('/api/jarvis/turn') else None)
                 page.goto('http://127.0.0.1:' + str(server.server_port))
                 page.wait_for_function('currentState !== null && jarvis.sessionId !== null')
-                self.assertEqual(page.locator('#input-mode').input_value(), 'jarvis')
+                self.assertEqual(page.locator('#mode-jarvis').get_attribute('aria-pressed'), 'true')
                 page.evaluate("window.syntheticSpeech = []; voice.speakReply = async (text) => { if (typeof text === 'string') syntheticSpeech.push(text); voice.presentReply(text); };")
                 for number, text in enumerate(('What is ready?', 'Read Dog Data', request,
                                                 'While it runs what did the controller say?')):

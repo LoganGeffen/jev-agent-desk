@@ -8,8 +8,8 @@ request; Python validates the selected conversation and performs the action.
 By default the message box talks to **Jarvis**, one continuing conversation owned by
 the app that sits over your existing agent chats. Jarvis can list and read chats,
 deliver your exact words to one, interrupt one, and queue a quiet explanation of
-another's output. A "Send to" selector switches to **Selected pane (direct
-dictation)**, which delivers to the selected pane as before. See
+another's output. A **Jarvis / Pane** switch beside the microphone selects direct
+dictation to the selected pane. See
 [Jarvis conversation](#jarvis-conversation).
 
 Completed agent replies are automatically prepared as complete spoken renditions.
@@ -396,14 +396,18 @@ records prevent replay across polling and server restart; an in-flight send at a
 crash becomes uncertain and is not retried automatically. This notification/open
 state does not mark audio heard.
 
-Jarvis listens for **Hey Jarvis** on-device by default. On the first visible page
-load it attempts microphone activation once; the browser may ask permission.
-When capture and audio are available, the visible status says **Dormant · listening
-on-device for Hey Jarvis**. If permission or browser audio restrictions prevent
-activation, use the visible **Enable Jarvis** button once. **Stop Jarvis** releases
-the microphone; the app does not automatically restart it. There is no wake checkbox.
-The browser still controls permission and audio activation; automatic start is not
-available on every device.
+The microphone button sits beside the **Jarvis / Pane** destination switch. In
+Options, choose **Tap only** (the default), **Wake word**, or **Always on**. This
+choice is stored on this device and applies to both destinations. Tap only starts
+capture when you press the microphone button. Wake word automatically starts
+local listening for **Hey Jarvis** when the app opens or returns to the foreground;
+the visible status then says **Dormant · listening on-device for Hey Jarvis**.
+Always on automatically opens continuous transcription while the app is visible.
+The microphone button stops capture in any setting; an explicit stop holds it off
+until the next app load or another tap. Background pages release the microphone.
+Browser permission and audio activation still govern automatic startup. Safari may
+ask for microphone permission again or require a tap to activate audio; the app
+cannot grant or persist browser permission itself.
 
 Say “Hey Jarvis, read Dog Data” or pause after the wake phrase, then speak your
 request. A short local tone confirms wake. Continue with follow-up requests without
@@ -425,9 +429,10 @@ A finalized voice draft paused solely by inactivity can continue after another
 wake with its original recipient and Jarvis session/subject identity. A changed
 subject or restarted Jarvis holds the exact words for review. Unfinalized, typed
 and manually held drafts never merge silently into a new wake request. Switching
-to **Direct** stops capture; enable voice explicitly there for continuous manual
-dictation. Stop, page hiding and microphone loss release capture; closed/background
-pages do not listen. Browsers must support sixteen-kilohertz capture. Physical
+between **Jarvis** and **Pane** restarts active capture in the chosen activation
+setting while keeping drafts in their original destination. Stop, page hiding and
+microphone loss release capture; closed/background pages do not listen. Browsers
+must support sixteen-kilohertz capture. Physical
 phone acoustics, accents, noise and speaker echo are not established by the
 synthetic-speaker Chromium tests.
 

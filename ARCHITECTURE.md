@@ -169,8 +169,8 @@ which is reported uncertain.
 
 **Browser client.** `jarvis.js` (`JarvisClient`) tracks pending requests per client,
 recovers a lost POST response by polling `/api/jarvis/state` (10 s grace, 90 s
-deadline) and says the message "was not resent". The input-mode selector in
-`index.html` defaults to Jarvis; direct mode calls `supersedeForDirect()` and uses
+deadline) and says the message "was not resent". The destination switch in
+`index.html` defaults to Jarvis; Pane mode calls `supersedeForDirect()` and uses
 the legacy request path.
 
 Across a server restart the page keeps polling; once the same-port server returns
@@ -311,9 +311,12 @@ answer deltas without starting a turn in the real observed agent conversation.
 `voice.py` relays recognition and synthesis through ElevenLabs, keeping API keys
 server-side. `microphone.js` converts captured audio to 16 kHz PCM. `voice.js`
 manages drafts per pane, recognition pauses, readback cancellation and audio caches.
-Default Jarvis activation attempts microphone access once on visible load. Browser
-permission and running audio contexts are required; failure exposes Enable Jarvis.
-Explicit Stop suppresses automatic restart, and direct mode remains manually enabled.
+The per-device activation preference defaults to Tap only. Wake word and Always on
+try microphone access on visible load and when returning to the foreground, in
+either destination mode. Browser permission and running audio contexts are required;
+failure leaves an explicit mic button. A manual mic stop suppresses restart until
+the next page load or manual start. Switching destination restarts active capture
+while preserving its activation setting.
 `wake.js` uses the same mono 16 kHz PCM through a pinned local microWakeWord
 pipeline, with all WASM/model assets under `/wake-assets/`. Idle detection opens
 no recognition socket. The bounded three-second pre-roll plus request is sent
