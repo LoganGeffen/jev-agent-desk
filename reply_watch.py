@@ -75,9 +75,10 @@ class ReplyWatch:
 
 
 class ReadbackPreparation:
-    def __init__(self, cache, attention=None):
+    def __init__(self, cache, attention=None, on_reply=None):
         self.cache = cache
         self.attention = attention
+        self.on_reply = on_reply
         self.latest = {}
         self.stopped = threading.Event()
         self.worker = None
@@ -101,6 +102,7 @@ class ReadbackPreparation:
                 continue
             if self.attention:
                 self.attention.observe(agent, thread)
+            observed = None
             for turn in reversed(thread['turns']):
                 if turn['status'] != 'completed':
                     continue
@@ -109,6 +111,8 @@ class ReadbackPreparation:
                 if not replies:
                     continue
                 text = replies[-1]
+                if text.strip():
+                    observed = (turn['id'], text)
                 if text.strip() and len(text) <= 20000:
                     current[key] = (turn['id'], text)
                     if current[key] != self.latest.get(key):
@@ -116,6 +120,11 @@ class ReadbackPreparation:
                 else:
                     current.pop(key, None)
                 break
+            if self.on_reply:
+                try:
+                    self.on_reply(agent, observed[0] if observed else None)
+                except Exception:
+                    pass
         self.cache.retain(value[1] for value in current.values())
         for text in dict.fromkeys(changed):
             self.cache.prepare(text)

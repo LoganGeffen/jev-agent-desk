@@ -185,6 +185,37 @@ flag is not spoken. The client never resends the POST, so the provider, the acti
 and the terminal input are not repeated; the turn stays shown as cancelled with its
 receipts.
 
+## Web Push notifications
+
+`ReadbackPreparation` remains the single browser-independent three-second history
+scan. After provider identity and history are revalidated, it passes only the
+latest completed final reply identity to `PushNotifications`; push failures are
+caught outside attention and readback preparation. The first successful scan for
+each stable `(provider, conversation)` is a silent baseline.
+Later turn identities create deterministic events in `<run-dir>/push.sqlite3`.
+The baseline, event and per-device delivery rows make polling, restart and native
+process resume non-replaying. Pending or sending rows found at startup become
+uncertain rather than being retried.
+
+`push_notifications.py` owns the owner-only VAPID key, subscriptions, exact-device
+mutes, event delivery and open state. It sends a small visible payload—session
+label, “Agent replied,” event ID and exact conversation target—through `pywebpush`.
+It never receives reply text. Endpoints must be HTTPS production browser-vendor
+origins, redirects are disabled, requests have a ten-second timeout, and 404/410
+responses remove revoked subscriptions. Subscription and private-key material is
+not included in shared Desk or Jarvis state.
+
+`notifications.js` registers the root-scoped service worker and exposes explicit
+per-device enable/test/disable controls. Mute changes revalidate the current exact
+agent pane and retain the stable provider/conversation identity across native
+process resume. `service-worker.js` has push and notification-click handlers only—no
+fetch handler or offline shell cache. A reply click carries the immutable event,
+tab, pane and conversation identity through the root query string. After Desk's
+initial state and session load, the client and server both require that exact
+target before selection; a missing or replaced target produces a visible stale
+message without fallback. Open state stays in the push database and never updates
+the audio heard ledger.
+
 ## Direct path
 
 The browser's typed and spoken drafts converge on `/api/request`. It sends exact

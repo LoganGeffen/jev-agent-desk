@@ -259,6 +259,13 @@ clarifications, evidence excerpts, notices, decisions, the continuity summary an
 the attention queue. It contains the exact text of your messages and excerpts of
 agent replies, so treat it like `.run/` and keep it private.
 
+Web Push state is separate at `<run-dir>/push.sqlite3`: device subscriptions,
+per-conversation mutes, observed reply baselines, immutable notification events,
+delivery results and open results. The VAPID private key is generated once at
+`<run-dir>/vapid-private.pem` with owner-only permissions. Neither the private key
+nor subscription endpoints appear in browser state. Reusing the run directory
+retains both; losing it creates a new VAPID identity and invalidates old subscriptions.
+
 The delivery attempt is written to the store before the external input is sent. A
 checkpoint failure stops the external call rather than risking an unrecorded one.
 On startup:
@@ -358,7 +365,25 @@ those requests when you ask for the queue; readiness is not proof a whole task
 is complete. This works for replies originating in Jev or the terminal. The
 queue and its heard state are checkpointed in the Jarvis store and restored on
 restart; a reply is heard only if its full-completion acknowledgment was stored.
-There are no closed-app alerts.
+
+Optional Web Push alerts cover newly observed completed final replies, including
+replies to turns started directly in the native terminal. Open **Notifications**,
+then use **Enable**, **Test**, or **Disable** for this browser device. The test waits
+two seconds so a phone can be locked. When enabled, **Mute this conversation on
+this device** applies only to the selected provider conversation and subscription;
+the mute remains if that same native conversation resumes in a new process.
+Install the Desk from the browser or add it to the Home Screen for the normal
+standalone mobile experience.
+
+Each push contains only the session label, the fixed body “Agent replied,” and an
+opaque event plus exact conversation identity; reply and terminal text are never
+sent to the browser vendor. Tapping resolves that immutable event after the page
+loads. If the tab, pane or conversation identity changed, Desk shows an unavailable
+message and does not substitute another conversation. Historical replies present
+when a conversation is first observed are primed silently. Event and delivery
+records prevent replay across polling and server restart; an in-flight send at a
+crash becomes uncertain and is not retried automatically. This notification/open
+state does not mark audio heard.
 
 Jarvis listens for **Hey Jarvis** on-device by default. On the first visible page
 load it attempts microphone activation once; the browser may ask permission.
@@ -457,6 +482,10 @@ python launch.py attach-start \
 Configure your private proxy to forward `/` to `http://127.0.0.1:54534` and
 WebSocket `/voice` to `http://127.0.0.1:54535`. The exact HTTPS origin must match
 `--public-origin`, including a nonstandard port. Both services bind to loopback.
+That origin is also used as the VAPID contact subject. Web Push sends the bounded
+notification payload through the browser vendor's push service; the first version
+accepts production HTTPS endpoints for Apple Web Push, Firebase Cloud Messaging,
+and Mozilla Push Service only.
 
 ## Tests
 
@@ -494,13 +523,15 @@ is still open, and what is unverified (including every physical-phone property).
 ## Data and licensing
 
 `.run/` can contain messages, terminal captures, transcripts, process bindings,
-the Jarvis ledger (`jarvis.sqlite3`) and provider diagnostics. Treat it as private.
+the Jarvis ledger (`jarvis.sqlite3`), Web Push state (`push.sqlite3`), the VAPID
+private key and provider diagnostics. Treat it as private.
 Requests and focused judgment questions (your current message, tab names and pane
 descriptions) go to TypeSafe; microphone audio and spoken text go to ElevenLabs;
 Jarvis turns, session questions and renditions use your configured Claude or Codex
 CLI provider, and a Jarvis turn sends it your current message plus the bounded
 conversation snapshot and any tool output it reads. Review those data flows before
-using sensitive conversations.
+using sensitive conversations. When Web Push is enabled, a fixed notification
+without reply text is sent to that subscription's browser-vendor endpoint.
 
 This repository begins with a clean source export, without private workspace
 history or runtime data. No software license has been selected for the exported

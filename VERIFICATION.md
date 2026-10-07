@@ -29,6 +29,26 @@ Run artifacts live in a private, uncommitted run directory
 below and are not part of this repository. They contain no credential values;
 credential sources are recorded by path and configured variable names only.
 
+## Web Push notification delta
+
+This tree adds a focused synthetic Web Push slice after the historical evidence
+below. Unit and loopback HTTP tests exercise silent baseline priming, deterministic
+reply events, restart deduplication, no new-device backfill, per-device mute,
+mute retention across native process resume, delivery/open persistence,
+revoked-subscription cleanup, VAPID file permissions,
+vendor endpoint rejection, no redirects, session/origin/managed-browser boundaries,
+and failure isolation from the existing attention/readback path. Node tests exercise
+real client subscription calls plus service-worker push and exact click URLs.
+Intercepted Chromium checks the controls at
+320 px, a credentialed auth-cookie manifest fetch, and the existing terminal 12 px
+wrapping across 320–1280 px.
+
+These checks use synthetic subscriptions and transports. They do not prove browser
+vendor delivery, installed-PWA behavior, authentication-proxy return behavior, or
+background/screen-lock delivery on a physical phone. Deployment, service restart,
+Home Screen installation and the user's physical Enable/Test/Disable proof remain
+separate acceptance steps.
+
 ## Current verification limits
 
 - **Speech compatibility is partial.** One synthetic phrase round-tripped through

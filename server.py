@@ -32,6 +32,7 @@ from jarvis_store import JarvisStore
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
 from pane_identity import process_identity
+from push_notifications import PushError, PushNotifications
 from managed_provider import ManagedProviders, post_route as provider_post
 from managed_apps import ManagedApps, get_route as apps_get, post_route as apps_post
 from visual_workspace import VisualWorkspace, VisualError, get_route as visual_get, post_route as visual_post
@@ -227,7 +228,8 @@ class Playground:
         self.readbacks = ReadbackCache()
         self.reply_watch = ReplyWatch()
         self.attention = AttentionQueue()
-        self.readback_preparation = ReadbackPreparation(self.readbacks, self.attention)
+        self.push = PushNotifications(self.log.parent)
+        self.readback_preparation = ReadbackPreparation(self.readbacks, self.attention, self.push.observe)
         self.read_output = None
         self.pending_close = None
         self.pending_clarification = None
@@ -282,11 +284,20 @@ class Playground:
         return group or name
 
     def readback_agents(self):
-        windows = tmux(self.socket, 'list-windows', '-t', f'={self.source_session}', '-F', '#{window_id}')
-        return [{'socket': self.socket, 'window_id': window, 'pane_id': pane['id'],
-                 'provider': pane['provider'], 'thread_id': pane['thread_id'],
-                 'process': pane['process'], 'run_dir': str(self.log.parent)}
-                for window in windows.splitlines() for pane in self.panes(window) if pane['agent']]
+        windows = tmux(self.socket, 'list-windows', '-t', f'={self.source_session}',
+                       '-F', '#{window_id}\t#{window_name}')
+        agents = []
+        for row in windows.splitlines():
+            window, name = row.split('\t', 1)
+            panes = self.panes(window)
+            for number, pane in enumerate(panes, 1):
+                if not pane['agent']:
+                    continue
+                label = name if len(panes) == 1 else f'{name}, pane {pane.get("number", number)}'
+                agents.append({'socket': self.socket, 'window_id': window, 'pane_id': pane['id'],
+                               'provider': pane['provider'], 'thread_id': pane['thread_id'],
+                               'process': pane['process'], 'run_dir': str(self.log.parent), 'label': label})
+        return agents
 
     def observe(self, view_tab=None, view_pane=None):
         rows = tmux(self.socket, "list-windows", "-t", f"={self.view_session}", "-F",
@@ -903,6 +914,7 @@ class Playground:
 def make_server(playground, port=0, public_origin=None):
     visual = VisualWorkspace(playground) if playground is not None else None
     if playground is not None:
+        playground.push.configure_origin(public_origin)
         playground.visual = visual
         playground.browser = create_browser(visual)
         playground.providers = ManagedProviders(playground)
@@ -921,7 +933,7 @@ def make_server(playground, port=0, public_origin=None):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            if self.path == "/" and content_type.startswith("text/html"):
+            if urlsplit(self.path).path == "/" and content_type.startswith("text/html"):
                 self.send_header("Content-Security-Policy", "frame-src 'self' blob:; frame-ancestors 'none'")
             self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
@@ -968,7 +980,7 @@ def make_server(playground, port=0, public_origin=None):
                 return
             if not self.local_request():
                 self.send(403, {"error": "Use this playground's loopback URL"})
-            elif self.path == "/":
+            elif urlsplit(self.path).path == "/":
                 self.send(200, Path(__file__).with_name("index.html").read_bytes(),
                           "text/html; charset=utf-8")
             elif self.path == "/api/jarvis/state":
@@ -981,8 +993,12 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.state(query.get("tab", [None])[0], query.get("pane", [None])[0]))
                 except Exception as error:
                     self.send(503, {"error": str(error)})
-            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js", "/device-view.js", "/visual-readers.js", "/managed-browser.js"):
+            elif self.path in ("/voice.js", "/readback.js", "/microphone.js", "/terminal.js", "/jarvis.js", "/wake.js", "/device-view.js", "/notifications.js", "/service-worker.js", "/visual-readers.js", "/managed-browser.js"):
                 self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "text/javascript")
+            elif self.path == "/manifest.json":
+                self.send(200, Path(__file__).with_name("manifest.json").read_bytes(), "application/manifest+json")
+            elif self.path in ("/icon-192.png", "/icon-512.png"):
+                self.send(200, Path(__file__).with_name(self.path[1:]).read_bytes(), "image/png")
             elif self.path in ("/visual-workspace.js", "/visual-workspace.css", "/vendor/marked.min.js", "/vendor/purify.min.js", "/vendor/pdfjs/pdf.mjs", "/vendor/pdfjs/pdf.worker.mjs"):
                 asset = Path(__file__).parent / self.path[1:]
                 self.send(200, asset.read_bytes(), "text/css" if asset.suffix == '.css' else "text/javascript")
@@ -1021,7 +1037,9 @@ def make_server(playground, port=0, public_origin=None):
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move",
                                  "/api/tabs/close", "/api/panes/close",
-                                 '/api/close/confirm', '/api/close/cancel', '/api/clarification'):
+                                 '/api/close/confirm', '/api/close/cancel', '/api/clarification',
+                                 '/api/push/state', '/api/push/subscribe', '/api/push/unsubscribe',
+                                 '/api/push/test', '/api/push/mute', '/api/push/open'):
                 self.send(404, {"error": "Not found"})
                 return
             try:
@@ -1030,6 +1048,49 @@ def make_server(playground, port=0, public_origin=None):
                 if self.headers.get_content_type() != "application/json" or not 0 < size <= limit:
                     raise ValueError(f"Send a JSON request up to {limit} bytes")
                 body = json.loads(self.rfile.read(size))
+                if self.path.startswith('/api/push/'):
+                    if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
+                        raise PushError('Desk session changed; refresh before changing notifications', 409)
+                    allowed = {
+                        '/api/push/state': {'session_id', 'device_id', 'target'},
+                        '/api/push/subscribe': {'session_id', 'device_id', 'subscription'},
+                        '/api/push/unsubscribe': {'session_id', 'device_id'},
+                        '/api/push/test': {'session_id', 'device_id'},
+                        '/api/push/mute': {'session_id', 'device_id', 'target', 'muted'},
+                        '/api/push/open': {'session_id', 'device_id', 'event_id', 'target', 'status'},
+                    }[self.path]
+                    if set(body) != allowed and not (self.path == '/api/push/state'
+                                                     and set(body) == allowed - {'target'}):
+                        raise PushError('Unknown or missing notification request field')
+                    if self.path == '/api/push/state':
+                        agent = None
+                        target = body.get('target')
+                        if target is not None:
+                            if not isinstance(target, dict):
+                                raise PushError('Invalid notification conversation')
+                            agent = playground.validate_pane(target.get('tab'), target.get('pane'), target.get('identity'))
+                            if not agent.get('agent'):
+                                raise PushError('Only agent conversations can be muted')
+                        result = playground.push.state(body['device_id'], agent)
+                    elif self.path == '/api/push/subscribe':
+                        result = playground.push.subscribe(body['device_id'], body['subscription'])
+                    elif self.path == '/api/push/unsubscribe':
+                        result = playground.push.unsubscribe(body['device_id'])
+                    elif self.path == '/api/push/test':
+                        result = playground.push.test(body['device_id'])
+                    elif self.path == '/api/push/mute':
+                        target = body['target']
+                        if not isinstance(target, dict):
+                            raise PushError('Invalid notification conversation')
+                        pane = playground.validate_pane(target.get('tab'), target.get('pane'), target.get('identity'))
+                        if not pane.get('agent'):
+                            raise PushError('Only agent conversations can be muted')
+                        result = playground.push.mute(body['device_id'], pane, body['muted'])
+                    else:
+                        result = playground.push.open(body['device_id'], body['event_id'], body['target'],
+                                                      body['status'], playground.validate_pane)
+                    self.send(200, result)
+                    return
                 if self.path.startswith('/api/jarvis/'):
                     if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
                         raise ValueError('Jarvis session changed; refresh before acting')
@@ -1183,6 +1244,9 @@ def make_server(playground, port=0, public_origin=None):
                 request = body["request"]
                 if not isinstance(request, str) or not request.strip():
                     raise ValueError("A nonempty request string is required")
+            except PushError as error:
+                self.send(error.status, {"error": str(error)})
+                return
             except (ValueError, KeyError, TypeError) as error:
                 self.send(400, {"error": str(error)})
                 return

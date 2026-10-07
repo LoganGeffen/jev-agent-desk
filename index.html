@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1210">
+  <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <title>Jev</title>
   <style>
     :root {
@@ -335,6 +338,10 @@
     #composer-extras > details { min-width: 0; }
     #composer-extras > details[open] { flex-basis: 100%; }
     #speech-history { margin: 0; }
+    #push-controls > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+    #push-controls button { min-height: 36px; }
+    #push-status, #notification-link-status { flex-basis: 100%; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+    #notification-link-status { color: var(--attention); }
 
     @media (max-width: 700px) {
       #app { grid-template-columns: clamp(96px, 28vw, 160px) minmax(0, 1fr); }
@@ -382,6 +389,10 @@
       #reply-presentation { max-height: none; }
       #speech-history { max-height: none; font-size: 12px; }
       #speech-records p { padding: 8px 0; border-bottom: 1px solid var(--line); }
+      #push-controls { width: 100%; }
+      #push-controls > div { align-items: stretch; }
+      #push-controls button { flex: 1 1 84px; }
+      #push-mute-label { flex-basis: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       #composer[data-pending="true"]::before { animation: none; }
@@ -448,6 +459,14 @@
           </div>
         </form>
         <div id="composer-extras">
+        <details id="push-controls"><summary>Notifications</summary><div>
+          <p id="push-status" role="status">Checking Web Push…</p>
+          <button id="push-enable" type="button">Enable</button>
+          <button id="push-test" type="button" hidden>Test</button>
+          <button id="push-disable" type="button" hidden>Disable</button>
+          <label id="push-mute-label"><input id="push-mute" type="checkbox" disabled> Mute this conversation on this device</label>
+          <p id="notification-link-status" role="alert" hidden></p>
+        </div></details>
         <details id="speech-history"><summary>History</summary>
         <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
         <div id="readback-actions">
@@ -487,9 +506,13 @@
   <script src="/managed-browser.js"></script>
   <script src="/visual-workspace.js"></script>
   <script src="/device-view.js"></script>
+  <script src="/notifications.js"></script>
   <script>
     const $ = id => document.getElementById(id);
     const deviceView = new DeviceView();
+    const notifications = new PushNotificationClient({fetch: (...args) => fetch(...args), storage: localStorage,
+      serviceWorker: navigator.serviceWorker, NotificationApi: window.Notification, location, history,
+      onChange: renderNotifications});
     const visuals = new VisualWorkspace($('visual-workspace'), $('visual-toggle'), {clientId: deviceView.clientId, selectPane: (tab, pane) => selectTab(tab, pane)});
     let refreshSequence = 0;
     let appliedRefresh = 0;
@@ -520,6 +543,19 @@
     voice.onDiscard = draft => retainSpeech({id: crypto.randomUUID(), text: draft.text, source: 'voice', recipient: 'Jarvis', target: draft.target,
       status: 'Jarvis judged this cancelled before sending. Nothing was sent. Your words are saved.', recoverable: true});
     voice.onChange = renderTurnStatus;
+    function renderNotifications(view) {
+      $('push-status').textContent = view.message;
+      $('push-enable').hidden = view.enabled;
+      $('push-test').hidden = !view.enabled;
+      $('push-disable').hidden = !view.enabled;
+      for (const id of ['push-enable', 'push-test', 'push-disable']) $(id).disabled = view.busy || !view.supported || !view.ready;
+      $('push-mute').disabled = view.busy || !view.canMute;
+      $('push-mute').checked = view.muted;
+      $('push-mute-label').hidden = !view.enabled;
+      $('notification-link-status').hidden = !view.linkMessage;
+      $('notification-link-status').textContent = view.linkMessage;
+    }
+    notifications.emit();
     function renderTurnStatus(playbackText) {
       const draft = voice.draft;
       const textValue = draft ? [draft.text, draft.partial].filter(Boolean).join(' ') : '';
@@ -833,6 +869,9 @@
       currentState = state;
       const selectedTab = state.tabs.find(tab => tab.id === state.selected);
       const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
+      const pushTarget = selectedPane?.agent ? {tab: selectedTab.id, pane: selectedPane.id, identity: selectedPane.identity} : null;
+      notifications.adopt(jarvis.sessionId, pushTarget);
+      notifications.resolveLink(state, (tab, pane) => selectTab(tab, pane)).catch(() => {});
       if (selectSubject || jarvis.nextSubject === undefined) {
         jarvis.selectSubject(selectedPane ? {...phoneTarget(), label: selectedTab.name} : null);
       } else if (jarvis.subject && !state.tabs.some(tab => tab.id === jarvis.subject.tab &&
@@ -1238,6 +1277,10 @@
       $('tabs-toggle').setAttribute('aria-expanded', String(!collapsed));
     };
     $('manage-tabs').onchange = event => $('app').classList.toggle('manage-tabs', event.target.checked);
+    $('push-enable').onclick = () => notifications.enable();
+    $('push-test').onclick = () => notifications.test();
+    $('push-disable').onclick = () => notifications.disable();
+    $('push-mute').onchange = event => notifications.setMuted(event.target.checked);
     const mobileLayout = window.matchMedia('(max-width: 700px)');
     $('more-controls').open = false;
     mobileLayout.addEventListener('change', () => { $('more-controls').open = false; });

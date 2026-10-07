@@ -29,7 +29,8 @@ def fixture_state():
 
 
 STATIC_FILES = ('index.html', 'voice.js', 'wake.js', 'readback.js', 'jarvis.js', 'terminal.js',
-                'visual-workspace.js', 'visual-workspace.css', 'device-view.js', 'managed-browser.js', 'visual-readers.js', 'vendor/marked.min.js', 'vendor/purify.min.js')
+                'visual-workspace.js', 'visual-workspace.css', 'device-view.js', 'notifications.js',
+                'service-worker.js', 'managed-browser.js', 'visual-readers.js', 'vendor/marked.min.js', 'vendor/purify.min.js')
 SUBJECT_B = {'tab': '@b', 'pane': '%b', 'identity': 'b:original', 'label': 'B · pane 1'}
 SPY_SPEECH = """() => {
   window.spoken = [];
@@ -49,7 +50,7 @@ def run():
                     'actions': {}, 'jobs': {}, 'playbacks': {}, 'clarifications': {}}
     jarvis_posts, jarvis_cancels = [], []
     decisions, playbacks = [], []
-    requests, raw, errors, heard = [], [], [], []
+    requests, raw, errors, heard, manifest_requests = [], [], [], [], []
     recommendation = {'id': 'attention-b', 'tab': '@b', 'pane': '%b',
                       'identity': 'b:original', 'label': 'B · pane 1'}
     def route(r):
@@ -70,6 +71,8 @@ def run():
             return r.fulfill(json={'apps': []})
         if path == '/api/jarvis/state':
             return r.fulfill(json=jarvis_state)
+        if path == '/api/push/state':
+            return r.fulfill(json={'public_key': 'BA' + 'A' * 85, 'enabled': False, 'muted': False})
         if path == '/api/jarvis/turn':
             jarvis_posts.append(body)
             return r.fulfill(json={'session_id': 's1', 'turn_id': 'unused', 'request_id': body['request_id'],
@@ -124,13 +127,19 @@ def run():
         if path == '/api/replies/heard':
             heard.append(body)
             return r.fulfill(json={'ok': True})
+        if path == '/manifest.json':
+            assert 'CF_Authorization=fixture' in r.request.headers.get('cookie', '')
+            manifest_requests.append(path)
+            return r.fulfill(body=(ROOT / 'manifest.json').read_text(), content_type='application/manifest+json')
         file = ROOT / ('index.html' if path == '/' else path.lstrip('/'))
         if file.relative_to(ROOT).as_posix() in STATIC_FILES:
             return r.fulfill(body=file.read_text(), content_type='text/html' if path == '/' else 'text/css' if path.endswith('.css') else 'text/javascript')
         raise AssertionError('Unexpected endpoint: ' + path)
     with sync_playwright() as p:
         browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
-        page = browser.new_page(viewport={'width': 390, 'height': 844})
+        context = browser.new_context(viewport={'width': 390, 'height': 844})
+        context.add_cookies([{'name': 'CF_Authorization', 'value': 'fixture', 'url': 'https://fixture.test'}])
+        page = context.new_page()
         page.on('pageerror', lambda e: errors.append(str(e)))
         page.route('**/*', route)
         audio_text = []
@@ -146,6 +155,9 @@ def run():
         page.route_web_socket(lambda url: True, speech_socket)
         page.goto('https://fixture.test/')
         page.wait_for_function('currentState !== null')
+        manifest = context.new_cdp_session(page).send('Page.getAppManifest')
+        assert manifest_requests == ['/manifest.json']
+        assert json.loads(manifest['data'])['name'] == 'Jev Agent Desk'
         def terminal_readable():
             page.wait_for_function("""[...document.querySelectorAll('.terminal')].every(el =>
               el.clientWidth > 0 && parseFloat(getComputedStyle(el).fontSize) === 12 && el.scrollWidth <= el.clientWidth)""")
@@ -228,6 +240,17 @@ def run():
             page.set_viewport_size({'width': width, 'height': 844})
             terminal_readable()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+        page.set_viewport_size({'width': 320, 'height': 844})
+        page.locator('#push-controls').evaluate('(element) => element.open = true')
+        page.evaluate("notifications.view.enabled = true; notifications.view.ready = true; notifications.emit()")
+        for control in ('#push-test', '#push-disable'):
+            box = page.locator(control).bounding_box()
+            assert box and box['x'] >= 0 and box['x'] + box['width'] <= 320 and box['height'] >= 36
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.evaluate("notifications.view.enabled = false; notifications.emit()")
+        box = page.locator('#push-enable').bounding_box()
+        assert box and box['x'] >= 0 and box['x'] + box['width'] <= 320 and box['height'] >= 36
+        page.locator('#push-controls').evaluate('(element) => element.open = false')
         assert page.locator('.terminal').evaluate('el => parseFloat(getComputedStyle(el).fontSize)') > 10
         first = state['tabs'][0]['panes'][0]
         first['width'] = 60
@@ -449,6 +472,7 @@ def run():
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow',
+                             '320px notification controls', 'authenticated manifest fetch',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
                              'completed audio acknowledges exact reply', 'interrupted reply stays unread',
