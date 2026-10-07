@@ -54,7 +54,7 @@
     }
     #connection { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rail-actions { display: flex; gap: 3px; margin-left: auto; }
-    .rail-action, .group-action, .tab-action {
+    .rail-action, .group-action {
       display: grid;
       place-items: center;
       padding: 0;
@@ -66,12 +66,12 @@
     }
     .rail-action { width: 27px; height: 27px; }
     .rail-action:disabled { opacity: .3; cursor: default; }
-    .rail-action:hover, .group-action:hover, .tab-action:hover { background: #1d2522; color: #e6ece8; }
-    .rail-action:focus-visible, .group-action:focus-visible, .tab-action:focus-visible {
+    .rail-action:hover, .group-action:hover { background: #1d2522; color: #e6ece8; }
+    .rail-action:focus-visible, .group-action:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: -1px;
     }
-    .rail-action svg, .group-action svg, .tab-action svg {
+    .rail-action svg, .group-action svg {
       width: 15px;
       height: 15px;
       fill: none;
@@ -127,7 +127,7 @@
     .tab-row {
       position: relative;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 27px 27px;
+      grid-template-columns: minmax(0, 1fr);
       align-items: center;
       border: 1px solid transparent;
       border-radius: 7px;
@@ -156,8 +156,6 @@
     }
     .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     .tab:disabled { cursor: wait; opacity: .65; }
-    .tab-action { width: 24px; height: 28px; opacity: 0; }
-    .tab-row:hover .tab-action, .tab-row:focus-within .tab-action { opacity: 1; }
     .tab-name {
       display: block;
       overflow: hidden;
@@ -331,9 +329,17 @@
     #turn-bar { display: contents; }
     #primary-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
     #turn-status, .mobile-label { display: none; }
-    #more-controls { grid-column: 1 / -1; }
-    #more-controls > summary { display: none; }
     #more-controls label { display: block; margin: 8px 0; }
+    #settings-open, #settings-close { min-height: 40px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; color: inherit; cursor: pointer; }
+    #settings-dialog { box-sizing: border-box; width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 16px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; }
+    #settings-dialog::backdrop { background: rgb(0 0 0 / 70%); }
+    #settings-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    #settings-header h2 { margin: 0; font-size: 18px; }
+    #settings-dialog h3 { margin: 18px 0 8px; font-size: 14px; }
+    #settings-dialog section + section { margin-top: 18px; border-top: 1px solid var(--line); }
+    #settings-dialog select { max-width: 100%; min-height: 40px; background: #151b19; color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; }
+    #settings-dialog small { display: block; color: var(--muted); line-height: 1.5; }
+    #settings-dialog button { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; color: inherit; cursor: pointer; }
     #workspace-bar { display: none; }
     #phone-input { margin: 0; }
     #phone-input textarea { resize: vertical; }
@@ -359,7 +365,6 @@
       .empty-group { display: none; }
       .rail-action { width: 34px; height: 34px; }
       .group-action { opacity: 1; }
-      .tab-action { width: 100%; min-height: 36px; opacity: 1; }
       #tabs { padding: 8px 4px; overflow-y: auto; overflow-x: hidden; }
       .tab-group + .tab-group { margin-top: 12px; }
       .tab-list { display: grid; gap: 6px; }
@@ -367,8 +372,6 @@
       .tab { min-height: 52px; padding: 8px 6px; }
       .tab-name { white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
       .activity { font-size: 10px; flex-wrap: wrap; }
-      .tab-row { grid-template-columns: 1fr 1fr; }
-      .tab { grid-column: 1 / -1; }
       #workspace { grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
       #workspace-bar { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
       #tabs-toggle { min-height: 36px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; color: inherit; background: var(--panel); }
@@ -386,14 +389,12 @@
       #turn-status { display: block; font-size: 12px; overflow-wrap: anywhere; }
       #turn-status:empty { display: none; }
       #result, #playback-status, #speech-draft-status, #target-status, #transcript { display: none; }
-      #more-controls > summary, #speech-history > summary { display: list-item; color: var(--muted); cursor: pointer; padding: 4px; }
+      #speech-history > summary { display: list-item; color: var(--muted); cursor: pointer; padding: 4px; }
       #more-controls label { margin: 12px 0; }
-      #more-controls select { max-width: 100%; min-height: 36px; background: #151b19; color: inherit; border: 1px solid var(--line); border-radius: 5px; }
       #reply-notice { margin: 0; font-size: 12px; }
       #reply-presentation { max-height: none; }
       #speech-history { max-height: none; font-size: 12px; }
       #speech-records p { padding: 8px 0; border-bottom: 1px solid var(--line); }
-      #push-controls { width: 100%; }
       #push-controls > div { align-items: stretch; }
       #push-controls button { flex: 1 1 84px; }
       #push-mute-label { flex-basis: 100%; }
@@ -425,7 +426,8 @@
     <main id="workspace">
       <header id="workspace-bar">
         <button id="tabs-toggle" type="button" aria-expanded="false" aria-controls="session-rail">Tabs</button>
-        <span id="mobile-title"></span>
+        <button id="mobile-title" type="button" title="Rename selected tab"></button>
+        <details id="tab-menu" hidden><summary aria-label="Tab actions" title="Tab actions">⋯</summary><div><button id="close-current-tab" type="button">Close tab</button></div></details>
         <button id="visual-toggle" type="button" aria-expanded="false" aria-controls="visual-workspace">Visuals</button>
       </header>
       <div id="workspace-body">
@@ -470,14 +472,6 @@
           </div>
         </form>
         <div id="composer-extras">
-        <details id="push-controls"><summary>Notifications</summary><div>
-          <p id="push-status" role="status">Checking Web Push…</p>
-          <button id="push-enable" type="button">Enable</button>
-          <button id="push-test" type="button" hidden>Test</button>
-          <button id="push-disable" type="button" hidden>Disable</button>
-          <label id="push-mute-label"><input id="push-mute" type="checkbox" disabled> Mute this conversation on this device</label>
-          <p id="notification-link-status" role="alert" hidden></p>
-        </div></details>
         <details id="speech-history"><summary>History</summary>
         <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
         <div id="readback-actions">
@@ -485,13 +479,7 @@
         </div>
         <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
         <div id="speech-records"></div></details>
-        <details id="more-controls"><summary>Options</summary>
-        <label id="mic-activation-label">Microphone <select id="mic-activation"><option value="tap">Tap only</option><option value="wake">Wake word</option><option value="always">Always on</option></select></label>
-        <small>Wake word listens locally for “Hey Jarvis.” Always on transcribes while the app is open. Your choice is saved on this device.</small>
-        <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
-        <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
-        <label id="speech-style-label">Read replies as <select id="speech-style"><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
-        </details>
+        <button id="settings-open" type="button">Settings</button>
         </div>
         <span id="voice-status" role="status">Microphone off</span>
         <span id="playback-status" role="status">Readback idle</span>
@@ -499,6 +487,24 @@
       </section>
     </main>
   </div>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div id="settings-header"><h2 id="settings-title">Settings</h2><button id="settings-close" type="button">Done</button></div>
+    <section id="push-controls" aria-labelledby="settings-notifications"><h3 id="settings-notifications">Notifications</h3><div>
+      <p id="push-status" role="status">Checking Web Push…</p>
+      <button id="push-enable" type="button">Enable</button>
+      <button id="push-test" type="button" hidden>Test</button>
+      <button id="push-disable" type="button" hidden>Disable</button>
+      <label id="push-mute-label"><input id="push-mute" type="checkbox" disabled> Mute this conversation on this device</label>
+      <p id="notification-link-status" role="alert" hidden></p>
+    </div></section>
+    <section id="more-controls" aria-labelledby="settings-voice"><h3 id="settings-voice">Voice and input</h3>
+      <label id="mic-activation-label">Microphone <select id="mic-activation"><option value="tap">Tap only</option><option value="wake">Wake word</option><option value="always">Always on</option></select></label>
+      <small>Wake word listens locally for “Hey Jarvis.” Always on transcribes while the app is open. Your choice is saved on this device.</small>
+      <label id="interrupt-label"><input id="talk-to-interrupt" type="checkbox"> Talk to interrupt (use headphones)</label>
+      <label id="voice-profile-label">Voice rendering <select id="voice-profile"><option value="current">Current</option><option value="alternate">Alternate</option></select></label>
+      <label id="speech-style-label">Read replies as <select id="speech-style"><option value="spoken">Conversational rendition</option><option value="original">Original wording</option></select></label>
+    </section>
+  </dialog>
   <script src="/readback.js"></script>
   <script src="/wake.js"></script>
   <script src="/voice.js"></script>
@@ -803,19 +809,6 @@
               moveTab(tab.id, definitions[groupIndex + 1].id, null, true);
             }
           });
-          const renameTabButton = document.createElement('button');
-          renameTabButton.type = 'button';
-          renameTabButton.className = 'tab-action';
-          renameTabButton.setAttribute('aria-label', `Rename ${tab.name}`);
-          renameTabButton.title = 'Rename tab';
-          renameTabButton.innerHTML = renameIcon;
-          renameTabButton.addEventListener('click', () => renameTab(tab));
-          const closeTabButton = document.createElement('button');
-          closeTabButton.type = 'button';
-          closeTabButton.className = 'tab-action';
-          closeTabButton.textContent = '×';
-          closeTabButton.setAttribute('aria-label', `Close tab ${tab.name}`);
-          closeTabButton.addEventListener('click', () => closeTab(tab.id));
           row.addEventListener('dragstart', event => {
             draggingTab = tab.id;
             row.classList.add('dragging');
@@ -841,7 +834,7 @@
             moveTab(draggingTab, group.id, tab.id);
           });
           if (selected) selectedButton = button;
-          row.append(button, renameTabButton, closeTabButton);
+          row.append(button);
           list.append(row);
         }
         if (!tabs.length) {
@@ -876,6 +869,7 @@
         $('result').textContent = '';
         $('result').className = '';
       }
+      const previousTab = currentState?.selected;
       currentState = state;
       const selectedTab = state.tabs.find(tab => tab.id === state.selected);
       const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
@@ -889,6 +883,10 @@
         jarvis.selectSubject(null);
       }
       $('mobile-title').textContent = selectedTab?.name || 'Jev';
+      $('mobile-title').disabled = !selectedTab;
+      $('mobile-title').setAttribute('aria-label', selectedTab ? `Rename tab ${selectedTab.name}` : 'No tab selected');
+      $('tab-menu').hidden = !selectedTab;
+      if (previousTab !== state.selected) $('tab-menu').open = false;
       $('target-status').textContent = selectedPane
         ? `Selected: ${selectedTab.name} · pane ${selectedPane.number}` +
           (inputMode === 'direct' && ['codex', 'claude'].includes(selectedPane.command) && !selectedPane.agent && !selectedPane.codex
@@ -1282,13 +1280,21 @@
       const collapsed = $('app').classList.toggle('tabs-collapsed');
       $('tabs-toggle').setAttribute('aria-expanded', String(!collapsed));
     };
+    $('mobile-title').onclick = () => {
+      const tab = currentState?.tabs.find(tab => tab.id === currentState.selected);
+      if (tab) renameTab(tab);
+    };
+    $('close-current-tab').onclick = () => {
+      const tab = currentState?.selected;
+      $('tab-menu').open = false;
+      if (tab) closeTab(tab);
+    };
+    $('settings-open').onclick = () => $('settings-dialog').showModal();
+    $('settings-close').onclick = () => $('settings-dialog').close();
     $('push-enable').onclick = () => notifications.enable();
     $('push-test').onclick = () => notifications.test();
     $('push-disable').onclick = () => notifications.disable();
     $('push-mute').onchange = event => notifications.setMuted(event.target.checked);
-    const mobileLayout = window.matchMedia('(max-width: 700px)');
-    $('more-controls').open = false;
-    mobileLayout.addEventListener('change', () => { $('more-controls').open = false; });
     $('read-ready-reply').onclick = () => {
       if (readyReply) {
         $('result').textContent = '';

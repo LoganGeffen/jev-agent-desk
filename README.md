@@ -337,11 +337,14 @@ elsewhere), requires a service restart, and should wait for the gates listed in
 ## Voice and mobile use
 
 Mobile opens with the terminal filling the available space. **Tabs** opens or
-collapses the left sidebar. Type and dictate into the same composer. **Send**
-delivers ordinary messages to the selected agent and presses Enter automatically.
-Jev routes explicit workspace commands separately. Drafts stay with their panes
-when switching tabs. Options contains Enter and Escape for terminal interaction;
-History and secondary controls stay collapsed until needed.
+collapses the left sidebar. Drag tabs to move them. Tap the selected tab name in
+the top bar to rename it; its adjacent menu has **Close tab**, which asks for
+confirmation because closing ends the tab's running processes. The workspace
+pencil renames a tab group. Type and dictate into the same composer. **Send**
+follows the Jarvis/Pane switch; Pane mode delivers to the selected agent and
+presses Enter automatically. Drafts stay with their panes when switching tabs.
+**Escape** sits beside the message box. **History** remains a dropdown, while
+**Settings** opens notification and voice controls.
 Terminal text stays at 12 px and wraps wide lines, paths and identifiers inside
 the pane, including when the sidebar is open. Original text, whitespace and
 intentional line breaks remain intact; long rows continue on another display line.
@@ -367,7 +370,7 @@ queue and its heard state are checkpointed in the Jarvis store and restored on
 restart; a reply is heard only if its full-completion acknowledgment was stored.
 
 Optional Web Push alerts cover newly observed completed final replies, including
-replies to turns started directly in the native terminal. Open **Notifications**,
+replies to turns started directly in the native terminal. Open **Settings → Notifications**,
 then use **Enable**, **Test**, or **Disable** for this browser device. The test waits
 two seconds so a phone can be locked. When enabled, **Mute this conversation on
 this device** applies only to the selected provider conversation and subscription;

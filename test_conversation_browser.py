@@ -223,16 +223,17 @@ def run():
         page.wait_for_function('!submitting && speechRecords.length === 3')
         assert requests[-1]['capture_target']['identity'] == 'a:replacement'
         assert requests[-1]['request'] == 'Keep this draft in A.'
-        assert not page.locator('#more-controls').evaluate('(el) => el.open')
+        assert not page.locator('#settings-dialog').evaluate('(el) => el.open')
         assert page.locator('#phone-escape').is_visible()
         assert not page.locator('#phone-enter').count()
         assert not page.locator('#terminal-toggle').count()
         assert not page.locator('#manage-tabs').count()
         page.locator('#tabs-toggle').click()
-        assert page.locator('.tab-action').first.is_visible()
+        assert not page.locator('.tab-action').count()
         assert page.locator('.group-action').first.is_visible()
         assert page.locator('#new-tab').is_visible()
         page.locator('#tabs-toggle').click()
+        assert page.locator('#mobile-title').is_visible()
         page.locator('#phone-escape').click()
         assert raw[-1]['key'] == 'Escape'
         assert len(raw) == 1
@@ -248,7 +249,8 @@ def run():
             assert escape['x'] + escape['width'] <= width and escape['height'] >= 40
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
         page.set_viewport_size({'width': 320, 'height': 844})
-        page.locator('#push-controls').evaluate('(element) => element.open = true')
+        page.locator('#settings-open').click()
+        assert page.locator('#settings-dialog').evaluate('(element) => element.open')
         page.evaluate("notifications.view.enabled = true; notifications.view.ready = true; notifications.emit()")
         for control in ('#push-test', '#push-disable'):
             box = page.locator(control).bounding_box()
@@ -257,7 +259,7 @@ def run():
         page.evaluate("notifications.view.enabled = false; notifications.emit()")
         box = page.locator('#push-enable').bounding_box()
         assert box and box['x'] >= 0 and box['x'] + box['width'] <= 320 and box['height'] >= 36
-        page.locator('#push-controls').evaluate('(element) => element.open = false')
+        page.locator('#settings-close').click()
         assert page.locator('.terminal').evaluate('el => parseFloat(getComputedStyle(el).fontSize)') > 10
         first = state['tabs'][0]['panes'][0]
         first['width'] = 60
