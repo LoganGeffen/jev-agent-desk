@@ -42,7 +42,7 @@ class VisualWorkspace {
       const expanded = this.root.parentElement.classList.toggle('visual-expanded');
       event.target.setAttribute('aria-pressed', String(expanded)); event.target.textContent = expanded ? 'Split view' : 'Expand';
     };
-    this.find('.visual-pane').onchange = event => this.options.selectPane?.(this.context.tab, event.target.value);
+    this.find('.visual-pane').onchange = event => this.options.selectPane?.(event.target.dataset.tab, event.target.value);
     this.find('.visual-archives').onclick = () => this.archives();
     this.find('.visual-archive-banner button').onclick = () => { this.archiveId = null; this.find('.visual-archive-banner').hidden = true; this.lastRefresh = 0; this.refresh(); };
     this.find('.visual-latest').onclick = () => { Object.assign(this.preference(), {closed: false, historical: false}); this.open = true; this.activitySeen = null; this.workspace && this.activity(this.workspace.creations[0]?.versions[0]?.id || 'latest', this.pendingMode || 'creations', true); };
@@ -108,6 +108,7 @@ class VisualWorkspace {
     if (!this.context) return;
     this.find('.visual-owner').textContent = tab.name;
     const paneSelect = this.find('.visual-pane');
+    paneSelect.dataset.tab = tab.id;
     const signature = JSON.stringify(tab.panes.map(item => [item.id, item.identity]));
     if (paneSelect.dataset.signature !== signature) { paneSelect.replaceChildren(...tab.panes.map(item => new Option(`Pane ${item.number || item.id} · ${item.provider || item.command || 'conversation'}`, item.id))); paneSelect.dataset.signature = signature; }
     paneSelect.value = pane.id; paneSelect.hidden = tab.panes.length < 2;

@@ -137,6 +137,141 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertEqual(desktop.evaluate('currentState.selected'), '@a')
         self.assertFalse(phone.evaluate('document.documentElement.scrollWidth > innerWidth'))
 
+    def test_latest_tab_click_wins_while_previous_state_response_is_delayed(self):
+        page = self.page()
+        page.wait_for_function('visuals.browser.pages.length === 1')
+        held = []
+        def delay_b(route):
+            if parse_qs(urlsplit(route.request.url).query).get('tab') == ['@b']:
+                held.append(route)
+            else:
+                self.route(route)
+        page.route('**/api/state?*', delay_b)
+        page.locator('.tab[data-tab-id="@b"]').click()
+        page.wait_for_function("currentState.selected === '@b' && selecting === '@b'")
+        page.locator('.tab[data-tab-id="@a"]').click()
+        try:
+            page.wait_for_function("currentState.selected === '@a' && selecting === null", timeout=1500)
+            page.wait_for_function("visuals.context?.tab === '@a' && visuals.browser.pages[0]?.page_id === 'page-a'")
+        finally:
+            page.unroute('**/api/state?*', delay_b)
+            for route in held:
+                route.fulfill(status=503, json={'error': 'Synthetic stale state failure'})
+        page.wait_for_timeout(650)
+        self.assertEqual(page.evaluate('currentState.selected'), '@a')
+        self.assertEqual(page.evaluate('visuals.context.tab'), '@a')
+        self.assertFalse(any(path in ('/api/select', '/api/input', '/api/request', '/api/jarvis/turn') for path, _ in self.posts))
+
+    def test_old_poll_network_failure_cannot_disconnect_new_selection(self):
+        page = self.page()
+        page.wait_for_function('visuals.browser.pages.length === 1')
+        held = []
+        def delay_b(route):
+            if parse_qs(urlsplit(route.request.url).query).get('tab') == ['@b']:
+                held.append(route)
+            else:
+                self.route(route)
+        page.route('**/api/state?*', delay_b)
+        page.locator('.tab[data-tab-id="@b"]').click()
+        page.wait_for_timeout(600)
+        self.assertGreaterEqual(len(held), 2)
+        page.locator('.tab[data-tab-id="@a"]').click()
+        page.wait_for_function("visuals.context?.tab === '@a' && selecting === null")
+        page.unroute('**/api/state?*', delay_b)
+        for route in held:
+            route.abort('failed')
+        page.wait_for_timeout(100)
+        self.assertEqual(page.locator('#connection').text_content(), 'Live')
+        self.assertEqual(page.evaluate('visuals.context?.tab'), '@a')
+
+    def test_rapid_pane_dropdown_return_preserves_browser_and_draft(self):
+        second = copy.deepcopy(self.state['tabs'][0]['panes'][0])
+        second.update(id='%a2', number=2, identity='a2:original', thread_id='a2', active=False, left=120)
+        self.state['tabs'][0]['panes'].append(second)
+        page = self.page()
+        page.wait_for_function('visuals.browser.pages.length === 1')
+        page.locator('#more-controls').evaluate('(element) => element.open = true')
+        page.locator('#input-mode').select_option('direct')
+        page.locator('#more-controls').evaluate('(element) => element.open = false')
+        page.locator('#phone-text').fill('Keep  this draft.')
+        captured = page.evaluate('voice.draft.target')
+        held = []
+        def delay_second(route):
+            if parse_qs(urlsplit(route.request.url).query).get('pane') == ['%a2']:
+                held.append(route)
+            else:
+                self.route(route)
+        page.route('**/api/state?*', delay_second)
+        page.locator('.visual-pane').select_option('%a2')
+        page.wait_for_function("currentState.selected_pane === '%a2'")
+        page.locator('.visual-pane').select_option('%a')
+        try:
+            page.wait_for_function("currentState.selected_pane === '%a' && selecting === null")
+            page.wait_for_function("visuals.context?.pane === '%a' && visuals.browser.pages[0]?.page_id === 'page-a'")
+        finally:
+            page.unroute('**/api/state?*', delay_second)
+            for route in held:
+                self.route(route)
+        page.wait_for_timeout(650)
+        self.assertEqual(page.evaluate('currentState.selected_pane'), '%a')
+        self.assertEqual(page.locator('#phone-text').input_value(), 'Keep  this draft.')
+        self.assertEqual(page.evaluate('voice.draft.target'), captured)
+        self.assertFalse(any(path in ('/api/input', '/api/request', '/api/jarvis/turn') for path, _ in self.posts))
+
+    def test_two_clicks_before_terminal_input_finishes_keep_original_recipient(self):
+        page = self.page()
+        page.wait_for_function('visuals.browser.pages.length === 1')
+        held = []
+        page.route('**/api/input', lambda route: held.append(route))
+        page.locator('.terminal[data-pane="%a"]').press('x')
+        page.wait_for_function('pendingText === null')
+        page.locator('.tab[data-tab-id="@b"]').click()
+        page.locator('.tab[data-tab-id="@a"]').click()
+        try:
+            page.wait_for_function("currentState.selected === '@a' && selecting === null")
+            self.assertEqual(len(held), 1)
+            self.assertEqual(held[0].request.post_data_json, {'tab': '@a', 'pane': '%a', 'identity': 'a:original', 'text': 'x'})
+        finally:
+            page.unroute('**/api/input')
+            for route in held:
+                self.route(route)
+        page.wait_for_timeout(650)
+        self.assertEqual(page.evaluate('currentState.selected'), '@a')
+        self.assertEqual([body['pane'] for path, body in self.posts if path == '/api/input'], ['%a'])
+
+    def test_originating_jarvis_selection_supersedes_pending_tab_click(self):
+        page = self.page()
+        page.wait_for_function('jarvis.sessionId !== null && visuals.browser.pages.length === 1')
+        held = []
+        def delay_b(route):
+            if parse_qs(urlsplit(route.request.url).query).get('tab') == ['@b']:
+                held.append(route)
+            else:
+                self.route(route)
+        def select_a(route):
+            body = route.request.post_data_json
+            self.posts.append(('/api/jarvis/turn', body))
+            route.fulfill(json={'session_id': 's1', 'request_id': body['request_id'], 'turn_id': 'selection', 'revision': 2,
+                                'status': 'completed', 'text': 'Selected A', 'actions': [],
+                                'view_target': {'tab': '@a', 'pane': '%a', 'identity': 'a:original'}})
+        page.route('**/api/state?*', delay_b)
+        page.route('**/api/jarvis/turn', select_a)
+        page.locator('.tab[data-tab-id="@b"]').click()
+        page.wait_for_function("selecting === '@b'")
+        page.locator('#phone-text').fill('Switch to A')
+        page.locator('#phone-input [type=submit]').click()
+        try:
+            page.wait_for_function("currentState.selected === '@a' && selecting === null")
+            page.wait_for_function("visuals.context?.tab === '@a' && visuals.browser.pages[0]?.page_id === 'page-a'")
+        finally:
+            page.unroute('**/api/state?*', delay_b)
+            for route in held:
+                self.route(route)
+        page.wait_for_timeout(650)
+        self.assertEqual(page.evaluate('currentState.selected'), '@a')
+        self.assertEqual(len([path for path, _ in self.posts if path == '/api/jarvis/turn']), 1)
+        self.assertFalse(any(path in ('/api/input', '/api/request') for path, _ in self.posts))
+
     def test_human_input_is_direct_lease_scoped_and_local_zoom_is_passive(self):
         page = self.page(mobile=True)
         page.wait_for_function('visuals.browser.pages.length === 1')

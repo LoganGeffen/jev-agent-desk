@@ -1006,12 +1006,16 @@
     async function refresh() {
       const generation = deviceView.generation;
       const sequence = ++refreshSequence;
-      const response = await fetch('/api/state' + deviceView.query);
-      const state = await response.json();
-      if (!response.ok) throw new Error(state.error);
-      if (generation !== deviceView.generation || sequence < appliedRefresh) return;
-      appliedRefresh = sequence;
-      render(state);
+      try {
+        const response = await fetch('/api/state' + deviceView.query);
+        const state = await response.json();
+        if (generation !== deviceView.generation || sequence < appliedRefresh) return;
+        if (!response.ok) throw new Error(state.error);
+        appliedRefresh = sequence;
+        render(state);
+      } catch (error) {
+        if (generation === deviceView.generation && sequence >= appliedRefresh) throw error;
+      }
     }
 
     async function poll() {
@@ -1036,21 +1040,23 @@
     }
 
     async function selectTab(tabId, paneId = null) {
-      if (selecting || (tabId === currentState?.selected && (!paneId || paneId === currentState?.selected_pane))) return;
+      if (tabId === currentState?.selected && (!paneId || paneId === currentState?.selected_pane)) return;
       flushTerminalText();
-      await terminalQueue;
       if (!deviceView.select(currentState, tabId, paneId)) return;
+      const generation = deviceView.generation;
       selecting = tabId;
       visuals.suspend();
       attentionTarget = null;
       tabSignature = null;
       render(currentState);
       try { await refresh(); }
-      catch (error) { showError(error); }
+      catch (error) { if (generation === deviceView.generation) showError(error); }
       finally {
-        selecting = null;
-        tabSignature = null;
-        if (currentState) { renderTabs(currentState); visuals.update(currentState); }
+        if (generation === deviceView.generation) {
+          selecting = null;
+          tabSignature = null;
+          if (currentState) { renderTabs(currentState); visuals.update(currentState); }
+        }
       }
     }
 
