@@ -152,7 +152,8 @@ function routerSetup(mode) {
     crypto: {randomUUID: () => 'id'}, retainSpeech() {}, requestOutcome: () => 'ok', retainOutcome() {}, targetName: () => 'fixture',
     refresh: () => new Promise(() => {}), currentState: null, attentionTarget: null, $: () => ({}),
     voice: {stopReadback: () => 1, speak() {}},
-    jarvis: {submit: async (...args) => { jarvisCalls.push(args); }, supersedeForDirect: async () => { cancelled.push(true); }},
+    jarvis: {subjectFor: target => target, submit: async (...args) => { jarvisCalls.push(args); },
+      supersedeForDirect: async () => { cancelled.push(true); }},
   });
   vm.runInContext(`let inputMode = ${JSON.stringify(mode)}; let submitting = false; let pendingRequest = null;
     function setSubmitting(value) { submitting = value; }
@@ -165,8 +166,9 @@ function routerSetup(mode) {
 
 test('default mode sends natural-language input to Jarvis and never to the direct request endpoint', async () => {
   const s = routerSetup('jarvis');
-  await s.context.submitInput('Ask Dog Data about it', {tab: '@a', pane: '%a', identity: 'x'}, 'typed');
-  assert.deepEqual(JSON.parse(JSON.stringify(s.jarvisCalls)), [['Ask Dog Data about it', 'typed', {}]]);
+  const target = {tab: '@a', pane: '%a', identity: 'x'};
+  await s.context.submitInput('Ask Dog Data about it', target, 'typed');
+  assert.deepEqual(JSON.parse(JSON.stringify(s.jarvisCalls)), [['Ask Dog Data about it', 'typed', {subject: target}]]);
   assert.deepEqual(s.fetched, []);
   assert.deepEqual(s.cancelled, []);
 });
