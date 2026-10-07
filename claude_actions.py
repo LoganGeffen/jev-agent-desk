@@ -64,8 +64,9 @@ def thread_read(binding):
             if text.startswith('[Request interrupted by user'):
                 if turns:
                     turns[-1]['status'] = 'interrupted'
+                    turns[-1]['completedAt'] = row.get('timestamp')
                 continue
-            turns.append({'id': row['uuid'], 'status': 'inProgress', 'items': [
+            turns.append({'id': row['uuid'], 'status': 'inProgress', 'startedAt': row.get('timestamp'), 'items': [
                 {'type': 'userMessage', 'content': [{'type': 'text', 'text': text}]}]})
         elif kind == 'assistant' and turns:
             final = row.get('message', {}).get('stop_reason') == 'end_turn'

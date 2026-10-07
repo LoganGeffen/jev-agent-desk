@@ -43,6 +43,21 @@ Intercepted Chromium checks the controls at
 320 px, a credentialed auth-cookie manifest fetch, and the existing terminal 12 px
 wrapping across 320–1280 px.
 
+Native-activity tests cover Codex lifecycle events independently of reconstructed
+app-server status, newer-turn supersession, late old completion, interruption,
+bounded reads, partial/malformed history, file replacement and writer restart.
+Claude tests cover prompt/Stop/StopFailure timing and continued replies after an
+older Stop. Watcher tests require the latest history turn and native completion
+to agree, silence startup/recovery/resume history, and preserve historical audio
+readback separately. The 18 activity tests and 60 focused push/readback/attention/
+Desk tests passed during integration.
+
+Independent Chromium checks display an injected push using the actual service
+worker, navigate its exact target, preserve an unsent draft, and retain the event
+URL through an expired-authentication fixture. Activation claims the first open
+page; a missing/uncontrolled window falls back to opening the URL. Browser rules
+prevent a synthetic click from proving trusted OS focus/new-window behavior.
+
 These checks use synthetic subscriptions and transports. They do not prove browser
 vendor delivery, installed-PWA behavior, authentication-proxy return behavior, or
 background/screen-lock delivery on a physical phone. Deployment, service restart,

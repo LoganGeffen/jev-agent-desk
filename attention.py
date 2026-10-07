@@ -83,6 +83,9 @@ class AttentionQueue:
             entry['available'] = True
             entry['current'] = bool(reply and turns and turns[-1]['id'] == reply[0]
                                     and not entry.get('answered'))
+            if 'activity' in thread:
+                entry['current'] = bool(entry['current'] and thread['activity']['state'] == 'ready'
+                                        and thread['activity'].get('turn_id') == reply[0])
         if changed:
             self.emit()
 
@@ -115,7 +118,7 @@ class AttentionQueue:
                                 'label': label,
                                 'needs_input': True, 'text': '', 'arrived': 0, 'decision': 'input'})
                         continue
-                    current = entry['current'] and state != 'working'
+                    current = entry['current'] and state in ('ready', 'idle', 'needs_you')
                     needs_input = needs_input or (current and entry['decision'] == 'input')
                     unread = bool(entry['reply']) and not entry['heard']
                     if not needs_input and not (current and (unread or include_heard)):

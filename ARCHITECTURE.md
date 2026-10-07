@@ -188,10 +188,12 @@ receipts.
 ## Web Push notifications
 
 `ReadbackPreparation` remains the single browser-independent three-second history
-scan. After provider identity and history are revalidated, it passes only the
-latest completed final reply identity to `PushNotifications`; push failures are
-caught outside attention and readback preparation. The first successful scan for
-each stable `(provider, conversation)` is a silent baseline.
+scan. After provider identity, history and native activity are revalidated, it
+passes only the current completed final reply identity to `PushNotifications`.
+The newest history turn must match a native completed turn; older replies cannot
+trigger while a newer turn is underway. Push failures are caught outside attention
+and readback preparation. First attachment, process replacement, server restart
+and recovery from unavailable evidence silently prime the current reply.
 Later turn identities create deterministic events in `<run-dir>/push.sqlite3`.
 The baseline, event and per-device delivery rows make polling, restart and native
 process resume non-replaying. Pending or sending rows found at startup become
@@ -205,11 +207,22 @@ origins, redirects are disabled, requests have a ten-second timeout, and 404/410
 responses remove revoked subscriptions. Subscription and private-key material is
 not included in shared Desk or Jarvis state.
 
+`agent_activity.py` supplies the same native evidence to pane badges and the
+background watcher. Codex activity comes from bounded, incremental lifecycle
+reads of its native rollout, discovered through read-only metadata. A fresh
+app-server can reconstruct an unfinished stored turn as interrupted, so that
+snapshot is never activity authority. Claude hooks are checked against the
+latest transcript turn. Missing, stale or contradictory evidence is unknown;
+process presence and unversioned tmux status flags are not lifecycle evidence.
+Stopped/failed turns are distinct from reply-ready. Historical originals remain
+readable independently, and no state asserts overall task completion.
+
 `notifications.js` registers the root-scoped service worker and exposes explicit
 per-device enable/test/disable controls. Mute changes revalidate the current exact
 agent pane and retain the stable provider/conversation identity across native
-process resume. `service-worker.js` has push and notification-click handlers only—no
-fetch handler or offline shell cache. A reply click carries the immutable event,
+process resume. `service-worker.js` claims existing pages on activation and handles
+push and notification clicks, with no fetch handler or offline shell cache.
+A reply click carries the immutable event,
 tab, pane and conversation identity through the root query string. After Desk's
 initial state and session load, the client and server both require that exact
 target before selection; a missing or replaced target produces a visible stale

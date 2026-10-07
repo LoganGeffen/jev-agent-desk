@@ -375,12 +375,23 @@ the mute remains if that same native conversation resumes in a new process.
 Install the Desk from the browser or add it to the Home Screen for the normal
 standalone mobile experience.
 
+Badges and notification eligibility use current native lifecycle evidence. Codex
+uses its own turn-start, turn-complete and interruption records; a separate
+app-server's reconstructed history is not live activity. Claude uses its bound
+lifecycle hooks checked against the latest transcript turn. **Reply ready** means
+that turn has a final reply, not that the whole task is done. Missing or conflicting
+evidence shows **status unknown**; an interruption shows **stopped** and a known
+provider failure shows **error**. Old window status flags do not override this.
+Required-input alerts are not inferred from quiet terminals or error messages.
+
 Each push contains only the session label, the fixed body “Agent replied,” and an
 opaque event plus exact conversation identity; reply and terminal text are never
 sent to the browser vendor. Tapping resolves that immutable event after the page
 loads. If the tab, pane or conversation identity changed, Desk shows an unavailable
 message and does not substitute another conversation. Historical replies present
-when a conversation is first observed are primed silently. Event and delivery
+on first attachment, restart, native resume, or recovery from unavailable evidence
+are primed silently. A newer active turn suppresses an older reply, and a reply
+requires matching current native completion before it can notify. Event and delivery
 records prevent replay across polling and server restart; an in-flight send at a
 crash becomes uncertain and is not retried automatically. This notification/open
 state does not mark audio heard.

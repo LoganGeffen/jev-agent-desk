@@ -75,7 +75,7 @@ class PlaygroundTests(unittest.TestCase):
         self.assertEqual(marked["group"], "Workspace")
         self.assertEqual(marked["group_id"], "workspace")
         self.assertFalse(marked['codex'], 'Stale registration must not make a shell an agent')
-        self.assertEqual(marked["state"], "ready")
+        self.assertEqual(marked["state"], "open")
         self.assertTrue(all(isinstance(tab["activity"], int) for tab in tabs))
         self.assertTrue(all(tab["group"] in {"Agents", "Workspace"} for tab in tabs))
         self.assertEqual(state["groups"], [
@@ -279,11 +279,12 @@ class PlaygroundTests(unittest.TestCase):
 
 class ActivityStateTests(unittest.TestCase):
     def test_activity_state_uses_desk_status_semantics(self):
-        self.assertEqual(activity_state("working", "", "codex"), "working")
-        self.assertEqual(activity_state("done", "", "codex"), "ready")
-        self.assertEqual(activity_state("", "1", "codex"), "needs_you")
-        self.assertEqual(activity_state("", "", "codex"), "idle")
-        self.assertEqual(activity_state("", "", "python3"), "open")
+        self.assertEqual(activity_state([{'provider': 'codex', 'state': None}]), 'unknown')
+        self.assertEqual(activity_state([{'provider': None}]), 'open')
+        self.assertEqual(activity_state([{'provider': 'codex', 'state': 'ready'},
+                                         {'provider': 'claude', 'state': 'working'}]), 'working')
+        self.assertEqual(activity_state([{'provider': 'codex', 'state': 'ready'},
+                                         {'provider': 'claude', 'state': 'unknown'}]), 'unknown')
 
 
 class JevAdapterTests(unittest.TestCase):

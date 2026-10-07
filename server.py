@@ -19,10 +19,10 @@ from jarvis_controller import JarvisController
 from jarvis_haiku import run_turn as jarvis_run_turn
 from jarvis_tools import JarvisTools, TOOLS as JARVIS_TOOLS
 from attention import AttentionQueue
+from agent_activity import AgentActivity
 from codex_actions import focus, tmux
 from session_actions import interrupt_turn, read_reply, send_message
 from claude_runtime import read_binding
-from claude_actions import working_indicator as claude_working_indicator
 from session_questions import ask_session
 from message_delivery import prepare_message
 from spoken_reply import ReadbackCache
@@ -40,10 +40,6 @@ from browser_http import create_browser, get_route as browser_get, post_route as
 from browser_runtime import BrowserError
 
 
-ATTENTION_OFF = {"", "0", "false", "no", "off"}
-NEEDS_YOU = {"blocked", "needs_input", "needs_you", "waiting_user", "action_required"}
-WORKING = {"busy", "executing", "launching", "queued", "running", "thinking", "working"}
-READY = {"complete", "completed", "done", "ready", "waiting"}
 TERMINAL_KEYS = {
     "Enter", "Escape", "BSpace", "Tab", "BTab", "Up", "Down", "Left", "Right",
     "Home", "End", "DC", "IC", "PPage", "NPage",
@@ -57,17 +53,11 @@ TERMINAL_KEYS = {
 }
 
 
-def activity_state(status, attention, command):
-    normalized_status = status.strip().lower().replace("-", "_").replace(" ", "_")
-    if attention.strip().lower() not in ATTENTION_OFF or normalized_status in NEEDS_YOU:
-        return "needs_you"
-    if normalized_status in WORKING:
-        return "working"
-    if normalized_status in READY:
-        return "ready"
-    if normalized_status == "idle" or command.strip().lower() in {"claude", "codex"}:
-        return "idle"
-    return "open"
+def activity_state(panes):
+    states = {pane.get('state') or 'unknown' for pane in panes
+              if pane.get('provider') in ('claude', 'codex')}
+    return next((state for state in ('needs_you', 'working', 'unknown', 'failed', 'stopped', 'ready', 'idle')
+                 if state in states), 'open')
 
 
 def clean_name(value, label):
@@ -228,8 +218,10 @@ class Playground:
         self.readbacks = ReadbackCache()
         self.reply_watch = ReplyWatch()
         self.attention = AttentionQueue()
+        self.activity = AgentActivity()
         self.push = PushNotifications(self.log.parent)
-        self.readback_preparation = ReadbackPreparation(self.readbacks, self.attention, self.push.observe)
+        self.readback_preparation = ReadbackPreparation(self.readbacks, self.attention, self.push.observe,
+                                                       self.activity.read)
         self.read_output = None
         self.pending_close = None
         self.pending_clarification = None
@@ -302,18 +294,14 @@ class Playground:
     def observe(self, view_tab=None, view_pane=None):
         rows = tmux(self.socket, "list-windows", "-t", f"={self.view_session}", "-F",
                     "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}"
-                    "\t#{window_activity}\t#{@agent_status}\t#{@agent_attention}"
-                    "\t#{pane_current_command}")
+                    "\t#{window_activity}")
         tabs = []
         selected = None
         for row in rows.splitlines():
-            window_id, index, name, active, activity, status, attention, command = row.split("\t")
+            window_id, index, name, active, activity = row.split("\t")
             panes = self.panes(window_id)
             codex = any(pane['codex'] for pane in panes)
-            state = activity_state(status, attention, command)
-            claude_states = {pane.get('state') for pane in panes if pane.get('provider') == 'claude'}
-            if claude_states:
-                state = next((value for value in ('needs_you', 'working', 'ready', 'idle') if value in claude_states), state)
+            state = activity_state(panes)
             tabs.append({"id": window_id, "index": int(index), "name": name,
                          "codex": codex, 'agent': any(pane.get('agent') or pane['codex'] for pane in panes), "panes": panes,
                          "state": state,
@@ -356,10 +344,12 @@ class Playground:
             if binding:
                 thread_id = binding['session_id']
             state = None
-            if binding:
-                screen = tmux(self.socket, 'capture-pane', '-p', '-t', values['pane_id'])
-                state = ('working' if claude_working_indicator(screen) else 'needs_you' if binding['state'] == 'needs_you'
-                         else 'ready' if binding.get('last_reply') else 'idle')
+            activity = None
+            if command in ('claude', 'codex'):
+                activity = self.activity.read({'provider': command, 'thread_id': thread_id,
+                    'process': identity['process'], 'run_dir': str(self.log.parent),
+                    'socket': self.socket, 'window_id': window, 'pane_id': values['pane_id']})
+                state = activity['state']
             panes.append({
                 'id': values['pane_id'], 'number': len(panes) + 1,
                 'active': values['pane_active'] == '1', 'command': command, 'title': values['pane_title'],
@@ -367,6 +357,7 @@ class Playground:
                 'codex': command == 'codex' and bool(thread_id), 'agent': bool(thread_id),
                 'provider': command if command in ('codex', 'claude') else None,
                 'state': state,
+                'activity': activity,
                 'process': identity['process'],
                 'tracking': ('lifecycle_hooks' if binding else 'unresolved') if command == 'claude'
                             else identity.get('tracking', 'unresolved') if command == 'codex' else None,

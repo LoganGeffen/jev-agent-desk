@@ -84,6 +84,17 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(item['needs_input'])
         self.assertEqual(item['text'], '')
 
+    def test_native_uncertainty_or_newer_turn_cannot_recommend_a_stored_reply(self):
+        for state, turn_id in [('unknown', None), ('working', 'new'), ('stopped', '1'), ('ready', 'new')]:
+            self.queue.observe(agent('a'), {'turns': [turn('1', 'Old reply')],
+                'activity': {'state': state, 'turn_id': turn_id}})
+            self.assertEqual(self.queue.view(self.tabs), [])
+        self.queue.observe(agent('a'), {'turns': [turn('1', 'Old reply')],
+            'activity': {'state': 'ready', 'turn_id': '1'}})
+        self.assertEqual(len(self.queue.view(self.tabs)), 1)
+        self.tabs[0]['state'] = 'unknown'
+        self.assertEqual(self.queue.view(self.tabs), [])
+
     def test_terminal_origin_and_both_providers_use_existing_watcher(self):
         agents = [agent('a'), {**agent('b'), 'provider': 'claude'}]
         self.tabs[1]['panes'][0]['provider'] = 'claude'
@@ -107,7 +118,7 @@ class AttentionFlowTests(unittest.TestCase):
             tab.update(agent=True, codex=True, state='ready')
             for pane in tab['panes']:
                 pane.update(agent=True, codex=True, command='codex', provider='codex',
-                            thread_id=tab['id'], process='process-' + pane['id'])
+                            thread_id=tab['id'], process='process-' + pane['id'], state='ready')
                 pane['identity'] = pane['process'] + ':codex:' + tab['id']
         self.panes = patch.object(self.app, 'panes', side_effect=lambda window:
                                  next(t['panes'] for t in self.tabs if t['id'] == window))

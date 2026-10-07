@@ -329,7 +329,7 @@ class PushNotifications:
         return validate_target({"tab": agent["window_id"], "pane": agent["pane_id"],
                                 "identity": f"{agent['process']}:{agent.get('provider', 'codex')}:{agent['thread_id']}"})
 
-    def observe(self, agent, turn_id):
+    def observe(self, agent, turn_id, notify=True):
         target = self._agent_target(agent)
         identifier = conversation_id(agent)
         if isinstance(turn_id, (list, tuple)) and turn_id:
@@ -351,6 +351,8 @@ class PushNotifications:
                 return None
             connection.execute("UPDATE baselines SET turn_id=?, target=?, observed_at=? WHERE conversation_id=?",
                                (turn_id, json.dumps(target, sort_keys=True), now, identifier))
+            if not notify:
+                return None
             event_id = "reply:" + hashlib.sha256(f"{identifier}\0{turn_id}".encode()).hexdigest()
             label = re.sub(r"[\x00-\x1f\x7f]", " ", str(agent.get("label") or "Agent")).strip()[:80] or "Agent"
             created = connection.execute("""

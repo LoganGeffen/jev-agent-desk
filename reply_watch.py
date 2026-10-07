@@ -75,10 +75,12 @@ class ReplyWatch:
 
 
 class ReadbackPreparation:
-    def __init__(self, cache, attention=None, on_reply=None):
+    def __init__(self, cache, attention=None, on_reply=None, activity=None):
         self.cache = cache
         self.attention = attention
         self.on_reply = on_reply
+        self.activity = activity
+        self.observed = {}
         self.latest = {}
         self.stopped = threading.Event()
         self.worker = None
@@ -87,6 +89,7 @@ class ReadbackPreparation:
         if self.attention:
             self.attention.retain(agents)
         current = {}
+        observed_agents = {}
         changed = []
         for agent in agents:
             if self.stopped.is_set():
@@ -97,9 +100,19 @@ class ReadbackPreparation:
             try:
                 thread = history(agent)
             except (RuntimeError, OSError, ValueError):
+                self.observed.pop(key, None)
                 if self.attention:
                     self.attention.unavailable(agent)
                 continue
+            activity = {'state': 'unknown', 'turn_id': None}
+            if self.activity:
+                try:
+                    activity = self.activity(agent, thread)
+                    provider = claude_actions if agent['provider'] == 'claude' else codex_actions
+                    provider.check_target(agent['socket'], agent)
+                except (RuntimeError, OSError, ValueError):
+                    activity = {'state': 'unknown', 'turn_id': None}
+                thread = {**thread, 'activity': activity}
             if self.attention:
                 self.attention.observe(agent, thread)
             observed = None
@@ -122,13 +135,23 @@ class ReadbackPreparation:
                 break
             if self.on_reply:
                 try:
-                    self.on_reply(agent, observed[0] if observed else None)
+                    latest = thread['turns'][-1] if thread['turns'] else None
+                    eligible = (observed and latest and latest['id'] == observed[0]
+                                and activity['state'] == 'ready'
+                                and activity.get('turn_id') == observed[0])
+                    known = activity['state'] != 'unknown'
+                    self.on_reply(agent, observed[0] if eligible else None,
+                                  notify=known and key in self.observed
+                                  and self.observed[key] == activity.get('generation'))
+                    if known:
+                        observed_agents[key] = activity.get('generation')
                 except Exception:
                     pass
         self.cache.retain(value[1] for value in current.values())
         for text in dict.fromkeys(changed):
             self.cache.prepare(text)
         self.latest = current
+        self.observed = observed_agents
 
     def start(self, get_agents):
         def observe():

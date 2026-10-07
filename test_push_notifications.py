@@ -190,6 +190,102 @@ class PushStoreTests(unittest.TestCase):
 
 
 class PushWatcherTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='jev-push-lifecycle-')
+        self.addCleanup(temporary.cleanup)
+        self.sent = []
+        self.push = PushNotifications(Path(temporary.name), sender=lambda *args: self.sent.append(args))
+        self.push._spawn = lambda job: job()
+        self.push.subscribe(device(1), subscription())
+        self.agent = {**watch_agent('thread'), **observed_agent()}
+        self.activity = {'state': 'ready', 'turn_id': 'old'}
+        self.thread = {'turns': [turn('old', 'Old reply')]}
+        self.watcher = ReadbackPreparation(Mock(), on_reply=self.push.observe,
+                                          activity=lambda *_: self.activity)
+
+    def poll(self):
+        with patch('reply_watch.history', side_effect=lambda _: self.thread), \
+             patch('reply_watch.codex_actions.check_target'):
+            self.watcher.poll([self.agent])
+
+    def test_only_current_native_completed_reply_notifies(self):
+        self.poll()
+        self.assertEqual(self.sent, [])
+        self.thread['turns'].append(turn('new', 'Still running', 'inProgress'))
+        self.activity = {'state': 'working', 'turn_id': 'new'}
+        self.poll()
+        self.assertEqual(self.sent, [])
+        self.thread['turns'][-1] = turn('new', 'New reply')
+        self.poll()
+        self.assertEqual(self.sent, [], 'A stored reply is not native turn completion')
+        self.activity = {'state': 'ready', 'turn_id': 'new'}
+        self.poll()
+        self.poll()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_old_completion_never_notifies_during_newer_turn_or_native_mismatch(self):
+        self.poll()
+        self.thread['turns'].extend([turn('middle', 'Missed reply'), turn('new', 'Active', 'inProgress')])
+        self.activity = {'state': 'working', 'turn_id': 'new'}
+        self.poll()
+        self.activity = {'state': 'ready', 'turn_id': 'middle'}
+        self.poll()
+        self.assertEqual(self.sent, [])
+
+    def test_interruption_failure_unknown_and_commentary_stay_silent(self):
+        self.poll()
+        for state, status, phase in [('stopped', 'interrupted', 'final_answer'),
+                                     ('failed', 'failed', 'final_answer'),
+                                     ('unknown', 'completed', 'final_answer'),
+                                     ('ready', 'completed', 'commentary')]:
+            self.thread = {'turns': [turn(state, 'Not a ready reply', status, phase)]}
+            self.activity = {'state': state, 'turn_id': state}
+            self.poll()
+        self.assertEqual(self.sent, [])
+
+    def test_restart_resume_and_unavailable_history_reprime_without_backfill(self):
+        self.poll()
+        self.thread = {'turns': [turn('offline', 'Reply during downtime')]}
+        self.activity = {'state': 'ready', 'turn_id': 'offline'}
+        self.watcher = ReadbackPreparation(Mock(), on_reply=self.push.observe,
+                                          activity=lambda *_: self.activity)
+        self.poll()
+        self.agent = {**self.agent, 'process': '101:201'}
+        self.thread = {'turns': [turn('resumed', 'Before resume')]}
+        self.activity = {'state': 'ready', 'turn_id': 'resumed'}
+        self.poll()
+        with patch('reply_watch.history', side_effect=RuntimeError('unavailable')):
+            self.watcher.poll([self.agent])
+        self.thread = {'turns': [turn('recovered', 'Before recovery')]}
+        self.activity = {'state': 'ready', 'turn_id': 'recovered'}
+        self.poll()
+        self.assertEqual(self.sent, [])
+        self.thread = {'turns': [turn('fresh', 'Fresh reply')]}
+        self.activity = {'state': 'ready', 'turn_id': 'fresh'}
+        self.poll()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_identity_change_after_native_read_suppresses_notification(self):
+        self.poll()
+        self.thread = {'turns': [turn('new', 'Reply')]}
+        self.activity = {'state': 'ready', 'turn_id': 'new'}
+        with patch('reply_watch.history', return_value=self.thread), \
+             patch('reply_watch.codex_actions.check_target', side_effect=RuntimeError('changed')):
+            self.watcher.poll([self.agent])
+        self.assertEqual(self.sent, [])
+
+    def test_replaced_lifecycle_file_reestablishes_silent_baseline(self):
+        self.activity['generation'] = 'original'
+        self.poll()
+        self.thread = {'turns': [turn('rewritten', 'Historical after replacement')]}
+        self.activity = {'state': 'ready', 'turn_id': 'rewritten', 'generation': 'replacement'}
+        self.poll()
+        self.assertEqual(self.sent, [])
+        self.thread = {'turns': [turn('fresh', 'Current reply')]}
+        self.activity = {'state': 'ready', 'turn_id': 'fresh', 'generation': 'replacement'}
+        self.poll()
+        self.assertEqual(len(self.sent), 1)
+
     def test_push_failure_cannot_stop_attention_or_readback_preparation(self):
         cache = Mock()
         callback = Mock(side_effect=RuntimeError("disk full"))
