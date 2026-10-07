@@ -272,6 +272,56 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertEqual(len([path for path, _ in self.posts if path == '/api/jarvis/turn']), 1)
         self.assertFalse(any(path in ('/api/input', '/api/request') for path, _ in self.posts))
 
+    def test_tabs_button_stays_reachable_after_header_focus_and_preview_changes(self):
+        for title in ('Synthetic long session title for navigation geometry', 'A'):
+            with self.subTest(title=title):
+                self.state['tabs'][0]['name'] = title
+                page = self.page(mobile=True)
+                page.wait_for_function('visuals.browser.pages.length === 1')
+                captured = page.evaluate('phoneTarget()')
+                def header_button(selector):
+                    geometry = page.locator(selector).evaluate("""element => {
+                      const rect = element.getBoundingClientRect();
+                      const workspace = document.getElementById('workspace');
+                      return {x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right,
+                        viewport: innerWidth, hit: document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === element,
+                        scroll: workspace.scrollLeft};
+                    }""")
+                    self.assertGreaterEqual(geometry['x'], 0)
+                    self.assertLessEqual(geometry['right'], geometry['viewport'])
+                    self.assertTrue(geometry['hit'])
+                    self.assertEqual(geometry['scroll'], 0)
+                    return geometry
+                def click_header(selector):
+                    rect = header_button(selector)
+                    page.mouse.click(rect['x'] + rect['width'] / 2, rect['y'] + rect['height'] / 2)
+                click_header('#tabs-toggle')
+                page.keyboard.press('Tab')
+                self.assertEqual(page.evaluate('document.activeElement.id'), 'visual-toggle')
+                header_button('#tabs-toggle')
+                header_button('#visual-toggle')
+                page.keyboard.press('Shift+Tab')
+                click_header('#tabs-toggle')
+                self.assertFalse(page.locator('#session-rail').is_visible())
+                click_header('#visual-toggle')
+                page.locator('#more-controls > summary').click()
+                page.locator('#terminal-toggle').click()
+                page.locator('#more-controls > summary').click()
+                click_header('#visual-toggle')
+                for width, height in ((390, 360), (701, 844), (320, 568), (390, 844), (700, 844)):
+                    page.set_viewport_size({'width': width, 'height': height})
+                    if width > 700:
+                        self.assertFalse(page.locator('#tabs-toggle').is_visible())
+                        self.assertTrue(page.locator('#session-rail').is_visible())
+                        continue
+                    click_header('#tabs-toggle')
+                    self.assertTrue(page.locator('#session-rail').is_visible())
+                    click_header('#tabs-toggle')
+                    self.assertFalse(page.locator('#session-rail').is_visible())
+                    header_button('#visual-toggle')
+                self.assertEqual(page.evaluate('phoneTarget()'), captured)
+                self.assertFalse(any(path in ('/api/input', '/api/request', '/api/jarvis/turn') for path, _ in self.posts))
+
     def test_human_input_is_direct_lease_scoped_and_local_zoom_is_passive(self):
         page = self.page(mobile=True)
         page.wait_for_function('visuals.browser.pages.length === 1')
