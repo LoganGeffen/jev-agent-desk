@@ -219,8 +219,9 @@
       border: 0;
       background: var(--terminal-background);
       color: var(--terminal-foreground);
-      font: 13px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      white-space: pre;
+      font: 12px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      white-space: break-spaces;
+      overflow-wrap: anywhere;
       tab-size: 2;
       cursor: text;
     }
@@ -362,7 +363,7 @@
       #app:not(.show-terminal) #workspace { grid-template-rows: auto minmax(0, 1fr); }
       #app:not(.show-terminal) #composer { max-height: none; }
       .pane { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; min-height: 180px; flex: 1; }
-      .terminal { padding: 8px; font-size: 13px; }
+      .terminal { padding: 8px; }
       #composer { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 8px; min-height: 0; max-height: 45dvh; overflow-y: auto; }
       #phone-input { order: -1; display: flex; gap: 6px; flex-wrap: wrap; }
       #phone-input textarea { width: 100%; height: 52px; min-height: 52px; max-height: 20dvh; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: #070a09; }

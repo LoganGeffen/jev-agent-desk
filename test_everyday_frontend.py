@@ -141,17 +141,19 @@ class EverydayFrontendTests(unittest.TestCase):
         self.browser_pages = {'a': [], 'b': []}
         pane = self.state['tabs'][0]['panes'][0]
         pane['terminal_ansi'] = '\n'.join(f'Output {i:03d} ' + 'x' * 230 for i in range(100))
+        pane['terminal_ansi'] += '\n    Indented text  \t  with whitespace' + ' ' * 100 + '\n\x1b[32mhttps://example.test/' + 'long-path/' * 50 + '\x1b[0m'
         for mobile in (False, True):
             with self.subTest(mobile=mobile):
                 page = self.page(mobile=mobile)
                 terminal = page.locator('.terminal').first
-                self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 13)
-                self.assertTrue(terminal.evaluate('e => e.scrollHeight > e.clientHeight && e.scrollWidth > e.clientWidth'))
+                self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 12)
+                self.assertTrue(terminal.evaluate('e => e.scrollHeight > e.clientHeight && e.scrollWidth <= e.clientWidth'))
+                self.assertEqual(terminal.text_content(), pane['terminal_ansi'].replace('\x1b[32m', '').replace('\x1b[0m', ''))
                 box = terminal.bounding_box()
                 page.mouse.move(box['x'] + 30, box['y'] + 30)
-                page.mouse.wheel(150, -350)
+                page.mouse.wheel(0, -350)
                 page.wait_for_function('''() => {const e = document.querySelector('.terminal');
-                  return e.scrollLeft > 0 && e.scrollHeight - e.scrollTop - e.clientHeight > 100;}''')
+                  return e.scrollLeft === 0 && e.scrollHeight - e.scrollTop - e.clientHeight > 100;}''')
                 position = terminal.evaluate('e => [e.scrollLeft, e.scrollTop]')
                 page.evaluate('refresh()')
                 self.assertEqual(terminal.evaluate('e => [e.scrollLeft, e.scrollTop]'), position)
@@ -170,7 +172,8 @@ class EverydayFrontendTests(unittest.TestCase):
                 self.assertEqual(terminal.evaluate('e => e.scrollLeft'), position[0])
                 if mobile:
                     page.locator('#tabs-toggle').click()
-                    self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 13)
+                    self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 12)
+                    self.assertTrue(terminal.evaluate('e => e.scrollWidth <= e.clientWidth'))
                 self.assertFalse(page.evaluate('document.documentElement.scrollWidth > innerWidth'))
                 self.assertEqual(page.evaluate('jarvis.target.identity'), 'a:original')
                 page.close()

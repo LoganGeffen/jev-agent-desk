@@ -148,7 +148,7 @@ def run():
         page.wait_for_function('currentState !== null')
         def terminal_readable():
             page.wait_for_function("""[...document.querySelectorAll('.terminal')].every(el =>
-              el.clientWidth > 0 && parseFloat(getComputedStyle(el).fontSize) >= 13)""")
+              el.clientWidth > 0 && parseFloat(getComputedStyle(el).fontSize) === 12 && el.scrollWidth <= el.clientWidth)""")
         terminal_readable()
         assert not page.locator('#session-rail').is_visible()
         assert page.locator('textarea:visible').count() == 1
