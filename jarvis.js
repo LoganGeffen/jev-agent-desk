@@ -4,8 +4,10 @@ class JarvisClient {
   constructor({fetch, newId, retain, onChange = () => {}, now = Date.now, deadlineMs = 90000, lostGraceMs = 10000, clientId = null}) {
     this.fetch = fetch;
     this.clientId = clientId || 'client-' + Math.random().toString(36).slice(2) + now();
-    this.semantic = {context: () => ({session_id: this.sessionId, subject: this.snapshot?.subject
-      ? {tab: this.snapshot.subject.tab, pane: this.snapshot.subject.pane, identity: this.snapshot.subject.identity} : null}), decide: (payload, signal) => this.decideTurn(payload, signal), invalidate: payload => this.invalidateTurn(payload)};
+    this.nextSubject = undefined;
+    this.subjectGeneration = 0;
+    this.semantic = {context: () => ({session_id: this.sessionId, subject: this.subjectFor(this.target)}),
+      subject: target => this.subjectFor(target), decide: (payload, signal) => this.decideTurn(payload, signal), invalidate: payload => this.invalidateTurn(payload)};
     this.newId = newId;
     this.retain = retain;
     this.onChange = onChange;
@@ -21,13 +23,22 @@ class JarvisClient {
     this.rendered = new Map();
     this.owned = new Map();
   }
-  get target() { return JARVIS_TARGET; }
+  get subject() { return this.nextSubject === undefined ? this.snapshot?.subject : this.nextSubject; }
+  get target() { return {...(this.subjectFor(this.subject) || JARVIS_TARGET), mode: 'jarvis'}; }
+  subjectFor(target) {
+    return target && target.tab !== 'jarvis' ? {tab: target.tab, pane: target.pane, identity: target.identity} : null;
+  }
+  selectSubject(subject) {
+    this.nextSubject = subject ? {...this.subjectFor(subject), label: subject.label || subject.tab} : null;
+    this.subjectGeneration++;
+    this.onChange();
+  }
   get summary() {
     const snapshot = this.snapshot;
     const jobs = Object.values(snapshot?.jobs || {}).filter(job => ['queued', 'running'].includes(job.status));
     return {
       available: !!snapshot,
-      subject: snapshot?.subject ? snapshot.subject.label || snapshot.subject.tab : null,
+      subject: this.subject ? this.subject.label || this.subject.tab : this.nextSubject === null ? 'No conversation selected' : null,
       jobs: jobs.map(job => ({label: job.subject?.label || job.subject?.tab || 'Job', status: job.status})),
       busy: this.pending.size > 0,
     };
@@ -77,6 +88,7 @@ class JarvisClient {
     const snapshot = this.snapshot;
     return {session_id: snapshot.session_id, turn_id: turn.turn_id, request_id: turn.request_id,
       revision: snapshot.revision, status: turn.status, text: turn.result?.text || '',
+      subject: turn.resolved_subject === undefined ? turn.subject : turn.resolved_subject,
       actions: Object.values(snapshot.actions || {}).filter(action => action.turn_id === turn.turn_id),
       ...(turn.result?.readback ? {readback: turn.result.readback} : {}),
       ...(turn.result?.view_target ? {view_target: turn.result.view_target} : {}),
@@ -96,7 +108,7 @@ class JarvisClient {
     return this.latestRequestId === entry.id && this.voice?.generation === entry.generation;
   }
   turnDecisionRequest(payload) {
-    return {session_id: this.sessionId, client_id: this.clientId, ...payload, subject: this.snapshot?.subject ?? null};
+    return {session_id: this.sessionId, client_id: this.clientId, subject: this.subjectFor(this.subject), ...payload};
   }
   async decideTurn(payload, signal) {
     if (!this.sessionId) throw new Error('Jarvis is unavailable');
@@ -105,11 +117,11 @@ class JarvisClient {
       signal, body: JSON.stringify(sent)});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Turn decision failed');
-    const subject = canonical(sent.subject);
+    const subject = canonical(this.subjectFor(sent.subject));
     const current = result.session_id === this.sessionId && sent.session_id === this.sessionId
       && result.client_id === sent.client_id && result.transcript_id === sent.transcript_id
       && result.transcript_revision === sent.transcript_revision
-      && canonical(result.subject ?? null) === subject && canonical(this.snapshot?.subject ?? null) === subject;
+      && canonical(this.subjectFor(result.subject)) === subject && canonical(this.subjectFor(this.subject)) === subject;
     if (!current) return {decision: 'wait', stale: true};
     const decision = result.decision;
     if (decision === 'complete' && typeof result.decision_id === 'string' && result.decision_id) {
@@ -123,6 +135,7 @@ class JarvisClient {
       body: JSON.stringify({...this.turnDecisionRequest(payload), invalidate: true})}).catch(() => {});
   }
   async submit(text, source = 'voice', meta = {}) {
+    meta = {...(this.nextSubject !== undefined ? {subject: this.subjectFor(this.subject)} : {}), ...meta};
     if (!this.sessionId) await this.refresh().catch(() => {});
     const id = this.newId();
     if (!this.sessionId) {
@@ -132,11 +145,12 @@ class JarvisClient {
       return null;
     }
     const entry = {id, text, source, meta, sessionId: this.sessionId, generation: this.voice.stopReadback('new request'),
+      subjectGeneration: this.subjectGeneration, target: {...(meta.subject || JARVIS_TARGET), mode: 'jarvis'},
       streamed: '', player: null, settled: false, lost: false};
     entry.done = new Promise(resolve => { entry.resolve = resolve; });
     this.pending.set(id, entry);
     this.latestRequestId = id;
-    this.retain({id, text, source, recipient: 'Jarvis', target: this.target, status: 'Jarvis is working…'});
+    this.retain({id, text, source, recipient: 'Jarvis', target: entry.target, status: 'Jarvis is working…'});
     entry.timer = setTimeout(() => this.settle(entry, null, 'No outcome arrived in time.'), this.deadlineMs);
     this.onChange();
     this.post(entry);
@@ -150,6 +164,7 @@ class JarvisClient {
         method: 'POST', headers: {'Content-Type': 'application/json'}, signal: entry.controller.signal,
         body: JSON.stringify({session_id: entry.sessionId, request_id: entry.id, text: entry.text,
           source: entry.source, stream: !!this.voice.capture?.ready, client_id: this.clientId,
+          ...('subject' in entry.meta ? {subject: entry.meta.subject} : {}),
           ...(entry.meta.visual_reference ? {visual_reference: entry.meta.visual_reference} : {}),
           ...(entry.meta.transcript_id ? {transcript_id: entry.meta.transcript_id, transcript_revision: entry.meta.transcript_revision} : {}),
           ...(entry.meta.decision_id ? {decision_id: entry.meta.decision_id} : {explicit_send: entry.meta.explicit_send !== false})})
@@ -188,6 +203,9 @@ class JarvisClient {
     this.onChange();
   }
   finish(entry, receipt) {
+    receipt.follow_subject = this.latestRequestId === entry.id && entry.subjectGeneration === this.subjectGeneration
+      && (!('subject' in entry.meta) || canonical(entry.meta.subject) === canonical(this.subjectFor(this.subject)));
+    if (receipt.follow_subject && receipt.status === 'completed' && 'subject' in receipt) this.selectSubject(receipt.subject);
     this.show(receipt, entry.text, entry.source);
     const current = this.isCurrent(entry);
     const readback = readbackOf(receipt);
@@ -219,7 +237,7 @@ class JarvisClient {
   unconfirmed(entry, reason, rejected) {
     entry.player?.stop();
     const status = rejected ? reason + ' Your words are saved.' : 'Outcome unknown. ' + reason + ' Check Jarvis activity before repeating it.';
-    this.retain({id: entry.id, status, recoverable: rejected, target: this.target});
+    this.retain({id: entry.id, status, recoverable: rejected, target: entry.target});
     this.onChange(status);
     if (this.isCurrent(entry)) {
       this.voice.speak(rejected ? 'Jarvis rejected that request. Your words are saved.'

@@ -509,9 +509,9 @@
     const openedAt = Date.now();
     let inputMode = 'jarvis';
     try { if (localStorage.getItem('jev-input-mode') === 'direct') inputMode = 'direct'; } catch {}
-    const voice = new VoiceControls(submitInput, activeTarget, () => visuals.reference());
     const jarvis = new JarvisClient({fetch: (...args) => fetch(...args), newId: () => crypto.randomUUID(), clientId: crypto.randomUUID(),
       retain: record => retainSpeech(record), onChange: renderJarvis});
+    const voice = new VoiceControls(submitInput, activeTarget, () => visuals.reference());
     jarvis.voice = voice;
     voice.semantic = inputMode === 'jarvis' ? jarvis.semantic : null;
     voice.localWake = inputMode === 'jarvis';
@@ -540,6 +540,7 @@
       $('turn-status').textContent = ['Microphone off', 'Voice unavailable', 'Held for review · nothing sent'].includes(text) ? '' : text;
     }
     function renderJarvis(message) {
+      voice.selectTarget();
       const {subject, jobs, busy} = jarvis.summary;
       $('jarvis-status').textContent = inputMode !== 'jarvis' ? '' :
         [subject && 'Subject: ' + subject, ...jobs.map(job => `${job.label}: ${job.status}`)].filter(Boolean).join(' · ');
@@ -822,7 +823,7 @@
       }
     }
 
-    function render(state) {
+    function render(state, selectSubject = false) {
       state = deviceView.adopt(state);
       if (currentState && (currentState.selected !== state.selected || currentState.selected_pane !== state.selected_pane)) {
         $('result').textContent = '';
@@ -831,6 +832,12 @@
       currentState = state;
       const selectedTab = state.tabs.find(tab => tab.id === state.selected);
       const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
+      if (selectSubject || jarvis.nextSubject === undefined) {
+        jarvis.selectSubject(selectedPane ? {...phoneTarget(), label: selectedTab.name} : null);
+      } else if (jarvis.subject && !state.tabs.some(tab => tab.id === jarvis.subject.tab &&
+          tab.panes.some(pane => pane.id === jarvis.subject.pane && pane.identity === jarvis.subject.identity))) {
+        jarvis.selectSubject(null);
+      }
       $('mobile-title').textContent = selectedTab?.name || 'Jev';
       $('target-status').textContent = selectedPane
         ? `Selected: ${selectedTab.name} · pane ${selectedPane.number}` +
@@ -1039,8 +1046,11 @@
       renderTurnStatus();
     }
 
-    async function selectTab(tabId, paneId = null) {
-      if (tabId === currentState?.selected && (!paneId || paneId === currentState?.selected_pane)) return;
+    async function selectTab(tabId, paneId = null, setSubject = true) {
+      if (tabId === currentState?.selected && (!paneId || paneId === currentState?.selected_pane)) {
+        render(currentState, setSubject);
+        return;
+      }
       flushTerminalText();
       if (!deviceView.select(currentState, tabId, paneId)) return;
       const generation = deviceView.generation;
@@ -1048,7 +1058,7 @@
       visuals.suspend();
       attentionTarget = null;
       tabSignature = null;
-      render(currentState);
+      render(currentState, setSubject);
       try { await refresh(); }
       catch (error) { if (generation === deviceView.generation) showError(error); }
       finally {
@@ -1129,8 +1139,8 @@
 
     async function submitInput(text, captureTarget = null, source = 'voice', meta = {}) {
       if (inputMode === 'jarvis') {
-        const result = await jarvis.submit(text, source, meta);
-        if (result?.view_target) await selectTab(result.view_target.tab, result.view_target.pane);
+        const result = await jarvis.submit(text, source, {...meta, subject: jarvis.subjectFor(captureTarget)});
+        if (result?.follow_subject && result?.view_target) await selectTab(result.view_target.tab, result.view_target.pane, false);
         return result;
       }
       jarvis.supersedeForDirect();

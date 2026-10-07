@@ -44,6 +44,46 @@ class ApiTests(DisposableDesk):
         return self.post('/api/jarvis/turn', {'session_id': self.session, 'text': text,
                                            'request_id': request_id, 'source': source, **fields})
 
+    def test_explicit_subject_controls_context_delivery_and_duplicate_identity(self):
+        target = self.targets['Controller']
+        captured = {key: target[key] for key in ('tab', 'pane', 'identity')}
+        self.app.jarvis.state.subject = self.targets['Dog Data']
+        text, words = 'Tell it: café  exactly', 'café  exactly'
+        self.allow(text, 'Controller', words)
+        contexts, judgments = [], []
+        evaluate = self.app.evaluate
+        self.app.evaluate = lambda payload: judgments.append(payload) or evaluate(payload)
+        def provider(context, specs, execute, **kwargs):
+            contexts.append(context)
+            self.assertEqual(execute('read_reply', {})['subject'], target)
+            return self.send_provider(context, specs, execute, **kwargs)
+        self.provider = provider
+        result = self.turn(text, 'selected', subject=captured)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(contexts[0]['subject'], target)
+        self.assertEqual(result['subject'], target)
+        authorization = next(item for item in judgments if 'permission' in item['questions'])
+        self.assertEqual(authorization['state']['subject_tab'], target['tab'])
+        self.assertIn(words.encode(), self.received('Controller'))
+        self.assertEqual(self.received('Dog Data'), b'')
+        self.app.jarvis.state.subject = self.targets['Dog Data']
+        self.assertEqual(self.turn(text, 'selected', subject=captured)['turn_id'], result['turn_id'])
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(self.app.jarvis.state.subject, self.targets['Dog Data'])
+        with self.assertRaises(HTTPError):
+            self.turn(text, 'selected', subject=self.targets['Dog Data'])
+        self.assertEqual(self.received('Controller').count(words.encode()), 1)
+
+    def test_explicit_subject_rejects_stale_capture_and_null_never_uses_remembered_subject(self):
+        self.app.jarvis.state.subject = self.targets['Dog Data']
+        self.provider = lambda context, *args, **kwargs: self.assertIsNone(context['subject']) or final()
+        self.assertEqual(self.turn('Which sessions exist?', 'empty', subject=None)['status'], 'completed')
+        for target in ({**self.targets['Controller'], 'identity': 'stale'}, {'tab': 'missing'}, {}):
+            with self.assertRaises(HTTPError) as error:
+                self.turn('Tell it: no effect', 'bad', subject=target)
+            self.assertEqual(error.exception.code, 400)
+        self.assertEqual(self.get()['actions'], {})
+
     def test_real_http_send_stream_and_polling_use_verified_status_not_hostile_prose(self):
         request, body = 'Tell Dog Data: exact words', 'exact words'
         self.allow(request, body=body)

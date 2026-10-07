@@ -194,7 +194,7 @@ class RunTurnTests(unittest.TestCase):
     def test_instructions_separate_delegation_from_observation_and_keep_app_ownership(self):
         text = jarvis_haiku.INSTRUCTIONS
         for rule in ('delegation', 'observation', 'Do not answer, explain', 'application subject',
-                     'independent of the visible capture target', 'never redirect', 'draft ids',
+                     'captured from this device\'s explicit conversation selection', 'never redirect', 'draft ids',
                      'prepare a draft before sending', 'do not retry'):
             self.assertIn(rule, text)
         for utterance in ('Dog Data', 'dog', 'those numbers', 'example', 'read_reply', 'prepare_literal'):

@@ -13,6 +13,10 @@ class JarvisTurns:
         self.requests = {}
         self.retired = set()
 
+    def subject(self, body):
+        subject = body.get('subject', self.app.jarvis.snapshot()['subject'])
+        return self.app.jarvis_tools.validate(subject) if subject is not None else None
+
     def decide(self, body):
         for key in ('client_id', 'transcript_id'):
             if not isinstance(body.get(key), str) or not body[key]:
@@ -22,9 +26,7 @@ class JarvisTurns:
             raise ValueError('An exact transcript and nonnegative revision are required')
         if type(body.get('invalidate', False)) is not bool:
             raise ValueError('invalidate must be a boolean')
-        subject = self.app.jarvis.snapshot()['subject']
-        if body.get('subject') != subject:
-            raise ValueError('Conversational subject changed')
+        subject = self.subject(body)
         record = {key: copy.deepcopy(body[key]) for key in ('client_id', 'transcript_id', 'transcript_revision', 'text')}
         record.update(subject=subject, session_id=self.app.jarvis.state.session_id,
                       decision='wait', correction=False, generation=uuid.uuid4().hex)
@@ -58,7 +60,7 @@ class JarvisTurns:
             except Exception:
                 decision, correction = 'wait', False
             with self.lock:
-                if self.clients[body['client_id']] is not record or self.app.jarvis.snapshot()['subject'] != subject:
+                if self.clients[body['client_id']] is not record or self.subject(body) != subject:
                     return {**self.projection(record), 'decision': 'wait', 'reason': 'Transcript or subject changed'}
                 record.update(decision=decision, correction=correction)
                 if decision == 'cancel' or correction:
@@ -86,7 +88,7 @@ class JarvisTurns:
             if not record or record['decision'] != 'complete' or not record.get('decision_id'):
                 raise ValueError('Automatic voice send needs a current complete decision')
             expected = ('client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'text')
-            if any(body.get(key) != record[key] for key in expected) or record['subject'] != self.app.jarvis.snapshot()['subject']:
+            if any(body.get(key) != record[key] for key in expected) or record['subject'] != self.subject(body):
                 raise ValueError('Automatic voice decision is stale or belongs to different words')
             if record.get('request_id') and record['request_id'] != request_id:
                 raise ValueError('Voice decision already belongs to another request')

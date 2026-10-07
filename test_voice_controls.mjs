@@ -29,7 +29,7 @@ function fakeClock() {
   return clock;
 }
 
-function setup({clock = null, automatic = false} = {}) {
+function setup({clock = null, automatic = false, saved = {}} = {}) {
   const elements = new Map();
   const listeners = {};
   const logs = [];
@@ -73,6 +73,7 @@ function setup({clock = null, automatic = false} = {}) {
     addEventListener(name, callback) { listeners[name] = callback; }
   };
   const context = vm.createContext({document, window: {addEventListener() {}},
+    sessionStorage: {getItem: key => saved[key], setItem: (key, value) => { saved[key] = value; }, removeItem: key => { delete saved[key]; }},
     navigator: {mediaDevices: {getUserMedia: async () => stream}},
     AudioContext: Context, WebSocket: Socket,
     AudioWorkletNode: class { port = {}; connect() {} disconnect() {} },
@@ -99,6 +100,64 @@ async function listening(s) {
   await s.voice.start();
   s.voice.capture.ws.onmessage({data: JSON.stringify({message_type: 'session_started'})});
 }
+
+test('Jarvis drafts park by subject and mode, keeping original identity when restored', async () => {
+  const s = setup();
+  const a = {tab: 'a', pane: 'p1', identity: 'i1', mode: 'jarvis'};
+  const b = {tab: 'b', pane: 'p2', identity: 'i2', mode: 'jarvis'};
+  let target = a;
+  s.voice.target = () => target;
+  s.voice.restoreDraft('A exact words', a);
+  target = b; s.voice.selectTarget();
+  assert.equal(s.voice.draft, null);
+  s.voice.restoreDraft('B exact words', b);
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions[0].target.tab, 'b');
+  target = a; s.voice.selectTarget();
+  assert.equal(s.voice.draft.text, 'A exact words');
+  target = {...a, identity: 'replacement'}; s.voice.selectTarget();
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions.length, 1);
+  assert.equal(s.voice.draft.target.identity, 'i1');
+  target = a; s.voice.selectTarget();
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions[1].text, 'A exact words');
+  s.voice.restoreDraft('Jarvis only', a);
+  target = {tab: 'a', pane: 'p1', identity: 'i1'}; s.voice.selectTarget();
+  assert.equal(s.voice.draft, null);
+});
+
+test('speech onset before a tab switch keeps late words on the original Jarvis subject', async () => {
+  const s = setup();
+  let target = {tab: 'a', pane: 'p1', identity: 'i1', mode: 'jarvis'};
+  s.voice.target = () => target;
+  s.voice.speechOnset();
+  target = {tab: 'b', pane: 'p2', identity: 'i2', mode: 'jarvis'};
+  s.voice.selectTarget();
+  s.voice.committed('late exact words');
+  await s.voice.finishDraft(true);
+  assert.equal(s.submissions.length, 0);
+  assert.equal(s.voice.draft.target.tab, 'a');
+  assert.equal(s.voice.draft.held, true);
+});
+
+test('old stored direct drafts restore and unbound Jarvis words remain visible without inferred recipient', async () => {
+  const direct = {tab: 'a', pane: 'p1', identity: 'i1'};
+  const s = setup({saved: {
+    'jev-pane-drafts': JSON.stringify([[JSON.stringify(['a', 'p1']), {text: 'direct words', target: direct}]]),
+    'jev-speech-draft': JSON.stringify({text: 'unbound Jarvis words', target: {tab: 'jarvis', pane: 'jarvis', identity: 'jarvis'}}),
+  }});
+  s.voice.target = () => ({...direct, mode: 'jarvis'});
+  s.voice.selectTarget();
+  await s.voice.finishDraft(true);
+  assert.equal(s.voice.draft.text, 'unbound Jarvis words');
+  assert.equal(s.submissions.length, 0);
+  assert.match(s.elements.get('speech-draft-status').textContent, /no captured subject/);
+  s.voice.draft = null;
+  s.voice.target = () => direct;
+  s.voice.selectTarget();
+  assert.equal(s.voice.draft.text, 'direct words');
+});
 
 test('voice toggle state preserves icon content', async () => {
   const s = setup();

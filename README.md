@@ -169,9 +169,11 @@ What Jarvis can do: list and read chats, set the conversational subject, switch 
 visible pane, deliver a message to a chat, interrupt a chat, and queue a background
 explanation of a chat's output. Things to know:
 
-- **The subject is not passive pane focus.** "It", "that" and "those" refer to the
-  app's conversational subject. An explicit successful Jarvis switch establishes
-  the validated conversation as subject; a passive browser tab change does not.
+- **The subject follows your explicit tab or pane selection.** "It", "that" and
+  "those" refer to that exact conversation for the next fresh typed or voice
+  request. Existing drafts stay with their original conversation; returning to it
+  restores the draft. Polling and another device cannot change your selection.
+  Named requests and successful Jarvis switches can establish a different subject.
   With no subject, Jarvis asks which
   chat you mean rather than falling back to the selected pane.
 - **Exact words and recipient.** Exact dictation uses your wording, cut from your
@@ -582,8 +584,9 @@ Each selected tab has a **Creations** view and a passive **Live browser** view.
 Creations are explicitly captured files, with immutable versions; changing or
 removing the original does not change a saved version. A tab with several panes
 shares its creations, with the source conversation shown. Its live browser appears
-only for the selected matching pane and exact conversation. Visual selection does
-not change Jarvis's conversational subject or terminal focus.
+only for the selected matching pane and exact conversation. Selecting an output
+version does not change Jarvis's subject or terminal focus; explicitly switching
+the session or pane establishes the next message's subject.
 
 Use the helper from this checkout and virtual environment. Copy the tab and pane
 IDs from the Desk state (`GET /api/state`). The helper captures the current identity

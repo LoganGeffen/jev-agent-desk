@@ -1033,7 +1033,7 @@ def make_server(playground, port=0, public_origin=None):
                 if self.path.startswith('/api/jarvis/'):
                     if not isinstance(body, dict) or body.get('session_id') != playground.jarvis.state.session_id:
                         raise ValueError('Jarvis session changed; refresh before acting')
-                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send', 'visual_reference'},
+                    allowed = {'/api/jarvis/turn': {'session_id', 'request_id', 'text', 'source', 'capture_target', 'subject', 'stream', 'client_id', 'transcript_id', 'transcript_revision', 'decision_id', 'explicit_send', 'visual_reference'},
                                '/api/jarvis/turn-decision': {'session_id', 'client_id', 'transcript_id', 'transcript_revision', 'text', 'subject', 'invalidate'},
                                '/api/jarvis/cancel': {'session_id', 'turn_id', 'request_id'},
                                '/api/jarvis/playback': {'session_id', 'op', 'turn_id', 'style', 'playback_id', 'client_id', 'epoch', 'status', 'completed_phrases', 'heard_prefix'}}[self.path]
@@ -1071,9 +1071,10 @@ def make_server(playground, port=0, public_origin=None):
                         raise ValueError('stream must be a boolean')
                     if body.get('visual_reference') is not None:
                         playground.providers.stage_reference(body['request_id'], body['visual_reference'])
+                    selection = {'subject': playground.jarvis_turns.subject(body)} if 'subject' in body else {}
                     playground.jarvis_turns.commit(body)
                     result = playground.jarvis.submit(body['text'], body['request_id'], capture_target=body.get('capture_target'),
-                                                       source=body.get('source', 'typed'))
+                                                       source=body.get('source', 'typed'), **selection)
                     diagnostic('http_turn_receipt', request_id=body['request_id'], result=result)
                     if streaming:
                         self.start_stream()

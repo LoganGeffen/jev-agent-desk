@@ -105,12 +105,54 @@ test('default input posts one turn to the Jarvis endpoint with ids, source and n
   assert.equal(s.client.pending.size, 0);
 });
 
-test('the Jarvis target is constant so pane selection cannot hold or retarget a Jarvis draft', () => {
+test('explicit selection pins a local Jarvis target despite other-device subject polling', () => {
   const s = setup({post: async () => json({})});
+  s.client.selectSubject({tab: 'dog', pane: 'p1', identity: 'i1', label: 'Dog Data'});
   const before = JSON.stringify(s.client.target);
-  s.client.sessionId = 'other';
+  s.client.adopt(snapshot({subject: {tab: 'other', pane: 'p2', identity: 'i2'}}));
   assert.equal(JSON.stringify(s.client.target), before);
-  assert.equal(Object.isFrozen(s.client.target), true);
+  assert.equal(s.client.summary.subject, 'Dog Data');
+  assert.equal(s.client.target.mode, 'jarvis');
+  s.client.selectSubject({tab: 'other', pane: 'p2', identity: 'i2'});
+  assert.equal(s.client.target.tab, 'other');
+});
+
+test('a late named-subject receipt cannot replace a newer explicit local selection', async () => {
+  let release;
+  const a = {tab: 'a', pane: 'p1', identity: 'i1'}, b = {tab: 'b', pane: 'p2', identity: 'i2'};
+  const s = setup({post: () => new Promise(resolve => { release = resolve; })});
+  s.client.selectSubject(a);
+  const pending = s.client.submit('Read another conversation', 'typed');
+  await tick();
+  assert.deepEqual(s.posts()[0].body.subject, a);
+  s.client.selectSubject(b);
+  release(json(receipt('r1', 'Read it.', {subject: a, view_target: a})));
+  assert.equal((await pending).follow_subject, false);
+  assert.deepEqual(plain(s.client.subjectFor(s.client.target)), b);
+  assert.deepEqual(plain(s.records.get('r1').target), {...a, mode: 'jarvis'});
+});
+
+test('only the originating current request adopts a named subject and polling stays passive', async () => {
+  const a = {tab: 'a', pane: 'p1', identity: 'i1'}, b = {tab: 'b', pane: 'p2', identity: 'i2'};
+  const s = setup({post: async () => json(receipt('r1', 'Read it.', {subject: b}))});
+  s.client.selectSubject(a);
+  assert.equal((await s.client.submit('Read B', 'typed')).follow_subject, true);
+  s.client.adopt(snapshot({revision: 3, subject: a}));
+  assert.deepEqual(plain(s.client.subjectFor(s.client.target)), b);
+  s.client.selectSubject(a);
+  assert.deepEqual(plain(s.client.subjectFor(s.client.target)), a);
+});
+
+test('another device subject does not invalidate a locally captured voice decision', async () => {
+  const a = {tab: 'a', pane: 'p1', identity: 'i1'};
+  const s = setup({post: async () => json({})});
+  await s.client.refresh();
+  s.client.selectSubject(a);
+  s.env.decision = call => {
+    s.client.adopt(snapshot({revision: 2, subject: {tab: 'b', pane: 'p2', identity: 'i2'}}));
+    return json(decisionResult(call.body));
+  };
+  assert.equal((await s.client.semantic.decide({transcript_id: 'x', transcript_revision: 1, text: 'Tell it hi', subject: a})).decision, 'complete');
 });
 
 test('a second request is accepted while the first is slow and only the latest speaks', async () => {
@@ -497,8 +539,8 @@ const decide = (s, extra = {}, mutate = {}) => {
   return s.client.semantic.decide({transcript_id: 'x1', transcript_revision: 3, text: 'Tell Dog Data hello'}, undefined);
 };
 
-test('turn decisions send the app subject, never a pane, and accept only a current complete token', async () => {
-  const subject = {tab: 'dog', label: 'Dog Data'};
+test('turn decisions send the captured subject identity and accept only a current complete token', async () => {
+  const subject = {tab: 'dog', pane: 'p1', identity: 'i1'};
   const s = setup({state: snapshot({subject}), post: async () => json({})});
   await s.client.refresh();
   assert.deepEqual(plain(await decide(s, {correction: true})), {decision: 'complete', decision_id: 'dec-1', correction: true});

@@ -99,11 +99,19 @@ general prompt:
 
 A Jev failure is a hold or a block. It never becomes a send.
 
-**Subject and selection.** The conversational subject is stored in `JarvisState`
-and changes through a successful validated resolve, read or explicit Jarvis
-`select_session` tool result. Passive browser selection is only a `capture_target`
-and leaves the subject unchanged. An absent subject
-produces a clarification question, never a selected-pane fallback.
+**Subject and selection.** An explicit tab or pane selection establishes this
+device's next Jarvis subject. The client captures its exact identity at draft or
+speech onset and sends it as `subject`; the server validates it before starting
+the turn. Drafts stay in their original mode/pane slot when the user switches.
+Changed identities hold delivery, including manual Send. Polling never replaces
+the device's choice. Legacy `capture_target` remains a passive hint.
+
+`JarvisState` stores the turn's initial subject for authorization and a separate
+resolved subject for successful named resolve/read/select tools. Provider context
+and tool defaults use that turn, while remembered global subject supports legacy
+callers that omit `subject`. Explicit null means no subject, never a fallback.
+A result updates only its originating device when its request and selection are
+still current; another device's remembered subject cannot retarget a draft.
 
 **Semantic pause (voice).** `voice.js` commits a transcript, waits `silenceMs`
 (700 ms) in Jarvis mode, and posts it to `/api/jarvis/turn-decision`. A *complete*

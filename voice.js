@@ -45,14 +45,28 @@ class VoiceControls {
         this.draft = {...JSON.parse(saved), held: true};
         this.preservePartial();
       }
+      for (const [key, draft] of [...this.drafts, [null, this.draft]]) {
+        if (draft?.target?.tab !== 'jarvis' || draft.target.mode) continue;
+        let subject;
+        try { subject = JSON.parse(draft.wakeContext).subject; } catch {}
+        if (subject?.tab && subject.pane && subject.identity) {
+          draft.target = {tab: subject.tab, pane: subject.pane, identity: subject.identity, mode: 'jarvis'};
+          if (key !== null) { this.drafts.delete(key); this.drafts.set(this.draftKey(draft.target), draft); }
+        } else if (!this.draft) {
+          this.draft = draft;
+          this.drafts.delete(key);
+        }
+      }
     } catch {}
     this.renderDraft();
   }
   renderDraft() {
     const draft = this.draft;
     const changed = !!draft && (this.draftContextChanged(draft) || JSON.stringify(draft.target) !== JSON.stringify(this.target()));
-    document.getElementById('speech-draft-status').textContent = !draft ? '' : draft.held && changed
-      ? 'Session changed. Review this draft, then press Send.' : draft.held
+    document.getElementById('speech-draft-status').textContent = !draft ? '' : draft.target?.tab === 'jarvis' && !draft.target.mode
+      ? 'Saved Jarvis draft has no captured subject. Copy its words, clear the draft, then choose a conversation and paste to review.' : draft.held && changed
+      ? draft.target?.mode === 'jarvis' ? 'Session changed. Return to the original subject to send this draft.'
+        : 'Session changed. Review this draft, then press Send.' : draft.held
       ? draft.unfinalized ? 'Review the last recognized words before sending.' : draft.recoveryReason || ''
       : draft.partial ? 'Listening…' : draft.awaitingCommit ? 'Waiting for recognized words…'
       : draft.checking ? 'Checking whether you are finished…'
@@ -65,9 +79,11 @@ class VoiceControls {
     } catch {}
     this.onChange?.();
   }
+  draftKey(value) { return value ? JSON.stringify(value.mode ? [value.mode, value.tab, value.pane] : [value.tab, value.pane]) : ''; }
   selectTarget() {
     const target = this.target();
-    const key = value => value ? JSON.stringify([value.tab, value.pane]) : '';
+    const key = value => this.draftKey(value);
+    if (this.draft?.target?.tab === 'jarvis' && !this.draft.target.mode) { this.holdDraft(); return; }
     if (this.draft && key(this.draft.target) !== key(target)) {
       this.stop();
       this.drafts.set(key(this.draft.target), this.draft);
@@ -78,7 +94,13 @@ class VoiceControls {
       this.drafts.delete(key(target));
       this.draft.held = true;
     }
-    if (this.draft && JSON.stringify(this.draft.target) !== JSON.stringify(target)) this.holdDraft();
+    const legacy = JSON.stringify(['jarvis', 'jarvis']);
+    if (!this.draft && this.drafts.has(legacy)) {
+      this.draft = this.drafts.get(legacy);
+      this.drafts.delete(legacy);
+      this.draft.held = true;
+    }
+    if (this.draft && (this.draftContextChanged(this.draft) || JSON.stringify(this.draft.target) !== JSON.stringify(target))) this.holdDraft();
     this.renderDraft();
   }
   cancelEvaluation() {
@@ -99,7 +121,8 @@ class VoiceControls {
     draft.revision++;
     if (draft.outstanding) {
       draft.outstanding = false;
-      this.semantic?.invalidate({transcript_id: draft.transcriptId, transcript_revision: draft.revision, text: draft.text});
+      this.semantic?.invalidate({transcript_id: draft.transcriptId, transcript_revision: draft.revision, text: draft.text,
+        ...(this.semantic.subject ? {subject: this.semantic.subject(draft.target)} : {})});
     }
   }
   speechOnset(recognized = false) {
@@ -161,10 +184,11 @@ class VoiceControls {
       this.status('Waiting for the final recognized words');
       return;
     }
-    if (!manual && this.draftContextChanged(draft)) { this.holdDraft(); return; }
+    if (draft.target?.tab === 'jarvis' && !draft.target.mode) { this.holdDraft(); return; }
+    if ((!manual || draft.target?.mode === 'jarvis') && this.draftContextChanged(draft)) { this.holdDraft(); return; }
     if (JSON.stringify(draft.target) !== JSON.stringify(this.target())) {
       const target = this.target();
-      if (!manual || !target || target.tab !== draft.target?.tab || target.pane !== draft.target?.pane) {
+      if (draft.target?.mode === 'jarvis' || draft.target?.mode !== target?.mode || !manual || !target || target.tab !== draft.target?.tab || target.pane !== draft.target?.pane) {
         this.holdDraft();
         return;
       }
@@ -200,7 +224,8 @@ class VoiceControls {
     this.renderDraft();
     let result = null;
     try {
-      result = await this.semantic.decide({transcript_id: draft.transcriptId, transcript_revision: revision, text}, controller.signal);
+      result = await this.semantic.decide({transcript_id: draft.transcriptId, transcript_revision: revision, text,
+        ...(this.semantic.subject ? {subject: this.semantic.subject(draft.target)} : {})}, controller.signal);
     } catch { result = null; }
     if (seq !== this.evalSeq || this.draft !== draft || draft.revision !== revision || draft.text !== text) return;
     this.evaluating = null;

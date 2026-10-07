@@ -14,6 +14,7 @@ class TurnTests(unittest.TestCase):
         self.effects = []
         self.app = SimpleNamespace(evaluate=self.evaluate, readbacks=ReadbackCache(), heard_reply=self.effects.append)
         self.app.jarvis = JarvisController(lambda *a, **k: {'text': 'Verified answer'}, lambda *a: {})
+        self.app.jarvis_tools = SimpleNamespace(validate=lambda target: dict(target))
         self.turns = JarvisTurns(self.app)
         self.app.jarvis.turn_guard = self.turns.guard
         self.addCleanup(self.app.readbacks.pool.shutdown)
@@ -46,6 +47,21 @@ class TurnTests(unittest.TestCase):
         self.assertIn('decision_id', complete)
         self.assertEqual(self.app.jarvis.snapshot()['turns'], {})
         self.assertEqual(self.turns.clients['phone']['text'], 'No, tell Controller: revised words')
+
+    def test_voice_subject_is_captured_not_replaced_by_other_client_remembered_subject(self):
+        target = {'tab': '@1', 'pane': '%1', 'identity': 'original', 'label': 'Controller'}
+        other = {'tab': '@2', 'pane': '%2', 'identity': 'other', 'label': 'Dog Data'}
+        decision = self.turns.decide(self.body(subject=target))
+        self.app.jarvis.state.subject = other
+        body = self.body(subject=target, source='voice', request_id='captured', decision_id=decision['decision_id'])
+        self.turns.commit(body)
+        contexts = []
+        self.app.jarvis.provider = lambda context, *args, **kwargs: contexts.append(context) or {'text': 'Done'}
+        result = self.app.jarvis.submit(body['text'], body['request_id'], source='voice', subject=target)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(contexts[0]['subject'], target)
+        with self.assertRaises(ValueError):
+            self.turns.commit({**body, 'request_id': 'different', 'subject': other})
 
     def test_new_words_or_onset_revoke_token_and_explicit_send_bypasses_hold(self):
         first = self.turns.decide(self.body())

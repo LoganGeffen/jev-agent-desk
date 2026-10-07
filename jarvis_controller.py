@@ -14,7 +14,7 @@ CORE_TOOLS = [
     {'name': 'read_user_source', 'description': 'Read a bounded exact page of an archived immutable user source. Never prepares or sends a message.',
      'inputSchema': {'type': 'object', 'properties': {'source_turn_id': {'type': 'string'}, 'offset': {'type': 'integer'}},
                      'required': ['source_turn_id'], 'additionalProperties': False}},
-    {'name': 'set_subject', 'description': 'Remember a resolved conversation independently of visible selection.',
+    {'name': 'set_subject', 'description': 'Resolve the subject for this turn from a validated conversation.',
      'inputSchema': {'type': 'object', 'properties': {'target': TARGET_SCHEMA}, 'required': ['target'], 'additionalProperties': False}},
     {'name': 'prepare_literal', 'description': 'Capture an exact span from the current user input as a draft; never send.',
      'inputSchema': {'type': 'object', 'properties': {'start': {'type': 'integer'}, 'end': {'type': 'integer'},
@@ -94,14 +94,15 @@ class JarvisController:
         return {'session_id': self.state.session_id, 'turn_id': turn['turn_id'],
                 'request_id': turn['request_id'], 'revision': snapshot['revision'],
                 'status': turn['status'], 'text': turn.get('result', {}).get('text', ''),
+                'subject': copy.deepcopy(turn.get('resolved_subject', turn['subject'])),
                 'actions': [action for action in snapshot['actions'].values() if action['turn_id'] == turn['turn_id']],
                 **({key: copy.deepcopy(turn['result'][key]) for key in ('readback', 'available_readback', 'raw_model_text', 'view_target') if key in turn.get('result', {})}),
                 **({'error': turn['error']} if 'error' in turn else {})}
 
-    def submit(self, text, request_id, capture_target=None, on_text=None, source='typed', mode='jarvis'):
+    def submit(self, text, request_id, capture_target=None, on_text=None, source='typed', mode='jarvis', subject=...):
         with self.control_lock:
             previous = self.state.active_turn_id
-            turn, fresh = self.state.begin_turn(text, request_id, source, mode, capture_target)
+            turn, fresh = self.state.begin_turn(text, request_id, source, mode, capture_target, subject=subject)
             if not fresh:
                 return self.receipt(turn)
             if previous in self.cancels:
@@ -133,7 +134,8 @@ class JarvisController:
             with self.effect_lock if name in self.effect_tools else nullcontext():
                 guard()
                 app_turn = {key: copy.deepcopy(turn[key]) for key in ('turn_id', 'request_id', 'user_text', 'capture_target')}
-                app_turn.update(session_id=self.state.session_id, subject=self.state.snapshot()['subject'])
+                current = self.state.snapshot()['turns'][turn['turn_id']]
+                app_turn.update(session_id=self.state.session_id, subject=current.get('resolved_subject', current['subject']))
                 if name == 'read_user_source':
                     return self.state.read_user_source(**arguments)
                 if name == 'prepare_literal':
