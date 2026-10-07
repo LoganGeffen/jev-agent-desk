@@ -146,10 +146,10 @@ def run():
         page.route_web_socket(lambda url: True, speech_socket)
         page.goto('https://fixture.test/')
         page.wait_for_function('currentState !== null')
-        def terminal_fits():
+        def terminal_readable():
             page.wait_for_function("""[...document.querySelectorAll('.terminal')].every(el =>
-              el.clientWidth > 0 && el.scrollWidth <= el.clientWidth + 1)""")
-        terminal_fits()
+              el.clientWidth > 0 && parseFloat(getComputedStyle(el).fontSize) >= 13)""")
+        terminal_readable()
         assert not page.locator('#session-rail').is_visible()
         assert page.locator('textarea:visible').count() == 1
         assert page.locator('#panes').bounding_box()['height'] > 550
@@ -161,10 +161,10 @@ def run():
         assert rail['x'] == 0 and rail['x'] + rail['width'] <= workspace['x']
         assert tabs[1].bounding_box()['y'] >= tabs[0].bounding_box()['y'] + tabs[0].bounding_box()['height']
         assert page.locator('#panes').is_visible()
-        terminal_fits()
+        terminal_readable()
         page.locator('#tabs-toggle').click()
         assert page.locator('#panes').bounding_box()['width'] == full_width
-        terminal_fits()
+        terminal_readable()
         assert page.locator('#phone-text').is_visible()
         assert page.locator('#speech-style').input_value() == 'spoken'
         assert page.evaluate('inputMode') == 'jarvis'
@@ -226,14 +226,14 @@ def run():
         page.locator('#more-controls').evaluate('(el) => el.open = false')
         for width in (320, 390, 700, 1280):
             page.set_viewport_size({'width': width, 'height': 844})
-            terminal_fits()
+            terminal_readable()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
         assert page.locator('.terminal').evaluate('el => parseFloat(getComputedStyle(el).fontSize)') > 10
         first = state['tabs'][0]['panes'][0]
         first['width'] = 60
         state['tabs'][0]['panes'].append({**first, 'id': '%split', 'number': 2, 'active': False, 'left': 61})
         page.wait_for_function("document.querySelectorAll('.terminal').length === 2")
-        terminal_fits()
+        terminal_readable()
         assert page.locator('.terminal').first.text_content().count('1234567890') == 660
         state['tabs'][0]['panes'].pop()
         first['width'] = 120
@@ -322,7 +322,7 @@ def run():
         page.locator('#input-mode').select_option('jarvis')
         page.locator('#more-controls').evaluate('(el) => el.open = false')
         jarvis_state.update(revision=2, subject=SUBJECT_B)
-        page.wait_for_function("document.getElementById('jarvis-status').textContent.includes('Subject: B · pane 1')")
+        page.wait_for_function("document.getElementById('jarvis-status').textContent === 'Subject: B'")
         direct_requests = len(requests)
         page.evaluate(SPY_SPEECH)
         page.evaluate("""() => {
@@ -338,15 +338,23 @@ def run():
           };
         }""")
         finished = lambda text, request, status='completed': {'session_id': 's1', 'turn_id': 't-' + request, 'request_id': request,
-            'revision': 3, 'status': status, 'text': text, 'actions': []}
+            'revision': 3, 'status': status, 'text': text, 'actions': [], 'subject': SUBJECT_B}
         page.locator('#phone-text').fill('Draft for Jarvis stays put.')
+        page.evaluate("selectTab('@a')")
+        assert page.locator('#phone-text').input_value() == ''
         page.evaluate("selectTab('@b')")
         page.wait_for_function("currentState.selected === '@b'")
         state['tabs'][1]['panes'][0]['identity'] = 'b:replaced'
         page.wait_for_function("phoneTarget().identity === 'b:replaced'")
+        page.evaluate("selectTab('@b')")
         assert page.locator('#phone-text').input_value() == 'Draft for Jarvis stays put.'
-        assert 'Session changed' not in page.locator('#turn-status').inner_text()
-        assert 'Subject: B · pane 1' in page.locator('#jarvis-status').inner_text()
+        assert 'Session changed' in page.locator('#turn-status').inner_text()
+        page.locator('#phone-input [type=submit]').click()
+        assert page.evaluate('turnPosts.length') == 0
+        state['tabs'][1]['panes'][0]['identity'] = 'b:original'
+        page.wait_for_function("phoneTarget().identity === 'b:original'")
+        page.evaluate("selectTab('@b')")
+        assert 'Subject: B' in page.locator('#jarvis-status').inner_text()
         page.locator('#phone-input [type=submit]').click()
         page.wait_for_function('turnPosts.length === 1')
         submit_composer(page, 'Second follow-up while the first waits.')
@@ -355,6 +363,7 @@ def run():
         assert first['text'] == 'Draft for Jarvis stays put.' and second['text'] == 'Second follow-up while the first waits.'
         assert first['session_id'] == second['session_id'] == 's1' and first['request_id'] != second['request_id']
         assert all('capture_target' not in post for post in (first, second))
+        assert first['subject'] == second['subject'] == {key: SUBJECT_B[key] for key in ('tab', 'pane', 'identity')}
         assert len(requests) == direct_requests
         assert page.evaluate('jarvis.pending.size') == 2
         page.evaluate('(args) => gates[args[0]](args[1])', [second['request_id'], finished('Second answer.', second['request_id'])])
@@ -382,7 +391,7 @@ def run():
         assert page.evaluate('jarvis.pending.size') == 1
         jarvis_state.update(revision=6, requests={lost: 't-lost'}, turns={'t-lost': {
             'turn_id': 't-lost', 'request_id': lost, 'user_text': 'The response to this one is lost.', 'source': 'typed',
-            'mode': 'jarvis', 'status': 'completed', 'result': {'text': 'Recovered from state.'}}})
+            'mode': 'jarvis', 'status': 'completed', 'subject': SUBJECT_B, 'result': {'text': 'Recovered from state.'}}})
         page.wait_for_function('jarvis.pending.size === 0')
         assert page.evaluate('turnPosts.filter(post => post.request_id === %r).length' % lost) == 1
         assert page.evaluate('spoken') == ['Second answer.', 'Recovered from state.']
@@ -392,7 +401,7 @@ def run():
         page.evaluate("voice.committed('Ask Dog Data about it.')")
         page.wait_for_function('turnPosts.length === 5')
         assert [item['text'] for item in decisions] == ['Ask Dog Data about it.']
-        assert decisions[0]['subject'] == SUBJECT_B and decisions[0]['client_id'] == page.evaluate('jarvis.clientId')
+        assert decisions[0]['subject'] == {key: SUBJECT_B[key] for key in ('tab', 'pane', 'identity')} and decisions[0]['client_id'] == page.evaluate('jarvis.clientId')
         automatic = page.evaluate('turnPosts[4]')
         assert automatic['text'] == 'Ask Dog Data about it.' and automatic['decision_id'] == 'dec-browser'
         assert 'explicit_send' not in automatic and automatic['transcript_id'] == decisions[0]['transcript_id']
@@ -440,11 +449,11 @@ def run():
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 550px at 390x844', 'terminal toggle', '320–1280px overflow',
-                             '120-column terminal fits after viewport, sidebar and split-pane resize',
+                             'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
                              'completed audio acknowledges exact reply', 'interrupted reply stays unread',
                              'streamed observer audio before answer completion', 'stop prevents late streamed playback',
-                             'default input reaches Jarvis only', 'Jarvis draft not held by pane selection or identity change',
+                             'default input reaches Jarvis only', 'Jarvis drafts park on selection and hold changed identity',
                              'second request accepted while first waits', 'superseded and stopped answers stay visible without audio',
                              'semantic completion token reaches the turn without direct delivery', 'new speech invalidates a pending judgment',
                              'full playback acknowledges only the app boundary', 'interrupted playback reports no completed boundary',
@@ -505,7 +514,7 @@ class ControllerShim:
                 if self.path == '/api/jarvis/turn':
                     shim.posts.append(body)
                     receipt = shim.controller.submit(body['text'], body['request_id'], body.get('capture_target'),
-                                                     source=body['source'])
+                                                     source=body['source'], **({'subject': body['subject']} if 'subject' in body else {}))
                     if body['text'] in shim.drop:
                         self.request.shutdown(socket.SHUT_RDWR)
                         return
@@ -578,7 +587,7 @@ def run_controller_shim():
             page.wait_for_function("currentState.selected === '@a'")
             page.wait_for_timeout(700)
             assert shim.controller.snapshot()['subject']['tab'] == '@b'
-            assert 'Subject: B · pane 1' in page.locator('#jarvis-status').inner_text()
+            assert page.locator('#jarvis-status').inner_text() == 'Subject: A'
             assert page.evaluate('spoken') == ['Focused on B.']
 
             submit_composer(page, 'Slow request that is superseded')
@@ -597,7 +606,7 @@ def run_controller_shim():
             assert [post['text'] for post in shim.posts].count('This response is lost on the wire') == 1
             assert shim.provider_calls.count('This response is lost on the wire') == 1
             assert page.evaluate('spoken').count('Echo: This response is lost on the wire') == 1
-            assert all(set(post) - {'transcript_id', 'transcript_revision'} == {'session_id', 'request_id', 'text', 'source', 'stream', 'client_id', 'explicit_send'}
+            assert all(set(post) - {'transcript_id', 'transcript_revision'} == {'session_id', 'request_id', 'text', 'source', 'stream', 'client_id', 'explicit_send', 'subject'}
                    and post['explicit_send'] is True for post in shim.posts), shim.posts
             shim.delay.add('Stale local request')
             submit_composer(page, 'Stale local request')
@@ -633,7 +642,7 @@ def run_controller_shim():
     finally:
         shim.close()
     report = {'passed': True, 'posts': len(shim.posts),
-              'checks': ['real controller subject pinned across pane selection', 'real controller supersedes a running turn',
+              'checks': ['explicit selection seeds real controller captured subject', 'real controller supersedes a running turn',
                          'lost HTTP response recovered from real state snapshot with one provider call',
                          'stale local cancellation names its own request_id and cannot cancel another client\'s newer running turn'],
               'scope': 'Chromium against a test-local loopback adapter over the real JarvisController; not server.py'}

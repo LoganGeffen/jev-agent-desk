@@ -137,6 +137,45 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertEqual(desktop.evaluate('currentState.selected'), '@a')
         self.assertFalse(phone.evaluate('document.documentElement.scrollWidth > innerWidth'))
 
+    def test_readable_terminal_scroll_position_survives_poll_and_append(self):
+        self.browser_pages = {'a': [], 'b': []}
+        pane = self.state['tabs'][0]['panes'][0]
+        pane['terminal_ansi'] = '\n'.join(f'Output {i:03d} ' + 'x' * 230 for i in range(100))
+        for mobile in (False, True):
+            with self.subTest(mobile=mobile):
+                page = self.page(mobile=mobile)
+                terminal = page.locator('.terminal').first
+                self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 13)
+                self.assertTrue(terminal.evaluate('e => e.scrollHeight > e.clientHeight && e.scrollWidth > e.clientWidth'))
+                box = terminal.bounding_box()
+                page.mouse.move(box['x'] + 30, box['y'] + 30)
+                page.mouse.wheel(150, -350)
+                page.wait_for_function('''() => {const e = document.querySelector('.terminal');
+                  return e.scrollLeft > 0 && e.scrollHeight - e.scrollTop - e.clientHeight > 100;}''')
+                position = terminal.evaluate('e => [e.scrollLeft, e.scrollTop]')
+                page.evaluate('refresh()')
+                self.assertEqual(terminal.evaluate('e => [e.scrollLeft, e.scrollTop]'), position)
+                pane['terminal_ansi'] += '\nAppended wide line ' + 'y' * 250
+                page.evaluate('refresh()')
+                self.assertEqual(terminal.evaluate('e => [e.scrollLeft, e.scrollTop]'), position)
+                terminal.evaluate('e => {e.scrollTop = e.scrollHeight - e.clientHeight - 12;}')
+                position = terminal.evaluate('e => [e.scrollLeft, e.scrollTop]')
+                pane['terminal_ansi'] += '\nAnother update'
+                page.evaluate('refresh()')
+                self.assertEqual(terminal.evaluate('e => [e.scrollLeft, e.scrollTop]'), position)
+                terminal.evaluate('e => {e.scrollTop = e.scrollHeight;}')
+                pane['terminal_ansi'] += '\nFollow this update'
+                page.evaluate('refresh()')
+                self.assertLessEqual(terminal.evaluate('e => e.scrollHeight - e.scrollTop - e.clientHeight'), 1)
+                self.assertEqual(terminal.evaluate('e => e.scrollLeft'), position[0])
+                if mobile:
+                    page.locator('#tabs-toggle').click()
+                    self.assertEqual(terminal.evaluate('e => parseFloat(getComputedStyle(e).fontSize)'), 13)
+                self.assertFalse(page.evaluate('document.documentElement.scrollWidth > innerWidth'))
+                self.assertEqual(page.evaluate('jarvis.target.identity'), 'a:original')
+                page.close()
+        self.assertFalse(any(path in ('/api/input', '/api/request', '/api/jarvis/turn') for path, _ in self.posts))
+
     def test_latest_tab_click_wins_while_previous_state_response_is_delayed(self):
         page = self.page()
         page.wait_for_function('visuals.browser.pages.length === 1')

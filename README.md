@@ -335,9 +335,12 @@ delivers ordinary messages to the selected agent and presses Enter automatically
 Jev routes explicit workspace commands separately. Drafts stay with their panes
 when switching tabs. Options contains Enter and Escape for terminal interaction;
 History and secondary controls stay collapsed until needed.
-Terminal text scales down to fit each pane's available width, including after
-resizing or opening the sidebar. Line breaks and column alignment stay intact;
-scroll vertically for history. This does not resize the underlying tmux workspace.
+Terminal text keeps its readable size when resizing or opening the sidebar.
+Scroll horizontally for wide lines and vertically for available tmux scrollback;
+line breaks and column alignment stay intact. Polling preserves the reading
+position and follows new output when already at the bottom. This does not resize
+the underlying tmux workspace. Alternate-screen applications may keep older
+conversation history internally; the terminal view can only show what tmux captures.
 
 Replies wait quietly. Ask **“What's next?”** for one recommended chat and its
 reason, or **“What else is ready?”** for a rundown. Agents explicitly needing

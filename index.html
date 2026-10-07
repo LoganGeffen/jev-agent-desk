@@ -891,17 +891,12 @@
       return document.querySelector('.pane.active .terminal');
     }
 
-    const terminalResize = new ResizeObserver(entries => {
-      for (const entry of entries) fitTerminal(entry.target);
-    });
-
     function renderPanes(state) {
       const tab = state.tabs.find(tab => tab.id === state.selected);
       const container = $('panes');
       const ids = tab.panes.map(pane => pane.id);
       for (const element of [...container.children]) {
         if (!ids.includes(element.dataset.pane)) {
-          terminalResize.unobserve(element.querySelector('.terminal'));
           element.remove();
         }
       }
@@ -916,7 +911,6 @@
           element.querySelector('.pane-label').addEventListener('click', () => element.querySelector('.terminal').focus());
           element.querySelector('.pane-close').addEventListener('click', () => closePane(tab.id, pane.id));
           container.append(element);
-          terminalResize.observe(element.querySelector('.terminal'));
         }
         element.className = 'pane' + (pane.active ? ' active' : '');
         Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
@@ -936,9 +930,8 @@
         terminal.dataset.pane = pane.id;
         terminal.dataset.identity = pane.identity;
         terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
-        const nearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 36;
-        if (renderTerminal(terminal, pane.terminal_ansi || '')) fitTerminal(terminal);
-        if (activeTab !== state.selected || nearBottom) terminal.scrollTop = terminal.scrollHeight;
+        renderTerminal(terminal, pane.terminal_ansi || '');
+        if (activeTab !== state.selected) terminal.scrollTop = terminal.scrollHeight;
       }
     }
 
