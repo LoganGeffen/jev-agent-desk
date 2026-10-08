@@ -171,7 +171,12 @@ which is reported uncertain.
 recovers a lost POST response by polling `/api/jarvis/state` (10 s grace, 90 s
 deadline) and says the message "was not resent". The destination switch in
 `index.html` defaults to Jarvis; Pane mode calls `supersedeForDirect()` and uses
-the legacy request path.
+the legacy request path. The + button carries the selected tab, pane and process
+identity to `/api/tabs/create`; the server validates it and uses that pane's
+current directory. A typed, standalone `codex` or `claude` in a shell pane goes
+through `/api/panes/start-agent` with the same exact identity. Codex starts with
+terminal-title identity tracking; Claude starts with per-session lifecycle hooks
+while retaining its normal settings.
 
 Across a server restart the page keeps polling; once the same-port server returns
 with the same `session_id`, a pending request settles from the stored turn. A turn

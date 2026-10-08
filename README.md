@@ -340,7 +340,10 @@ Mobile opens with the terminal filling the available space. **Tabs** opens a
 drawer over the conversation; selecting a tab closes it. Drag tabs to move them. Tap the selected tab name in
 the top bar to rename it; its adjacent menu has **Close tab**, which asks for
 confirmation because closing ends the tab's running processes. The workspace
-pencil renames a tab group. Type and dictate into the same composer. **Send**
+pencil renames a tab group. **+** opens a shell in the selected pane's current
+directory. In that shell, type **codex** or **claude** alone in the composer and
+press **Send** to start a tracked conversation, regardless of the Jarvis/Pane switch.
+Type and dictate into the same composer. **Send** otherwise
 follows the Jarvis/Pane switch; Pane mode delivers to the selected agent and
 presses Enter automatically. Drafts stay with their panes when switching tabs.
 **Escape** sits beside the message box. **History** remains a dropdown, while

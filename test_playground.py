@@ -1,6 +1,8 @@
 import io
 import json
+import os
 from pathlib import Path
+import shlex
 import tempfile
 import threading
 import time
@@ -114,6 +116,75 @@ class PlaygroundTests(unittest.TestCase):
 
         state = self.app.rename_tab(created["id"], "Notes")
         self.assertEqual(next(tab for tab in state["tabs"] if tab["id"] == created["id"])["name"], "Notes")
+
+    def test_new_tab_uses_the_exact_selected_pane_directory(self):
+        project = self.root / 'selected-project'
+        project.mkdir()
+        source_tab = tmux(self.socket, 'new-window', '-d', '-P', '-F', '#{window_id}',
+                          '-t', 'tabs:', '-n', 'Selected project', '-c', str(project), 'sleep 60')
+        source_pane = self.app.panes(source_tab)[0]
+        source = {'tab': source_tab, 'pane': source_pane['id'], 'identity': source_pane['identity']}
+        before = {tab['id'] for tab in self.app.observe()['tabs']}
+        state = self.app.create_tab('New conversation', 'workspace', source)
+        created = next(tab for tab in state['tabs'] if tab['id'] not in before)
+        self.assertEqual(created['panes'][0]['workspace'], str(project))
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.app.create_tab('Wrong target', 'workspace', {**source, 'identity': 'stale'})
+        self.assertEqual({tab['id'] for tab in self.app.observe()['tabs']}, before | {created['id']})
+
+    def test_agent_start_accepts_only_exact_shell_and_named_provider(self):
+        state = self.app.create_tab('New conversation', 'workspace')
+        tab = next(tab for tab in state['tabs'] if tab['id'] == state['selected'])
+        pane = tab['panes'][0]
+        calls = []
+        original = tmux
+        def guarded(socket, *args, **kwargs):
+            if args[0] == 'send-keys':
+                calls.append(args)
+                return ''
+            return original(socket, *args, **kwargs)
+        with patch('server.tmux', side_effect=guarded):
+            for provider in ('codex', 'claude'):
+                self.app.start_agent(tab['id'], pane['id'], pane['identity'], provider)
+            with self.assertRaisesRegex(ValueError, 'Choose Codex or Claude'):
+                self.app.start_agent(tab['id'], pane['id'], pane['identity'], 'bash')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                self.app.start_agent(tab['id'], pane['id'], 'stale', 'codex')
+            with self.assertRaisesRegex(ValueError, 'exact shell pane identity'):
+                self.app.start_agent(tab['id'], pane['id'], None, 'codex')
+        self.assertEqual(len(calls), 2)
+        codex = shlex.split(calls[0][-2])
+        self.assertEqual(codex[:3], ['codex', '--no-daemon', '--no-alt-screen'])
+        self.assertIn('tui.terminal_title=["session-id"]', codex)
+        claude = shlex.split(calls[1][-2])
+        self.assertEqual(claude[:5], ['env', '-u', 'CLAUDECODE', 'claude', '--settings'])
+        self.assertNotIn('--restricted', claude)
+        self.assertNotIn('--setting-sources', claude)
+        self.assertEqual(set(json.loads(claude[5])['hooks']),
+                         {'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Stop', 'StopFailure'})
+        self.assertTrue(all(call[-1] == 'Enter' and call[2] == pane['id'] for call in calls))
+
+    def test_shell_executes_synthetic_codex_and_claude_once(self):
+        executable_dir = self.root / 'executables'
+        executable_dir.mkdir()
+        for provider in ('codex', 'claude'):
+            script = executable_dir / provider
+            output = self.root / (provider + '.args')
+            script.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {shlex.quote(str(output))}\n')
+            script.chmod(0o755)
+        command = 'env PATH=' + shlex.quote(str(executable_dir) + ':' + os.environ['PATH']) + ' /bin/sh'
+        window = tmux(self.socket, 'new-window', '-d', '-P', '-F', '#{window_id}',
+                      '-t', 'tabs:', '-n', 'Synthetic agents', '-c', str(self.root), command)
+        pane = self.app.panes(window)[0]
+        for provider in ('codex', 'claude'):
+            self.app.start_agent(window, pane['id'], pane['identity'], provider)
+            output = self.root / (provider + '.args')
+            deadline = time.monotonic() + 2
+            while not output.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(output.exists(), provider)
+            args = output.read_text().splitlines()
+            self.assertEqual(args.count('--settings' if provider == 'claude' else '--no-daemon'), 1)
 
     def test_terminal_text_escape_and_double_escape_reach_selected_pane(self):
         window = tmux(self.socket, "new-window", "-d", "-P", "-F", "#{window_id}",

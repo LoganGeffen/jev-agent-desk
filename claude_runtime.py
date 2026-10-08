@@ -31,15 +31,23 @@ def read_binding(run_dir, process):
     return binding if binding.get('active') else None
 
 
-def command(socket, run_dir, resume=None, fork=False):
+def hook_settings(socket, run_dir):
     hook = shlex.join([sys.executable, str(Path(__file__).resolve()), 'hook',
                        '--socket', socket, '--run-dir', str(Path(run_dir).resolve())])
-    settings = {'hooks': {event: [{'hooks': [{'type': 'command', 'command': hook, 'timeout': 5}]}]
-                          for event in EVENTS}}
+    return {'hooks': {event: [{'hooks': [{'type': 'command', 'command': hook, 'timeout': 5}]}]
+                      for event in EVENTS}}
+
+
+def interactive_command(socket, run_dir):
+    return shlex.join(['env', '-u', 'CLAUDECODE', 'claude', '--settings',
+                       json.dumps(hook_settings(socket, run_dir))])
+
+
+def command(socket, run_dir, resume=None, fork=False):
     args = ['env', '-u', 'TYPESAFE_API_KEY', '-u', 'ELEVENLABS_API_KEY', '-u', 'CLAUDECODE',
             'claude', '--restricted', '--tools', '', '--permission-mode', 'dontAsk',
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
-            '--settings', json.dumps(settings), '--model', 'haiku',
+            '--settings', json.dumps(hook_settings(socket, run_dir)), '--model', 'haiku',
             '--system-prompt', 'You are a disposable Jev sandbox test session. Answer briefly. Do not use tools.']
     if resume:
         args.extend(['--resume', resume])

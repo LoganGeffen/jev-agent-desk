@@ -50,7 +50,7 @@ def run():
                     'actions': {}, 'jobs': {}, 'playbacks': {}, 'clarifications': {}}
     jarvis_posts, jarvis_cancels = [], []
     decisions, playbacks = [], []
-    requests, raw, errors, heard, manifest_requests, opened = [], [], [], [], [], []
+    requests, raw, errors, heard, manifest_requests, opened, created, started = [], [], [], [], [], [], [], []
     recommendation = {'id': 'attention-b', 'tab': '@b', 'pane': '%b',
                       'identity': 'b:original', 'label': 'B · pane 1'}
     def route(r):
@@ -76,6 +76,19 @@ def run():
         if path == '/api/push/open':
             opened.append(body)
             return r.fulfill(json={'status': body['status']})
+        if path == '/api/tabs/create':
+            created.append(body)
+            state['tabs'].append({'id': '@new', 'workspace_id': 'workspace-new', 'name': body['name'],
+                                  'index': 2, 'group': 'Workspace', 'group_id': 'workspace',
+                                  'state': 'open', 'agent': False, 'panes': [{'id': '%new', 'number': 1,
+                                  'active': True, 'identity': 'shell:original', 'command': 'zsh',
+                                  'agent': False, 'codex': False, 'thread_id': None, 'workspace': '/project/a',
+                                  'left': 0, 'top': 0, 'width': 120, 'height': 24, 'terminal_ansi': '', 'handoff': {}}]})
+            state.update(selected='@new', selected_pane='%new')
+            return r.fulfill(json=state)
+        if path == '/api/panes/start-agent':
+            started.append(body)
+            return r.fulfill(json={'submitted': True})
         if path == '/api/jarvis/turn':
             jarvis_posts.append(body)
             return r.fulfill(json={'session_id': 's1', 'turn_id': 'unused', 'request_id': body['request_id'],
@@ -498,6 +511,20 @@ def run():
         page.wait_for_function("visuals.workspace?.workspace_id === 'workspace-a' && !visuals.request && !visuals.open")
         assert opened[-1]['target'] == target and opened[-1]['status'] == 'opened'
         assert page.evaluate('location.search') == ''
+        page.evaluate("window.prompt = () => 'New Agent'")
+        page.locator('#tabs-toggle').click()
+        page.locator('#new-tab').click()
+        page.wait_for_function("currentState?.selected === '@new'")
+        assert created == [{'name': 'New Agent', 'group': 'workspace', 'source': target}]
+        assert 'codex or claude' in page.locator('#phone-text').get_attribute('placeholder')
+        assert page.locator('#tabs-toggle').get_attribute('aria-expanded') == 'false'
+        assert page.evaluate('inputMode') == 'jarvis'
+        jarvis_count = len(jarvis_posts)
+        for provider in ('codex', 'claude'):
+            submit_composer(page, provider)
+            page.wait_for_function('(name) => document.getElementById("result").textContent.includes(`Starting ${name}`) && document.getElementById("phone-text").value === ""', arg=provider.capitalize())
+            assert started[-1] == {'tab': '@new', 'pane': '%new', 'identity': 'shell:original', 'provider': provider}
+        assert len(started) == 2 and len(jarvis_posts) == jarvis_count
         assert not errors, errors
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
@@ -506,6 +533,7 @@ def run():
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 500px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
                              '320px notification controls', 'authenticated manifest fetch', 'notification tap selects exact tab and conversation view',
+                             'new tab carries selected pane and typed agent names launch from shell',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
                              'completed audio acknowledges exact reply', 'interrupted reply stays unread',

@@ -48,8 +48,10 @@ class AttachLifecycleTests(unittest.TestCase):
         self.assertEqual(tmux(self.socket, "display-message", "-p", "-t", "=phone:",
                               "#{window_id}"), self.first)
 
+        pane = next(tab for tab in selected['tabs'] if tab['id'] == self.second)['panes'][0]
+        source = {'tab': self.second, 'pane': pane['id'], 'identity': pane['identity']}
         created = self.post(status["url"], "/api/tabs/create",
-                            {"name": "Three", "group": "workspace"})["selected"]
+                            {"name": "Three", "group": "workspace", "source": source})["selected"]
         expected = set(tmux(self.socket, "list-windows", "-t", "=source",
                             "-F", "#{window_id}").splitlines())
         self.assertIn(created, expected)

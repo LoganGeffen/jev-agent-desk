@@ -22,7 +22,7 @@ from attention import AttentionQueue
 from agent_activity import AgentActivity
 from codex_actions import focus, tmux
 from session_actions import interrupt_turn, read_reply, send_message
-from claude_runtime import read_binding
+from claude_runtime import interactive_command, read_binding
 from session_questions import ask_session
 from message_delivery import prepare_message
 from spoken_reply import ReadbackCache
@@ -31,7 +31,7 @@ from jarvis_state import JarvisState, encoded_size
 from jarvis_store import JarvisStore
 from reply_watch import ReadbackPreparation, ReplyWatch, history as reply_history
 from voice import Voice, load_voice_settings
-from pane_identity import process_identity
+from pane_identity import CODEX_IDENTITY_CONFIG, process_identity
 from push_notifications import PushError, PushNotifications
 from managed_provider import ManagedProviders, post_route as provider_post
 from managed_apps import ManagedApps, get_route as apps_get, post_route as apps_post
@@ -882,16 +882,20 @@ class Playground:
         tmux(self.socket, "rename-window", "-t", f"{self.source_session}:{window_id}", name)
         return self.state()
 
-    def create_tab(self, name, group_id):
+    def create_tab(self, name, group_id, source=None):
         name = clean_name(name, "tab")
         if not isinstance(group_id, str):
             raise ValueError("A tab group id is required")
         before = self.observe()
         if group_id not in {group["id"] for group in before["groups"]}:
             raise ValueError("That tab group is no longer available")
-        cwd = tmux(self.socket, "display-message", "-p", "-t",
-                   f"{self.source_session}:{before['selected']}",
-                   "#{pane_current_path}")
+        if source is None:
+            cwd = tmux(self.socket, "display-message", "-p", "-t",
+                       f"{self.source_session}:{before['selected']}", "#{pane_current_path}")
+        else:
+            if not isinstance(source, dict) or set(source) != {'tab', 'pane', 'identity'}:
+                raise ValueError('An exact source pane is required')
+            cwd = self.validate_pane(source['tab'], source['pane'], source['identity'])['workspace']
         shell = os.environ.get("SHELL") or "/bin/sh"
         command = shlex.join(["env", "-u", "TYPESAFE_API_KEY", "-u", "ELEVENLABS_API_KEY",
                               shell, "-l"])
@@ -901,6 +905,20 @@ class Playground:
         self.groups.move(window_id, group_id, None, current["tabs"])
         self.focus(window_id)
         return self.state()
+
+    def start_agent(self, tab, pane, identity, provider):
+        if provider not in ('codex', 'claude'):
+            raise ValueError('Choose Codex or Claude')
+        if not isinstance(identity, str) or not identity:
+            raise ValueError('An exact shell pane identity is required')
+        with self.input_lock:
+            live = self.validate_pane(tab, pane, identity)
+            if live['agent'] or live['command'] not in ('sh', 'bash', 'zsh', 'fish'):
+                raise ValueError('Select a shell tab before starting an agent')
+            command = (shlex.join(['codex', '--no-daemon', '--no-alt-screen', *CODEX_IDENTITY_CONFIG])
+                       if provider == 'codex' else interactive_command(self.socket, self.log.parent))
+            tmux(self.socket, 'send-keys', '-t', pane, command, 'Enter')
+        return {'submitted': True}
 
 
 def make_server(playground, port=0, public_origin=None):
@@ -1027,7 +1045,7 @@ def make_server(playground, port=0, public_origin=None):
                 return
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
-                                 "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move",
+                                 "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move", "/api/panes/start-agent",
                                  "/api/tabs/close", "/api/panes/close",
                                  '/api/close/confirm', '/api/close/cancel', '/api/clarification',
                                  '/api/push/state', '/api/push/subscribe', '/api/push/unsubscribe',
@@ -1210,6 +1228,11 @@ def make_server(playground, port=0, public_origin=None):
                         body["tab"], text=body.get("text"), key=body.get("key"),
                         pane_id=body['pane'], identity=body['identity']))
                     return
+                if self.path == '/api/panes/start-agent':
+                    if set(body) != {'tab', 'pane', 'identity', 'provider'}:
+                        raise ValueError('An exact shell pane and provider are required')
+                    self.send(200, playground.start_agent(body['tab'], body['pane'], body['identity'], body['provider']))
+                    return
                 if self.path == '/api/panes/close':
                     if not isinstance(body['identity'], str):
                         raise ValueError('A pane identity is required')
@@ -1231,7 +1254,9 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.rename_group(body["group"], body["name"]))
                     return
                 if self.path == "/api/tabs/create":
-                    self.send(200, playground.create_tab(body["name"], body["group"]))
+                    if set(body) != {'name', 'group', 'source'}:
+                        raise ValueError('An exact source pane is required')
+                    self.send(200, playground.create_tab(body["name"], body["group"], body['source']))
                     return
                 if self.path == "/api/tabs/rename":
                     self.send(200, playground.rename_tab(body["tab"], body["name"]))

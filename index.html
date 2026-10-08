@@ -952,6 +952,8 @@
         ? `Selected: ${selectedTab.name} · pane ${selectedPane.number}` +
           (inputMode === 'direct' && ['codex', 'claude'].includes(selectedPane.command) && !selectedPane.agent && !selectedPane.codex
             ? ' · conversation unavailable; voice messages cannot be delivered yet' : '') : '';
+      $('phone-text').placeholder = selectedPane && !selectedPane.agent && ['sh', 'bash', 'zsh', 'fish'].includes(selectedPane.command)
+        ? 'Type codex or claude to start…' : 'Message…';
       voice.selectTarget();
       $('close-actions').hidden = !state.pending_close;
       $('clarification-actions').hidden = !state.pending_clarification;
@@ -1090,12 +1092,17 @@
       if (!currentState) return;
       const name = window.prompt('Name the new terminal tab', 'Shell');
       if (name === null || !name.trim()) return;
+      const source = phoneTarget();
+      const selected = currentState.tabs.find(tab => tab.id === source?.tab);
       flushTerminalText();
       await terminalQueue;
-      const selected = currentState?.tabs.find(tab => tab.id === currentState.selected);
       const group = selected?.group_id || groupDefinitions(currentState)[0]?.id;
-      const state = await mutate('/api/tabs/create', {name, group});
-      if (state) { await selectTab(state.selected, state.selected_pane); selectedTerminal()?.focus({preventScroll: true}); }
+      const state = await mutate('/api/tabs/create', {name, group, source});
+      if (state) {
+        await selectTab(state.selected, state.selected_pane);
+        if (matchMedia('(max-width: 700px)').matches) setTabsCollapsed(true);
+        $('phone-text').focus({preventScroll: true});
+      }
     }
 
     async function renameTab(tab) {
@@ -1240,6 +1247,20 @@
     }
 
     async function submitInput(text, captureTarget = null, source = 'voice', meta = {}) {
+      const provider = source === 'typed' ? text.trim().toLowerCase() : '';
+      if (provider === 'codex' || provider === 'claude') {
+        const tab = currentState?.tabs.find(item => item.id === currentState.selected);
+        const pane = tab?.panes.find(item => item.id === currentState.selected_pane);
+        if (pane && !pane.agent) {
+          try {
+            await post('/api/panes/start-agent', {...phoneTarget(), provider});
+            $('result').className = '';
+            $('result').textContent = `Starting ${provider === 'codex' ? 'Codex' : 'Claude'} in ${tab.name}…`;
+            refresh().catch(() => {});
+          } catch (error) { showError(error); }
+          return;
+        }
+      }
       if (inputMode === 'jarvis') {
         const result = await jarvis.submit(text, source, {...meta, subject: jarvis.subjectFor(captureTarget)});
         if (result?.follow_subject && result?.view_target) await selectTab(result.view_target.tab, result.view_target.pane, false);
