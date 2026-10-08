@@ -50,6 +50,7 @@ class PushStoreTests(unittest.TestCase):
     def test_primes_old_reply_then_sends_each_new_reply_once_across_restart(self):
         self.push.subscribe(device(1), subscription())
         agent = observed_agent()
+        agent.update(label="Build, pane 2", tab_name="Build")
         self.assertIsNone(self.push.observe(agent, "old"))
         self.assertEqual(self.sent, [])
         event = self.push.observe(agent, "new")
@@ -57,7 +58,7 @@ class PushStoreTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         payload = json.loads(self.sent[0][1])
         self.assertEqual(payload["title"], "Build")
-        self.assertEqual(payload["body"], "Agent replied")
+        self.assertNotIn("body", payload)
         self.assertNotIn("Sensitive", self.sent[0][1])
         self.assertEqual(payload["target"], {"tab": "@1", "pane": "%2", "identity": "100:200:codex:thread"})
         self.push.observe(agent, "new")
@@ -134,13 +135,19 @@ class PushStoreTests(unittest.TestCase):
 
     def test_device_test_uses_the_persisted_delivery_transport(self):
         self.push.subscribe(device(1), subscription())
-        result = self.push.test(device(1))
+        target = self.push._agent_target(observed_agent())
+        result = self.push.test(device(1), target, "Build")
         self.assertEqual(result, {"queued": True, "delay_seconds": 0})
         deadline = time.monotonic() + 2
         while not self.sent and time.monotonic() < deadline:
             time.sleep(.01)
         self.assertEqual(len(self.sent), 1)
-        self.assertEqual(json.loads(self.sent[0][1])["body"], "Test notification")
+        payload = json.loads(self.sent[0][1])
+        self.assertEqual(payload["title"], "Build")
+        self.assertNotIn("body", payload)
+        self.assertEqual(payload["target"], target)
+        self.assertIn("tab=%401", payload["url"])
+        self.push.open(device(1), payload["event_id"], target, "opened", lambda *_: None)
         status = None
         while status != "sent" and time.monotonic() < deadline:
             with closing(sqlite3.connect(self.root / "push.sqlite3")) as connection:
@@ -343,7 +350,8 @@ class PushHttpTests(unittest.TestCase):
         _, state = self.post("/api/push/state", {"session_id": self.session,
                                                   "device_id": device(1), "target": target})
         self.assertTrue(state["muted"])
-        _, queued = self.post("/api/push/test", {"session_id": self.session, "device_id": device(1)})
+        _, queued = self.post("/api/push/test", {"session_id": self.session, "device_id": device(1),
+                                                 "target": target})
         self.assertEqual(queued, {"queued": True, "delay_seconds": 0})
         self.post("/api/push/unsubscribe", {"session_id": self.session, "device_id": device(1)})
         _, state = self.post("/api/push/state", {"session_id": self.session, "device_id": device(1)})

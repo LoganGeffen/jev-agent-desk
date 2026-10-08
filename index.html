@@ -610,6 +610,8 @@
       $('push-test').hidden = !view.enabled;
       $('push-disable').hidden = !view.enabled;
       for (const id of ['push-enable', 'push-test', 'push-disable']) $(id).disabled = view.busy || !view.supported || !view.ready;
+      $('push-test').disabled ||= !view.canMute;
+      $('push-test').title = view.canMute ? '' : 'Select an agent tab to test notifications';
       $('push-mute').disabled = view.busy || !view.canMute;
       $('push-mute').checked = view.muted;
       $('push-mute-label').hidden = !view.enabled;
@@ -640,6 +642,7 @@
       $('voice-status').hidden = voiceText === 'Microphone off' || voiceText === 'Voice unavailable' || voiceText === text;
     }
     function renderJarvis(message) {
+      if (currentState) syncNotifications(currentState);
       voice.selectTarget();
       const {subject, jobs, busy} = jarvis.summary;
       $('jarvis-status').textContent = inputMode !== 'jarvis' ? '' :
@@ -913,6 +916,13 @@
       }
     }
 
+    function syncNotifications(state) {
+      const tab = state.tabs.find(item => item.id === state.selected);
+      const pane = tab?.panes.find(item => item.id === state.selected_pane);
+      notifications.adopt(jarvis.sessionId, pane?.agent ? {tab: tab.id, pane: pane.id, identity: pane.identity} : null);
+      notifications.resolveLink(state, (tabId, paneId) => selectTab(tabId, paneId)).catch(() => {});
+    }
+
     function render(state, selectSubject = false) {
       state = deviceView.adopt(state);
       if (currentState && (currentState.selected !== state.selected || currentState.selected_pane !== state.selected_pane)) {
@@ -923,9 +933,7 @@
       currentState = state;
       const selectedTab = state.tabs.find(tab => tab.id === state.selected);
       const selectedPane = selectedTab?.panes.find(pane => pane.id === state.selected_pane);
-      const pushTarget = selectedPane?.agent ? {tab: selectedTab.id, pane: selectedPane.id, identity: selectedPane.identity} : null;
-      notifications.adopt(jarvis.sessionId, pushTarget);
-      notifications.resolveLink(state, (tab, pane) => selectTab(tab, pane)).catch(() => {});
+      syncNotifications(state);
       if (selectSubject || jarvis.nextSubject === undefined) {
         jarvis.selectSubject(selectedPane ? {...phoneTarget(), label: selectedTab.name} : null);
       } else if (jarvis.subject && !state.tabs.some(tab => tab.id === jarvis.subject.tab &&

@@ -371,8 +371,9 @@ restart; a reply is heard only if its full-completion acknowledgment was stored.
 
 Optional Web Push alerts cover newly observed completed final replies, including
 replies to turns started directly in the native terminal. Open **Settings → Notifications**,
-then use **Enable**, **Test**, or **Disable** for this browser device. The test waits
-two seconds so a phone can be locked. When enabled, **Mute this conversation on
+then use **Enable**, **Test**, or **Disable** for this browser device. Select an
+agent tab to enable **Test**; it waits two seconds so a phone can be locked, then
+opens that exact tab when tapped. When enabled, **Mute this conversation on
 this device** applies only to the selected provider conversation and subscription;
 the mute remains if that same native conversation resumes in a new process.
 Install the Desk from the browser or add it to the Home Screen for the normal
@@ -387,7 +388,7 @@ evidence shows **status unknown**; an interruption shows **stopped** and a known
 provider failure shows **error**. Old window status flags do not override this.
 Required-input alerts are not inferred from quiet terminals or error messages.
 
-Each push contains only the session label, the fixed body “Agent replied,” and an
+The notification content shows only the tab name and carries an
 opaque event plus exact conversation identity; reply and terminal text are never
 sent to the browser vendor. Tapping resolves that immutable event after the page
 loads. If the tab, pane or conversation identity changed, Desk shows an unavailable

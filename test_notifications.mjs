@@ -61,6 +61,7 @@ function environment({search = '', open = true} = {}) {
     '/api/push/state', '/api/push/subscribe', '/api/push/test', '/api/push/mute', '/api/push/unsubscribe'
   ]);
   assert.deepEqual(Object.keys(env.calls[1].body.subscription).sort(), ['endpoint', 'keys']);
+  assert.deepEqual(env.calls[2].body.target, target);
   assert.equal(views.at(-1).enabled, false);
   assert.match(views.at(-1).message, /off on this device/);
 }

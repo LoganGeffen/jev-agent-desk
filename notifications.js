@@ -107,12 +107,12 @@ class PushNotificationClient {
   }
 
   async test() {
-    if (!this.sessionId || !this.view.enabled || this.view.busy) return;
+    if (!this.sessionId || !this.target || !this.view.enabled || this.view.busy) return;
     this.view.busy = true;
     this.view.message = 'Queueing a test notification…';
     this.emit();
     try {
-      const result = await this.post('/api/push/test', {});
+      const result = await this.post('/api/push/test', {target: this.target});
       this.view.message = `Test queued for ${result.delay_seconds} seconds. Lock this device now.`;
     } catch (error) {
       try { await this.refreshState(); } catch {}

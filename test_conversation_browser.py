@@ -50,7 +50,7 @@ def run():
                     'actions': {}, 'jobs': {}, 'playbacks': {}, 'clarifications': {}}
     jarvis_posts, jarvis_cancels = [], []
     decisions, playbacks = [], []
-    requests, raw, errors, heard, manifest_requests = [], [], [], [], []
+    requests, raw, errors, heard, manifest_requests, opened = [], [], [], [], [], []
     recommendation = {'id': 'attention-b', 'tab': '@b', 'pane': '%b',
                       'identity': 'b:original', 'label': 'B · pane 1'}
     def route(r):
@@ -73,6 +73,9 @@ def run():
             return r.fulfill(json=jarvis_state)
         if path == '/api/push/state':
             return r.fulfill(json={'public_key': 'BA' + 'A' * 85, 'enabled': False, 'muted': False})
+        if path == '/api/push/open':
+            opened.append(body)
+            return r.fulfill(json={'status': body['status']})
         if path == '/api/jarvis/turn':
             jarvis_posts.append(body)
             return r.fulfill(json={'session_id': 's1', 'turn_id': 'unused', 'request_id': body['request_id'],
@@ -131,9 +134,10 @@ def run():
             assert 'CF_Authorization=fixture' in r.request.headers.get('cookie', '')
             manifest_requests.append(path)
             return r.fulfill(body=(ROOT / 'manifest.json').read_text(), content_type='application/manifest+json')
-        file = ROOT / ('index.html' if path == '/' else path.lstrip('/'))
+        asset = path.split('?', 1)[0]
+        file = ROOT / ('index.html' if asset == '/' else asset.lstrip('/'))
         if file.relative_to(ROOT).as_posix() in STATIC_FILES:
-            return r.fulfill(body=file.read_text(), content_type='text/html' if path == '/' else 'text/css' if path.endswith('.css') else 'text/javascript')
+            return r.fulfill(body=file.read_text(), content_type='text/html' if asset == '/' else 'text/css' if asset.endswith('.css') else 'text/javascript')
         raise AssertionError('Unexpected endpoint: ' + path)
     with sync_playwright() as p:
         browser = p.chromium.launch(args=['--autoplay-policy=no-user-gesture-required'])
@@ -472,6 +476,13 @@ def run():
         assert all(item['completed_phrases'] == [] for item in updates)
         assert page.evaluate('heardCount') == 0 and not jarvis_cancels and len(requests) == direct_requests
         page.evaluate('voice.capture.playback.close(); voice.capture = null')
+        from urllib.parse import urlencode
+        target = {'tab': '@a', 'pane': '%a', 'identity': 'a:replacement'}
+        page.goto('https://fixture.test/?' + urlencode({'notification': 'test:' + 'a' * 32, **target}))
+        page.wait_for_function("typeof currentState !== 'undefined' && currentState?.selected === '@a' && currentState?.selected_pane === '%a'")
+        page.wait_for_function("notifications.view.linkMessage.includes('Opened the exact conversation')")
+        assert opened[-1]['target'] == target and opened[-1]['status'] == 'opened'
+        assert page.evaluate('location.search') == ''
         assert not errors, errors
         report = {'passed': True, 'requests': len(requests), 'terminal_inputs': len(raw),
                   'checks': ['typed/speech common path', 'exact words', 'cross-agent focus',
@@ -479,7 +490,7 @@ def run():
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 500px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
-                             '320px notification controls', 'authenticated manifest fetch',
+                             '320px notification controls', 'authenticated manifest fetch', 'notification tap selects exact tab',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
                              'completed audio acknowledges exact reply', 'interrupted reply stays unread',

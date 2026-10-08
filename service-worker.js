@@ -5,7 +5,6 @@ self.addEventListener('push', event => {
   const safeUrl = url.origin === self.location.origin ? url.pathname + url.search : '/';
   event.waitUntil(self.registration.showNotification(
     typeof payload.title === 'string' && payload.title ? payload.title : 'Jev Agent Desk', {
-      body: typeof payload.body === 'string' && payload.body ? payload.body : 'Agent replied',
       icon: '/icon-192.png',
       badge: '/icon-192.png',
       tag: typeof payload.event_id === 'string' ? payload.event_id : undefined,
@@ -22,8 +21,8 @@ self.addEventListener('notificationclick', event => {
     const existing = windows.find(client => new URL(client.url).origin === self.location.origin);
     if (existing) {
       try {
-        await existing.navigate(url);
-        return await existing.focus();
+        const navigated = await existing.navigate(url);
+        if (navigated) return await navigated.focus();
       } catch {}
     }
     return self.clients.openWindow(url);

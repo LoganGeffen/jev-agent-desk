@@ -288,7 +288,8 @@ class Playground:
                 label = name if len(panes) == 1 else f'{name}, pane {pane.get("number", number)}'
                 agents.append({'socket': self.socket, 'window_id': window, 'pane_id': pane['id'],
                                'provider': pane['provider'], 'thread_id': pane['thread_id'],
-                               'process': pane['process'], 'run_dir': str(self.log.parent), 'label': label})
+                               'process': pane['process'], 'run_dir': str(self.log.parent), 'label': label,
+                               'tab_name': name})
         return agents
 
     def observe(self, view_tab=None, view_pane=None):
@@ -1046,7 +1047,7 @@ def make_server(playground, port=0, public_origin=None):
                         '/api/push/state': {'session_id', 'device_id', 'target'},
                         '/api/push/subscribe': {'session_id', 'device_id', 'subscription'},
                         '/api/push/unsubscribe': {'session_id', 'device_id'},
-                        '/api/push/test': {'session_id', 'device_id'},
+                        '/api/push/test': {'session_id', 'device_id', 'target'},
                         '/api/push/mute': {'session_id', 'device_id', 'target', 'muted'},
                         '/api/push/open': {'session_id', 'device_id', 'event_id', 'target', 'status'},
                     }[self.path]
@@ -1068,7 +1069,16 @@ def make_server(playground, port=0, public_origin=None):
                     elif self.path == '/api/push/unsubscribe':
                         result = playground.push.unsubscribe(body['device_id'])
                     elif self.path == '/api/push/test':
-                        result = playground.push.test(body['device_id'])
+                        target = body['target']
+                        if not isinstance(target, dict):
+                            raise PushError('Invalid notification conversation')
+                        pane = playground.validate_pane(target.get('tab'), target.get('pane'), target.get('identity'))
+                        if not pane.get('agent'):
+                            raise PushError('Select an agent conversation to test notifications')
+                        tab = next((tab for tab in playground.observe()['tabs'] if tab['id'] == target['tab']), None)
+                        if tab is None:
+                            raise PushError('That tab is no longer available', 409)
+                        result = playground.push.test(body['device_id'], target, tab['name'])
                     elif self.path == '/api/push/mute':
                         target = body['target']
                         if not isinstance(target, dict):

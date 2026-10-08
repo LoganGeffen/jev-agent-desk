@@ -200,8 +200,8 @@ process resume non-replaying. Pending or sending rows found at startup become
 uncertain rather than being retried.
 
 `push_notifications.py` owns the owner-only VAPID key, subscriptions, exact-device
-mutes, event delivery and open state. It sends a small visible payload—session
-label, “Agent replied,” event ID and exact conversation target—through `pywebpush`.
+mutes, event delivery and open state. It sends a small visible payload—tab
+name, event ID and exact conversation target—through `pywebpush`.
 It never receives reply text. Endpoints must be HTTPS production browser-vendor
 origins, redirects are disabled, requests have a ten-second timeout, and 404/410
 responses remove revoked subscriptions. Subscription and private-key material is
@@ -218,7 +218,8 @@ Stopped/failed turns are distinct from reply-ready. Historical originals remain
 readable independently, and no state asserts overall task completion.
 
 `notifications.js` registers the root-scoped service worker and exposes explicit
-per-device enable/test/disable controls. Mute changes revalidate the current exact
+per-device enable/test/disable controls. Tests target the selected agent pane.
+Mute changes revalidate the current exact
 agent pane and retain the stable provider/conversation identity across native
 process resume. `service-worker.js` claims existing pages on activation and handles
 push and notification clicks, with no fetch handler or offline shell cache.

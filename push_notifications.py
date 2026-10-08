@@ -354,10 +354,10 @@ class PushNotifications:
             if not notify:
                 return None
             event_id = "reply:" + hashlib.sha256(f"{identifier}\0{turn_id}".encode()).hexdigest()
-            label = re.sub(r"[\x00-\x1f\x7f]", " ", str(agent.get("label") or "Agent")).strip()[:80] or "Agent"
+            label = re.sub(r"[\x00-\x1f\x7f]", " ", str(agent.get("tab_name") or agent.get("label") or "Agent")).strip()[:80] or "Agent"
             created = connection.execute("""
                 INSERT OR IGNORE INTO events(event_id, kind, observed_at, title, body, target, turn_id)
-                VALUES (?, 'reply', ?, ?, 'Agent replied', ?, ?)
+                VALUES (?, 'reply', ?, ?, '', ?, ?)
             """, (event_id, now, label, json.dumps(target, sort_keys=True), turn_id)).rowcount
             if created:
                 devices = connection.execute("""
@@ -374,14 +374,18 @@ class PushNotifications:
             self._spawn(lambda: self._deliver(event_id))
         return event_id
 
-    def test(self, device_id):
+    def test(self, device_id, target, label):
         device_id = validate_device_id(device_id)
+        target = validate_target(target)
+        label = re.sub(r"[\x00-\x1f\x7f]", " ", str(label)).strip()[:80]
+        if not label:
+            raise PushError("Invalid notification tab name")
         event_id = "test:" + uuid.uuid4().hex
         with self._connect() as connection:
             if connection.execute("SELECT 1 FROM subscriptions WHERE device_id=?", (device_id,)).fetchone() is None:
                 raise PushError("Notifications are not enabled on this device", 409)
-            connection.execute("INSERT INTO events(event_id, kind, observed_at, title, body) VALUES (?, 'test', ?, 'Jev Agent Desk', 'Test notification')",
-                               (event_id, time.time()))
+            connection.execute("INSERT INTO events(event_id, kind, observed_at, title, body, target) VALUES (?, 'test', ?, ?, '', ?)",
+                               (event_id, time.time(), label, json.dumps(target, sort_keys=True)))
             connection.execute("INSERT INTO deliveries(event_id, device_id, status) VALUES (?, ?, 'pending')",
                                (event_id, device_id))
         timer = threading.Timer(self.test_delay, self._safe_dispatch,
@@ -392,13 +396,14 @@ class PushNotifications:
 
     def open(self, device_id, event_id, target, status, validate_live):
         device_id = validate_device_id(device_id)
-        if not isinstance(event_id, str) or not event_id.startswith("reply:") or len(event_id) != 70:
+        if not isinstance(event_id, str) or not (re.fullmatch(r"reply:[0-9a-f]{64}", event_id)
+                                                    or re.fullmatch(r"test:[0-9a-f]{32}", event_id)):
             raise PushError("Invalid notification event")
         target = validate_target(target)
         if status not in ("opened", "stale"):
             raise PushError("Invalid notification open status")
         with self._connect() as connection:
-            event = connection.execute("SELECT target FROM events WHERE event_id=? AND kind='reply'", (event_id,)).fetchone()
+            event = connection.execute("SELECT target FROM events WHERE event_id=?", (event_id,)).fetchone()
             delivery = connection.execute("SELECT status FROM deliveries WHERE event_id=? AND device_id=?",
                                           (event_id, device_id)).fetchone()
             if (not event or not delivery or delivery["status"] not in ("sending", "sent")
@@ -423,7 +428,7 @@ class PushNotifications:
             pass
 
     def _payload(self, event):
-        data = {"title": event["title"], "body": event["body"], "event_id": event["event_id"]}
+        data = {"title": event["title"], "event_id": event["event_id"]}
         if event["target"]:
             target = json.loads(event["target"])
             query = urlencode({"notification": event["event_id"], **target})
