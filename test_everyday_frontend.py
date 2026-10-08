@@ -466,6 +466,7 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertEqual(page.locator('.browser-typing').input_value(), '')
 
     def test_mobile_controls_and_short_visuals_view_remain_reachable(self):
+        self.workspaces['a']['creations'] = [creation('text', 3)]
         page = self.page(mobile=True)
         page.set_viewport_size({'width': 320, 'height': 568})
         for selector in ('#tabs-toggle', '#mobile-title', '#conversation-toggle', '#visual-toggle',
@@ -479,12 +480,23 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertGreaterEqual(page.locator('.group-action').first.bounding_box()['width'], 44)
         page.locator('#rail-dismiss').click(position={'x': 310, 'y': 200})
         self.assertFalse(page.locator('#session-rail').is_visible())
+        send = page.locator('#phone-input [type=submit]').bounding_box()
+        self.assertLessEqual(320 - send['x'] - send['width'], 16)
         page.locator('#visual-toggle').click()
+        page.locator('.creation-picker').wait_for()
+        preview_height = page.locator('.visual-preview').bounding_box()['height']
+        page.locator('.creation-picker summary').click()
+        self.assertAlmostEqual(page.locator('.visual-preview').bounding_box()['height'], preview_height, delta=1)
+        self.assertLessEqual(page.locator('.creation-menu').bounding_box()['y'] + page.locator('.creation-menu').bounding_box()['height'],
+                             page.locator('#workspace-body').bounding_box()['y'] + page.locator('#workspace-body').bounding_box()['height'])
+        page.locator('.creation-picker summary').click()
         page.locator('#visual-live-tab').click()
         page.locator('.browser-reconnect').scroll_into_view_if_needed()
         self.assertTrue(page.locator('.browser-reconnect').is_visible())
         self.assertGreater(page.locator('#visual-live').evaluate('(element) => element.scrollTop'), 0)
         self.assertFalse(page.evaluate('document.documentElement.scrollWidth > innerWidth'))
+        desktop = self.page()
+        self.assertLess(desktop.locator('#composer').bounding_box()['height'], 180)
 
     def test_visuals_stays_in_current_tab_without_archive_navigation(self):
         page = self.page()

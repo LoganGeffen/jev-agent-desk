@@ -121,7 +121,7 @@
       text-transform: uppercase;
       white-space: nowrap;
     }
-    .group-action { width: 23px; height: 23px; margin-left: auto; opacity: 0; }
+    .group-action { width: 32px; height: 32px; margin-left: auto; opacity: .8; }
     .tab-group:hover .group-action, .group-action:focus-visible { opacity: 1; }
     .tab-list { display: grid; gap: 3px; }
     .tab-list.drop-target { outline: 1px dashed var(--accent); outline-offset: 2px; border-radius: 7px; }
@@ -171,7 +171,7 @@
       gap: 5px;
       margin-top: 3px;
       color: var(--muted);
-      font-size: 11px;
+      font-size: 12px;
     }
     .activity::before {
       content: "";
@@ -231,14 +231,14 @@
     #composer {
       position: relative;
       display: grid;
-      grid-template-columns: 38px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
-      gap: 10px;
+      gap: 6px 12px;
       border-top: 1px solid var(--line);
       background: var(--panel);
-      padding: 11px 14px 10px;
+      padding: 8px 12px;
     }
-    #close-actions, #clarification-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: 8px; }
+    #close-actions, #clarification-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
     #close-actions[hidden], #clarification-actions[hidden] { display: none; }
     #close-actions button, #clarification-actions button { padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); cursor: pointer; }
     #confirm-close, #clarify-shutdown { color: var(--danger); }
@@ -323,37 +323,50 @@
     #speech-history { grid-column: 1 / -1; max-height: 180px; overflow: auto; font-size: 12px; }
     #speech-records p { white-space: pre-wrap; overflow-wrap: anywhere; }
     #phone-input { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
-    #phone-text { width: 100%; min-height: 80px; font: inherit; color: inherit; background: var(--panel); }
+    #phone-text { width: 100%; min-height: 56px; height: 56px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; color: inherit; background: #090d0b; }
     #message-row { display: flex; align-items: flex-end; gap: 8px; width: 100%; min-width: 0; }
     #message-row textarea { flex: 1; min-width: 0; width: auto; }
     #phone-escape { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; cursor: pointer; }
     #speech-history { max-height: 320px; }
     #turn-bar { display: contents; }
     #primary-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
-    #turn-status { display: block; grid-column: 1 / -1; font-size: 12px; overflow-wrap: anywhere; }
+    #target-status { grid-column: 1; grid-row: 1; color: var(--muted); font-size: 12px; }
+    #turn-status { display: block; grid-column: 2; grid-row: 1; max-width: min(45vw, 560px); color: var(--muted); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+    #phone-input { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    #message-row { grid-column: 1; }
+    #composer-actions { grid-column: 2; width: auto; align-self: end; }
+    #composer-extras { grid-row: 3; }
+    #result { display: none; }
+    #composer[data-choice-pending="true"] #result { display: block; grid-column: 1 / -1; }
     #playback-status, .mobile-label { display: none; }
     #more-controls label { display: block; margin: 8px 0; }
     #settings-open, #settings-close { min-height: 40px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; color: inherit; cursor: pointer; }
-    #settings-dialog { box-sizing: border-box; width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 16px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; }
+    #settings-dialog { box-sizing: border-box; width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 20px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); color: inherit; font: inherit; }
     #settings-dialog::backdrop { background: rgb(0 0 0 / 70%); }
     #settings-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     #settings-header h2 { margin: 0; font-size: 18px; }
-    #settings-dialog h3 { margin: 18px 0 8px; font-size: 14px; }
-    #settings-dialog section + section { margin-top: 18px; border-top: 1px solid var(--line); }
-    #settings-dialog select { max-width: 100%; min-height: 40px; background: #151b19; color: inherit; border: 1px solid var(--line-strong); border-radius: 6px; }
-    #settings-dialog small { display: block; color: var(--muted); line-height: 1.5; }
-    #settings-dialog button { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; color: inherit; cursor: pointer; }
+    #settings-dialog h3 { margin: 20px 0 12px; font-size: 15px; }
+    #settings-dialog section + section { margin-top: 20px; border-top: 1px solid var(--line); }
+    #settings-dialog select { width: 100%; min-height: 44px; background: #151b19; color: inherit; border: 1px solid var(--line-strong); border-radius: 8px; padding: 0 10px; }
+    #settings-dialog small { display: block; margin-top: -6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    #settings-dialog button { min-height: 44px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; color: inherit; cursor: pointer; }
+    #more-controls { display: grid; gap: 12px; }
+    #more-controls label:not(#interrupt-label) { display: grid; gap: 6px; margin: 0; font-size: 13px; font-weight: 600; }
+    #more-controls #interrupt-label { display: flex; align-items: center; min-height: 44px; margin: 0; font-size: 13px; }
     #workspace-bar { display: none; }
     #phone-input { margin: 0; }
     #phone-input textarea { resize: vertical; }
-    #composer-actions { display: flex; align-items: center; gap: 8px; width: 100%; }
+    #composer-actions { display: flex; align-items: center; gap: 8px; width: auto; }
     #composer-actions [type="submit"] { margin-left: auto; }
     #turn-status:empty, #primary-actions:has(> [hidden]:only-child), #readback-actions:has(> [hidden]:only-child) { display: none; }
-    #speech-history > summary { display: flex; align-items: center; min-height: 40px; padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; cursor: pointer; list-style: none; }
+    #speech-history > summary { display: flex; align-items: center; gap: 7px; min-height: 40px; padding: 6px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; list-style: none; }
     #speech-history > summary::-webkit-details-marker { display: none; }
-    #speech-history > summary::before { content: '▸'; margin-right: 6px; color: var(--muted); }
-    #speech-history[open] > summary::before { content: '▾'; }
-    #composer-extras { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; grid-column: 1 / -1; }
+    #speech-history > summary:hover, #speech-history[open] > summary, #settings-open:hover { background: #1c2822; color: #e6ece8; }
+    #speech-history > summary::after { content: ''; width: 6px; height: 6px; margin-left: 3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-2px); }
+    #speech-history[open] > summary::after { transform: rotate(225deg) translateY(-1px); }
+    #speech-history > summary svg, #settings-open svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    #settings-open { display: inline-flex; align-items: center; gap: 7px; border-color: transparent; background: transparent; color: var(--muted); }
+    #composer-extras { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; grid-column: 1 / -1; }
     #jarvis-status { flex: 1 1 100px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
     #composer-extras > details { min-width: 0; }
     #composer-extras > details[open] { flex-basis: 100%; order: 1; }
@@ -391,24 +404,24 @@
       #panes { display: flex; flex-direction: column; min-height: 0; }
       .pane { position: relative; left: auto !important; top: auto !important; width: 100% !important; height: auto !important; min-height: 180px; flex: 1; }
       .terminal { padding: 8px; }
-      #composer { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px 8px; min-height: 0; max-height: 45dvh; overflow-y: auto; }
-      #phone-input { order: -1; display: flex; gap: 4px; flex-wrap: wrap; }
-      #phone-input textarea { width: auto; height: 44px; min-height: 44px; max-height: 20dvh; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 16px; color: inherit; background: #070a09; }
+      #composer { display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 6px 12px; min-height: 0; max-height: 45dvh; overflow-y: auto; }
+      #phone-input { order: -1; display: flex; gap: 3px; flex-wrap: wrap; }
+      #phone-input textarea { width: auto; height: 44px; min-height: 44px; max-height: 20dvh; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; font-size: 16px; color: inherit; background: #090d0b; }
       #composer button:not(.icon-button) { min-height: 40px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: #151b19; cursor: pointer; }
       #message-row { align-items: stretch; gap: 6px; }
       #phone-escape { min-width: 70px; min-height: 44px !important; }
-      #composer-actions { min-height: 44px; }
+      #composer-actions { width: 100%; min-height: 44px; }
       #composer-actions [type="submit"] { min-width: 68px; min-height: 44px !important; }
       #voice-toggle { width: 44px; height: 44px; flex-basis: 44px; }
       #voice-toggle svg { width: 19px; height: 19px; }
       #mode-switch button { min-height: 44px !important; }
       #primary-actions { display: flex; flex-wrap: wrap; }
-      #turn-status { display: block; font-size: 12px; overflow-wrap: anywhere; }
+      #turn-status { display: block; max-width: none; color: #aebcb2; font-size: 11px; text-align: left; overflow-wrap: anywhere; }
       #turn-status:empty { display: none; }
       #result, #playback-status, #speech-draft-status, #target-status, #transcript { display: none; }
-      #speech-history > summary, #settings-open { min-height: 44px !important; color: #dce9e0; }
-      #jarvis-status { font-size: 11px; line-height: 1.3; }
-      #more-controls label { margin: 12px 0; }
+      #speech-history > summary, #settings-open { min-height: 44px !important; color: #bdc9c1; }
+      #composer-extras { justify-content: space-between; }
+      #jarvis-status { flex-basis: auto; font-size: 11px; line-height: 1.3; }
       #reply-notice { margin: 0; font-size: 12px; }
       #reply-presentation { max-height: none; }
       #speech-history { max-height: none; font-size: 12px; }
@@ -416,6 +429,14 @@
       #push-controls > div { align-items: stretch; }
       #push-controls button { flex: 1 1 84px; }
       #push-mute-label { flex-basis: 100%; }
+    }
+    #composer #composer-actions [type="submit"] { min-height: 40px; min-width: 72px; padding: 6px 16px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #0b2013; font-weight: 700; }
+    #composer #composer-actions [type="submit"]:disabled { border-color: #34413a; background: #34413a; color: #aebcb2; cursor: default; }
+    #composer #phone-escape { color: #c7d2ca; background: #19211d; }
+    #composer #phone-escape:hover { border-color: #6c8173; }
+    #composer #mode-switch button[aria-pressed="true"] { background: #263c30; color: #d5f5de; }
+    @media (max-width: 700px) {
+      #composer #settings-open { border-color: transparent; background: transparent; }
     }
     @media (prefers-reduced-motion: reduce) {
       #composer[data-pending="true"]::before { animation: none; }
@@ -476,7 +497,7 @@
         <span id="speech-draft-status" hidden></span>
         <form id="phone-input" aria-label="Conversation message">
           <div id="message-row">
-            <textarea id="phone-text" aria-label="Message" placeholder="Type or speak a message…" autocapitalize="sentences"></textarea>
+            <textarea id="phone-text" aria-label="Message" placeholder="Message…" autocapitalize="sentences"></textarea>
             <button id="phone-escape" type="button" aria-label="Send Escape to selected terminal">Escape</button>
           </div>
           <div id="composer-actions">
@@ -492,14 +513,14 @@
         </form>
         <div id="composer-extras">
         <span id="jarvis-status" role="status" aria-live="polite"></span>
-        <details id="speech-history"><summary>History</summary>
+        <details id="speech-history"><summary><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>History</summary>
         <p id="reply-notice" role="status"></p><button id="read-ready-reply" type="button" hidden>Read ready reply</button>
         <div id="readback-actions">
           <button id="replay-reply" type="button" hidden>Replay reply</button>
         </div>
         <details id="reply-presentation" hidden><summary>Reply · spoken rendition and original</summary><p id="reply-spoken"></p><pre id="reply-original"></pre><button id="read-original" type="button">Read original</button></details>
         <div id="speech-records"></div></details>
-        <button id="settings-open" type="button">Settings</button>
+        <button id="settings-open" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2h4l.6 2.1 1.5.7 2-.9 2.8 2.8-.9 2 0 1.5L22 11v4l-2.1.6-.7 1.5.9 2-2.8 2.8-2-.9-1.5.7L14 24h-4l-.6-2.1-1.5-.7-2 .9-2.8-2.8.9-2-.7-1.5L1 15v-4l2.1-.6.7-1.5-.9-2 2.8-2.8 2 .9 1.5-.7z" transform="translate(1 -1)"></path><circle cx="12" cy="12" r="3"></circle></svg>Settings</button>
         </div>
         <span id="voice-status" role="status" hidden>Microphone off</span>
         <span id="playback-status" role="status">Readback idle</span>
