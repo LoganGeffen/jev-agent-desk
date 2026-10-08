@@ -14,20 +14,19 @@ class VisualWorkspace {
     this.open = false;
     this.lastRefresh = 0;
     this.root.innerHTML = `
-      <div class="visual-context"><select class="visual-pane" aria-label="Visual workspace pane"></select></div>
+      <div class="visual-context" hidden><select class="visual-pane" aria-label="Visual workspace pane"></select></div>
       <div class="visual-tabs" role="tablist" aria-label="Visual workspace views">
         <button type="button" id="visual-creations-tab" role="tab" aria-controls="visual-creations" aria-selected="true">Creations<span class="visual-count"></span></button>
         <button type="button" id="visual-live-tab" role="tab" aria-controls="visual-live" aria-selected="false" tabindex="-1">Live browser</button>
       </div>
       <section id="visual-creations" class="visual-panel" role="tabpanel" aria-labelledby="visual-creations-tab">
-        <details class="creation-picker" hidden><summary>Saved outputs <span class="creation-selected"></span></summary><div class="creation-list" role="group" aria-label="Saved outputs"></div></details><div class="reader-mode"><button type="button" data-reader="read" aria-pressed="true">Read</button><button type="button" data-reader="source" aria-pressed="false">Source</button><label class="image-zoom-label" hidden>Local zoom<select class="image-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="2">200%</option><option value="3">300%</option></select></label></div><div class="visual-preview"></div>
-        <div class="visual-provenance"></div>
+        <details class="creation-picker" hidden><summary>Saved outputs <span class="creation-selected"></span></summary><div class="creation-list" role="group" aria-label="Saved outputs"></div><div class="visual-provenance"></div></details><div class="reader-mode"><button type="button" data-reader="read" aria-pressed="true">Read</button><button type="button" data-reader="source" aria-pressed="false">Source</button><label class="image-zoom-label" hidden>Local zoom<select class="image-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="2">200%</option><option value="3">300%</option></select></label></div><div class="visual-preview"></div>
       </section>
       <section id="visual-live" class="visual-panel" role="tabpanel" aria-labelledby="visual-live-tab" hidden><div class="managed-browser" hidden></div><div class="legacy-browser visual-panel">
         <p class="visual-status" role="status"></p>
         <div class="visual-live-stage"><canvas aria-label="Live browser view" hidden></canvas><p class="visual-message"></p></div>
         <div class="visual-live-footer"><span>View only · follows the selected pane</span><button type="button" class="visual-retry" hidden>Reconnect view</button></div></div>
-      </section><section class="visual-apps" hidden></section>`;
+      <section class="visual-apps" hidden></section></section>`;
     this.find = selector => this.root.querySelector(selector);
     this.preview = this.find('.visual-preview');
     this.canvas = this.find('.legacy-browser canvas');
@@ -100,7 +99,7 @@ class VisualWorkspace {
     paneSelect.dataset.tab = tab.id;
     const signature = JSON.stringify(tab.panes.map(item => [item.id, item.identity]));
     if (paneSelect.dataset.signature !== signature) { paneSelect.replaceChildren(...tab.panes.map(item => new Option(`Pane ${item.number || item.id} · ${item.provider || item.command || 'conversation'}`, item.id))); paneSelect.dataset.signature = signature; }
-    paneSelect.value = pane.id; paneSelect.hidden = tab.panes.length < 2;
+    paneSelect.value = pane.id; this.find('.visual-context').hidden = tab.panes.length < 2;
     this.browser?.update(this.context);
     this.refreshApps();
     this.refresh();
@@ -234,7 +233,8 @@ class VisualWorkspace {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'creation-item';
         button.dataset.version = item.version.id;
         const title = document.createElement('strong'); title.textContent = item.creation.title;
-        const info = document.createElement('span'); info.textContent = `${this.date(item.version.created_at)}${item.creation.versions.length > 1 ? ` · v${item.version.number}` : ''}`;
+        const info = document.createElement('span'); info.textContent = `${this.compactDate(item.version.created_at)}${item.creation.versions.length > 1 ? ` · v${item.version.number}` : ''}`;
+        button.title = `${item.creation.title} · ${this.date(item.version.created_at)} · v${item.version.number}`;
         button.append(title, info); button.onclick = () => {
           Object.assign(choice, {creation: item.creation.id, version: item.version.id});
           this.preference().historical = item.version.id !== outputs[0].version.id;
@@ -245,14 +245,16 @@ class VisualWorkspace {
       }));
     }
     this.find('.creation-picker').hidden = false;
-    this.find('.creation-selected').textContent = `${creation.title} · ${this.date(version.created_at)}`;
+    this.find('.creation-selected').textContent = `${creation.title}${creation.versions.length > 1 ? ` · v${version.number}` : ''}`;
     for (const button of this.root.querySelectorAll('.creation-item')) button.setAttribute('aria-pressed', String(button.dataset.version === version.id));
     const source = version.source || {};
     this.find('.visual-provenance').textContent = [source.mode === 'imported' ? 'Imported' : 'Captured', this.date(version.created_at), source.provider,
       source.thread_id && `conversation …${source.thread_id.slice(-8)}`, source.pane && `pane ${source.pane}`, this.size(version.byte_size)].filter(Boolean).join(' · ');
     const readerMode = this.preference().readerMode || 'read';
-    this.find('.reader-mode').hidden = !['html', 'markdown', 'text', 'image'].includes(creation.kind);
-    this.find('[data-reader="source"]').hidden = !['html', 'markdown'].includes(creation.kind);
+    const sourceAvailable = ['html', 'markdown'].includes(creation.kind);
+    this.find('.reader-mode').hidden = !sourceAvailable && creation.kind !== 'image';
+    this.find('[data-reader="read"]').hidden = !sourceAvailable;
+    this.find('[data-reader="source"]').hidden = !sourceAvailable;
     this.find('.image-zoom-label').hidden = creation.kind !== 'image';
     for (const button of this.root.querySelectorAll('[data-reader]')) button.setAttribute('aria-pressed', String(button.dataset.reader === readerMode));
     const key = `${this.workspace.workspace_id}:${version.id}:${readerMode}`;
@@ -523,6 +525,11 @@ class VisualWorkspace {
   date(value) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+  }
+
+  compactDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
   }
 
   size(value) {

@@ -4,7 +4,7 @@ class ManagedBrowserView {
     this.epoch = 0;
     this.pages = [];
     this.queue = Promise.resolve();
-    this.root.innerHTML = `<div class="browser-controls"><label>Page<select class="browser-pages" aria-label="Browser page"></select></label><span class="browser-account"></span><button class="browser-signin" type="button">Sign in</button><button class="browser-done" type="button" hidden>Done</button></div><p class="browser-status" role="status"></p><form class="browser-address" hidden><input type="url" aria-label="Browser address during sign-in" placeholder="https://" autocomplete="off"><button>Go</button></form><div class="browser-stage"><canvas tabindex="0" aria-label="Conversation browser" hidden></canvas><p class="visual-message">Ask this conversation to use its managed browser. Its page will appear here.</p></div><div class="browser-tools"><label>Local zoom <select class="browser-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select></label><button class="browser-reconnect" type="button">Reconnect view</button><button class="browser-keyboard" type="button" hidden>Keyboard</button><button class="browser-enter" type="button" hidden>Enter</button><button class="browser-tab" type="button" hidden>Tab</button><input class="browser-typing" type="password" aria-label="Type directly into controlled browser" autocomplete="off" autocapitalize="off" spellcheck="false" tabindex="-1"></div><p class="browser-control-note">View only. Zoom and pan change your view; the agent’s viewport stays the same.</p><details class="browser-setup"><summary>Account environment</summary><p>Choose a separate Desk account. Personal browser cookies are never imported.</p><form><label>Account label<input class="browser-profile" value="Desk account" maxlength="60"></label><button>Open browser</button></form></details>`;
+    this.root.innerHTML = `<div class="browser-controls"><select class="browser-pages" aria-label="Browser page"></select><span class="browser-account"></span><button class="browser-signin" type="button">Sign in</button><button class="browser-done" type="button" hidden>Done</button></div><p class="browser-status" role="status"></p><form class="browser-address" hidden><input type="url" aria-label="Browser address during sign-in" placeholder="https://" autocomplete="off"><button>Go</button></form><div class="browser-stage"><canvas tabindex="0" aria-label="Conversation browser" hidden></canvas><p class="visual-message">Ask this conversation to use its managed browser. Its page will appear here.</p></div><div class="browser-tools"><label>Local zoom <select class="browser-zoom"><option value="fit">Fit</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></select></label><button class="browser-reconnect" type="button">Reconnect view</button><button class="browser-keyboard" type="button" hidden>Keyboard</button><button class="browser-enter" type="button" hidden>Enter</button><button class="browser-tab" type="button" hidden>Tab</button><input class="browser-typing" type="password" aria-label="Type directly into controlled browser" autocomplete="off" autocapitalize="off" spellcheck="false" tabindex="-1"></div><p class="browser-control-note" hidden></p><details class="browser-setup"><summary>Account environment</summary><p>Choose a separate Desk account. Personal browser cookies are never imported.</p><form><label>Account label<input class="browser-profile" value="Desk account" maxlength="60"></label><button>Open browser</button></form></details>`;
     this.find = selector => root.querySelector(selector);
     this.canvas = this.find('canvas');
     this.find('.browser-pages').onchange = event => {
@@ -120,7 +120,7 @@ class ManagedBrowserView {
 
   page() { return this.pages.find(page => page.page_id === this.preference().browserPage); }
 
-  status(text) { this.find('.browser-status').textContent = text; this.find('.visual-message').textContent = text; }
+  status(text) { this.find('.browser-status').textContent = text; this.find('.browser-status').hidden = text === 'Agent browser · view only'; this.find('.visual-message').textContent = text; }
 
   connect(replace = false) {
     if (!this.visible || document.hidden) return;
@@ -175,7 +175,8 @@ class ManagedBrowserView {
     const waiting = this.profiles?.find(profile => profile.profile_id === this.page()?.profile_id)?.status === 'waiting';
     this.find('.browser-signin').hidden = controlled || !this.page() || ['closed', 'human', 'pausing'].includes(this.page()?.status) || (this.page()?.status === 'stale' && !waiting);
     this.canvas.style.touchAction = controlled ? 'none' : 'auto';
-    this.find('.browser-control-note').textContent = controlled ? 'You control this page. Every conversation sharing this account is paused. Done returns control; it does not verify sign-in.' : 'View only. Zoom and pan change your view; the agent’s viewport stays the same.';
+    this.find('.browser-control-note').hidden = !controlled;
+    if (controlled) this.find('.browser-control-note').textContent = 'You control this page. Every conversation sharing this account is paused. Done returns control; it does not verify sign-in.';
   }
 
   async signIn() {

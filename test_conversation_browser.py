@@ -170,11 +170,11 @@ def run():
         rail = page.locator('#session-rail').bounding_box()
         workspace = page.locator('#workspace').bounding_box()
         tabs = page.locator('.tab').all()
-        assert rail['x'] == 0 and rail['x'] + rail['width'] <= workspace['x']
+        assert rail['x'] == workspace['x'] == 0 and rail['width'] < workspace['width']
         assert tabs[1].bounding_box()['y'] >= tabs[0].bounding_box()['y'] + tabs[0].bounding_box()['height']
         assert page.locator('#panes').is_visible()
         terminal_readable()
-        page.locator('#tabs-toggle').click()
+        page.locator('#rail-close').click()
         assert page.locator('#panes').bounding_box()['width'] == full_width
         terminal_readable()
         assert page.locator('#phone-text').is_visible()
@@ -232,7 +232,7 @@ def run():
         assert not page.locator('.tab-action').count()
         assert page.locator('.group-action').first.is_visible()
         assert page.locator('#new-tab').is_visible()
-        page.locator('#tabs-toggle').click()
+        page.locator('#rail-close').click()
         assert page.locator('#mobile-title').is_visible()
         page.locator('#phone-escape').click()
         assert raw[-1]['key'] == 'Escape'

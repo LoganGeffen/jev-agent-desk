@@ -173,7 +173,9 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertFalse(page.locator('.tab-action').count())
         page.locator('#tabs-toggle').click()
         self.assertTrue(page.locator('.group-action').first.is_visible())
+        self.assertGreaterEqual(page.locator('.group-action').first.bounding_box()['width'], 44)
         page.set_viewport_size({'width': 320, 'height': 844})
+        page.locator('#rail-close').click()
         title = page.locator('#mobile-title').bounding_box()
         self.assertGreaterEqual(title['width'], 40)
         self.assertGreaterEqual(title['height'], 36)
@@ -405,6 +407,9 @@ class EverydayFrontendTests(unittest.TestCase):
                     rect = header_button(selector)
                     page.mouse.click(rect['x'] + rect['width'] / 2, rect['y'] + rect['height'] / 2)
                 click_header('#tabs-toggle')
+                self.assertTrue(page.locator('#rail-close').is_visible())
+                self.assertGreaterEqual(page.locator('#rail-close').bounding_box()['width'], 44)
+                page.locator('#rail-close').click()
                 page.keyboard.press('Tab')
                 self.assertEqual(page.evaluate('document.activeElement.id'), 'mobile-title')
                 header_button('#tabs-toggle')
@@ -412,8 +417,6 @@ class EverydayFrontendTests(unittest.TestCase):
                 header_button('#conversation-toggle')
                 header_button('#visual-toggle')
                 page.keyboard.press('Shift+Tab')
-                click_header('#tabs-toggle')
-                self.assertFalse(page.locator('#session-rail').is_visible())
                 click_header('#visual-toggle')
                 self.assertFalse(page.locator('#panes').is_visible())
                 click_header('#conversation-toggle')
@@ -431,7 +434,7 @@ class EverydayFrontendTests(unittest.TestCase):
                         continue
                     click_header('#tabs-toggle')
                     self.assertTrue(page.locator('#session-rail').is_visible())
-                    click_header('#tabs-toggle')
+                    page.locator('#rail-close').click()
                     self.assertFalse(page.locator('#session-rail').is_visible())
                     header_button('#visual-toggle')
                 self.assertEqual(page.evaluate('phoneTarget()'), captured)
@@ -461,6 +464,27 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertTrue(all(body['lease_id'] == 'lease' and body['target']['identity'] == 'a:original' for body in inputs))
         self.assertFalse(any(path in ('/api/input', '/api/jarvis/turn', '/api/request') for path, _ in self.posts))
         self.assertEqual(page.locator('.browser-typing').input_value(), '')
+
+    def test_mobile_controls_and_short_visuals_view_remain_reachable(self):
+        page = self.page(mobile=True)
+        page.set_viewport_size({'width': 320, 'height': 568})
+        for selector in ('#tabs-toggle', '#mobile-title', '#conversation-toggle', '#visual-toggle',
+                         '#phone-escape', '#voice-toggle', '#mode-jarvis', '#mode-pane',
+                         '#phone-input [type=submit]', '#speech-history > summary', '#settings-open'):
+            self.assertGreaterEqual(page.locator(selector).bounding_box()['height'], 44, selector)
+        pane_width = page.locator('#panes').bounding_box()['width']
+        page.locator('#tabs-toggle').click()
+        self.assertGreaterEqual(page.locator('#session-rail').bounding_box()['width'], 240)
+        self.assertEqual(page.locator('#panes').bounding_box()['width'], pane_width)
+        self.assertGreaterEqual(page.locator('.group-action').first.bounding_box()['width'], 44)
+        page.locator('#rail-dismiss').click(position={'x': 310, 'y': 200})
+        self.assertFalse(page.locator('#session-rail').is_visible())
+        page.locator('#visual-toggle').click()
+        page.locator('#visual-live-tab').click()
+        page.locator('.browser-reconnect').scroll_into_view_if_needed()
+        self.assertTrue(page.locator('.browser-reconnect').is_visible())
+        self.assertGreater(page.locator('#visual-live').evaluate('(element) => element.scrollTop'), 0)
+        self.assertFalse(page.evaluate('document.documentElement.scrollWidth > innerWidth'))
 
     def test_visuals_stays_in_current_tab_without_archive_navigation(self):
         page = self.page()
