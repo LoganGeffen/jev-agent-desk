@@ -482,6 +482,8 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertFalse(page.locator('#session-rail').is_visible())
         send = page.locator('#phone-input [type=submit]').bounding_box()
         self.assertLessEqual(320 - send['x'] - send['width'], 16)
+        page.locator('#jarvis-status').evaluate("(element) => element.textContent = 'Subject: Current agent task'")
+        self.assertLessEqual(page.locator('#composer-extras').bounding_box()['height'], 64)
         page.locator('#visual-toggle').click()
         page.locator('.creation-picker').wait_for()
         preview_height = page.locator('.visual-preview').bounding_box()['height']
