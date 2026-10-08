@@ -920,7 +920,10 @@
       const tab = state.tabs.find(item => item.id === state.selected);
       const pane = tab?.panes.find(item => item.id === state.selected_pane);
       notifications.adopt(jarvis.sessionId, pane?.agent ? {tab: tab.id, pane: pane.id, identity: pane.identity} : null);
-      notifications.resolveLink(state, (tabId, paneId) => selectTab(tabId, paneId)).catch(() => {});
+      notifications.resolveLink(state, async (tabId, paneId) => {
+        await selectTab(tabId, paneId);
+        visuals.close();
+      }).catch(() => {});
     }
 
     function render(state, selectSubject = false) {

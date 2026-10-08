@@ -478,9 +478,24 @@ def run():
         page.evaluate('voice.capture.playback.close(); voice.capture = null')
         from urllib.parse import urlencode
         target = {'tab': '@a', 'pane': '%a', 'identity': 'a:replacement'}
-        page.goto('https://fixture.test/?' + urlencode({'notification': 'test:' + 'a' * 32, **target}))
+        page.evaluate("selectTab('@a')")
+        page.wait_for_function("currentState.selected === '@a' && visuals.context?.workspace_id === 'workspace-a'")
+        page.locator('#visual-toggle').click()
+        page.wait_for_function('visuals.open')
+        page.evaluate("selectTab('@b')")
+        page.wait_for_function("currentState.selected === '@b'")
+        assert page.evaluate("JSON.parse(localStorage.getItem('jev-visual-preferences'))['workspace-a'].open")
+        notification_url = 'https://fixture.test/?' + urlencode({'notification': 'test:' + 'a' * 32, **target})
+        page.goto(notification_url)
         page.wait_for_function("typeof currentState !== 'undefined' && currentState?.selected === '@a' && currentState?.selected_pane === '%a'")
         page.wait_for_function("notifications.view.linkMessage.includes('Opened the exact conversation')")
+        page.wait_for_function("visuals.workspace?.workspace_id === 'workspace-a' && !visuals.request && !visuals.open")
+        assert page.locator('#conversation-toggle').get_attribute('aria-pressed') == 'true'
+        page.locator('#visual-toggle').click()
+        page.wait_for_function('visuals.open')
+        page.goto(notification_url)
+        page.wait_for_function("notifications.view.linkMessage.includes('Opened the exact conversation')")
+        page.wait_for_function("visuals.workspace?.workspace_id === 'workspace-a' && !visuals.request && !visuals.open")
         assert opened[-1]['target'] == target and opened[-1]['status'] == 'opened'
         assert page.evaluate('location.search') == ''
         assert not errors, errors
@@ -490,7 +505,7 @@ def run():
                              'automatic identity replacement hold and reviewed manual send', 'explicit raw key', 'left mobile tabs',
                              'collapsible tabs', 'single typed and dictated composer',
                              'terminal height above 500px at 390x844', 'permanent Escape and terminal', '320–1280px overflow',
-                             '320px notification controls', 'authenticated manifest fetch', 'notification tap selects exact tab',
+                             '320px notification controls', 'authenticated manifest fetch', 'notification tap selects exact tab and conversation view',
                              'terminal remains readable after viewport, sidebar and split-pane resize',
                              'silent arrivals', 'recommend without switching', 'captured recommendation follow-up',
                              'completed audio acknowledges exact reply', 'interrupted reply stays unread',

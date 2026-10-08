@@ -391,8 +391,9 @@ Required-input alerts are not inferred from quiet terminals or error messages.
 The notification content shows only the tab name and carries an
 opaque event plus exact conversation identity; reply and terminal text are never
 sent to the browser vendor. Tapping resolves that immutable event after the page
-loads. If the tab, pane or conversation identity changed, Desk shows an unavailable
-message and does not substitute another conversation. Historical replies present
+loads and opens the tab’s Conversation view. If the tab, pane or conversation
+identity changed, Desk shows an unavailable message and does not substitute
+another conversation. Historical replies present
 on first attachment, restart, native resume, or recovery from unavailable evidence
 are primed silently. A newer active turn suppresses an older reply, and a reply
 requires matching current native completion before it can notify. Event and delivery

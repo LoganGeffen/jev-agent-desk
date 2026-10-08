@@ -226,9 +226,9 @@ push and notification clicks, with no fetch handler or offline shell cache.
 A reply click carries the immutable event,
 tab, pane and conversation identity through the root query string. After Desk's
 initial state and session load, the client and server both require that exact
-target before selection; a missing or replaced target produces a visible stale
-message without fallback. Open state stays in the push database and never updates
-the audio heard ledger.
+target before selection, then closes Visuals for that tab; a missing or replaced
+target produces a visible stale message without fallback. Open state stays in the
+push database and never updates the audio heard ledger.
 
 ## Direct path
 
