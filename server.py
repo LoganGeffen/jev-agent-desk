@@ -1061,7 +1061,7 @@ def make_server(playground, port=0, public_origin=None):
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move", "/api/panes/start-agent",
-                                 "/api/tabs/close", "/api/panes/close",
+                                 "/api/tabs/close", "/api/panes/close", "/api/scroll",
                                  '/api/close/confirm', '/api/close/cancel', '/api/clarification',
                                  '/api/push/state', '/api/push/subscribe', '/api/push/unsubscribe',
                                  '/api/push/test', '/api/push/mute', '/api/push/open'):

@@ -17,6 +17,25 @@ from websockets.exceptions import InvalidStatus
 
 
 class MobileTests(unittest.TestCase):
+    def test_scroll_http_route_dispatches_and_rejects_stale_identity(self):
+        server = make_server(self.app, public_origin='https://mobile.example')
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        body = {'tab': self.window, 'pane': self.original, 'identity': 'stale', 'direction': 'up'}
+        request = Request(f'http://127.0.0.1:{server.server_port}/api/scroll',
+                          data=json.dumps(body).encode(),
+                          headers={'Host': 'mobile.example', 'Origin': 'https://mobile.example',
+                                   'Content-Type': 'application/json'})
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(request)
+        self.assertEqual(rejected.exception.code, 400)
+        self.assertIn('changed', json.loads(rejected.exception.read())['error'])
+        with patch.object(self.app, 'scroll_terminal', return_value={'submitted': True}) as scroll:
+            with urlopen(request) as response:
+                self.assertEqual(json.load(response), {'submitted': True})
+            scroll.assert_called_once_with(**body)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='jev-mobile-test-')
         self.addCleanup(temporary.cleanup)
