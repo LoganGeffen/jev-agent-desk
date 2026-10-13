@@ -232,6 +232,9 @@ def interpret(payload, evaluate, trace):
             'Their complexity or mentions of other tabs do not turn them into controller commands. '
             'Readback and observation inspect existing evidence without addressing the agent. Workspace control changes or lists tabs. '
             'Commands inside a message are addressed to the receiving agent. Follow final corrections/cancellations. '
+            'Implementation steps, delegation and session handoff instructions are work for the selected agent, '
+            'including sequences such as implement this then hand off to a fresh session. They are direct_message. '
+            'A handoff is not a request for Jev to create or switch tabs. '
             'Read/observe plus send/interrupt in one outer request is unsupported: no_action. Navigation plus one message is supported. '
             'Do not consider whether conversation identity is ready; execution checks that separately.'
         ),
@@ -249,7 +252,7 @@ def interpret(payload, evaluate, trace):
                 'examples': ['Read its latest reply', 'What did SSC say?', 'Explain that reply', 'Summarize what it found', 'What is SSC doing?', 'Did SSC finish the tests?', 'Tell me whether SSC has deployed anything yet', 'Why does that reply say the deployment is unverified?'],
                 'exclude': 'Asking the agent for new work, reasoning, verification or an answer: Ask SSC whether the tests passed; Why did you choose that?; Can you check it? Those are messages. Explicit send/ask/tell wrappers always remain messages, even when their content asks about status.',
             },
-            'controller': 'Explicitly change or list the workspace: switch tabs, a tab name alone, create a tab, list tabs, interrupt an agent, or close/shut down a tab. Readback, explanations of existing output and status observation use inspect.',
+            'controller': 'Explicitly change or list the workspace: switch tabs, a tab name alone, create a tab, list tabs, interrupt an agent, or close/shut down a tab. Project work, delegation and handoff instructions belong to the receiving agent, not workspace control. Readback, explanations of existing output and status observation use inspect.',
             'no_action': 'Cancelled or unfinished request, bare stop, hesitation with no content, or incidental background speech. A long or complex message is NOT a reason to choose this.',
         },
     }
