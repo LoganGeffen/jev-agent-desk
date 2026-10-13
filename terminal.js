@@ -83,3 +83,40 @@ function renderTerminal(element, screen) {
   element.scrollLeft = left;
   return true;
 }
+
+function bindTerminalScroll(element, send, onError) {
+  let touch = null, pending = false, wheel = 0;
+  const atEdge = delta => element.remoteScroll && (delta < 0
+    ? element.scrollTop <= 1
+    : element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
+  const target = () => ({tab: element.dataset.tab, pane: element.dataset.pane, identity: element.dataset.identity});
+  const page = (delta, captured) => {
+    if (pending) return;
+    pending = true;
+    Promise.resolve().then(() => send({...captured, direction: delta < 0 ? 'up' : 'down'}))
+      .catch(onError).finally(() => { pending = false; });
+  };
+  element.addEventListener('wheel', event => {
+    if (event.ctrlKey || !atEdge(event.deltaY)) { wheel = 0; return; }
+    event.preventDefault();
+    wheel = Math.sign(wheel) === Math.sign(event.deltaY) ? wheel + event.deltaY : event.deltaY;
+    if (Math.abs(wheel) >= 60) { page(wheel, target()); wheel = 0; }
+  }, {passive: false});
+  element.addEventListener('touchstart', event => {
+    touch = event.touches.length === 1 ? {y: event.touches[0].clientY, target: target()} : null;
+  }, {passive: true});
+  element.addEventListener('touchmove', event => {
+    if (!touch || event.touches.length !== 1 || touch.target.identity !== element.dataset.identity) {
+      touch = null;
+      return;
+    }
+    const y = event.touches[0].clientY;
+    const delta = touch.y - y;
+    if (!atEdge(delta)) { touch.y = y; return; }
+    event.preventDefault();
+    if (Math.abs(delta) >= 60) { page(delta, touch.target); touch.y = y; }
+  }, {passive: false});
+  for (const name of ['touchend', 'touchcancel']) {
+    element.addEventListener(name, () => { touch = null; }, {passive: true});
+  }
+}

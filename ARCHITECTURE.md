@@ -351,6 +351,11 @@ at completion. It schedules incoming PCM audio immediately.
 Observer answers already use spoken prose and bypass the rendition step.
 
 The browser can recover a lost POST response through request IDs in polling.
+Fullscreen Codex panes expose `remote_scroll` alongside their captured screen.
+At a captured screen edge, touch and wheel scrolling use `/api/scroll` to send
+PageUp or PageDown to the captured pane. The server revalidates its identity,
+provider and alternate-screen mode before sending. Normal terminal scrollback
+remains browser-local; fullscreen navigation changes the shared terminal viewport.
 Submitted means input delivery, not task completion. Uncertain outcomes never
 automatically retry. Stop & listen cancels browser speech preparation/playback;
 interrupting an agent is a separate action. Terminal mode is literal input and

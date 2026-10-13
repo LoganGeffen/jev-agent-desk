@@ -62,6 +62,8 @@ class EverydayFrontendTests(unittest.TestCase):
         if route.request.method == 'POST':
             body = route.request.post_data_json
             self.posts.append((path, body))
+            if path == '/api/scroll':
+                return route.fulfill(json={'submitted': True})
             if path.startswith('/api/browser/'):
                 operation = path.rsplit('/', 1)[-1]
                 if operation == 'lease':
@@ -206,6 +208,31 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertTrue(page.locator('#more-controls').is_visible())
         page.keyboard.press('Escape')
         self.assertFalse(page.locator('#settings-dialog').evaluate('(element) => element.open'))
+
+    def test_fullscreen_terminal_swipe_and_wheel_page_captured_pane(self):
+        self.browser_pages = {'a': [], 'b': []}
+        pane = self.state['tabs'][0]['panes'][0]
+        pane.update(remote_scroll=True, terminal_ansi='Fullscreen transcript')
+        page = self.page(mobile=True)
+        terminal = page.locator('.terminal').first
+        terminal.evaluate('''e => {
+          e.dispatchEvent(new TouchEvent('touchstart', {touches: [new Touch({identifier: 1, target: e, clientY: 200})]}));
+          e.dispatchEvent(new TouchEvent('touchmove', {cancelable: true, touches: [new Touch({identifier: 1, target: e, clientY: 300})]}));
+          e.dispatchEvent(new TouchEvent('touchend', {touches: []}));
+        }''')
+        page.wait_for_timeout(200)
+        self.assertIn(('/api/scroll', {'tab': '@a', 'pane': '%a', 'identity': 'a:original', 'direction': 'up'}), self.posts)
+        box = terminal.bounding_box()
+        page.mouse.move(box['x'] + 20, box['y'] + 20)
+        page.mouse.wheel(0, 120)
+        page.wait_for_timeout(200)
+        self.assertIn(('/api/scroll', {'tab': '@a', 'pane': '%a', 'identity': 'a:original', 'direction': 'down'}), self.posts)
+        self.posts.clear()
+        pane['remote_scroll'] = False
+        page.evaluate('refresh()')
+        page.mouse.wheel(0, -120)
+        page.wait_for_timeout(200)
+        self.assertFalse(any(path == '/api/scroll' for path, _ in self.posts))
 
     def test_readable_terminal_scroll_position_survives_poll_and_append(self):
         self.browser_pages = {'a': [], 'b': []}

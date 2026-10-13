@@ -1,4 +1,6 @@
 import json
+import shlex
+import sys
 from pathlib import Path
 import tempfile
 import time
@@ -14,6 +16,44 @@ from test_playground import answer
 
 class PaneTests(unittest.TestCase):
     setUp = test_playground.PlaygroundTests.setUp
+
+    def test_scroll_reaches_disposable_fullscreen_terminal(self):
+        window = self.tabs[0]['id']
+        pane = self.app.panes(window)[0]['id']
+        script = "import os,tty; tty.setraw(0); print('\\x1b[?1049hREADY',flush=True); data=os.read(0,64); print('KEY='+data.hex(),flush=True); import time; time.sleep(10)"
+        tmux(self.socket, 'respawn-pane', '-k', '-t', pane, shlex.join([sys.executable, '-c', script]))
+        deadline = time.monotonic() + 5
+        while 'READY' not in tmux(self.socket, 'capture-pane', '-p', '-t', pane):
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.05)
+        live = self.app.panes(window)[0]
+        with patch.object(self.app, 'validate_pane', return_value={**live, 'command': 'codex'}):
+            self.app.scroll_terminal(window, pane, live['identity'], 'up')
+        while 'KEY=1b5b357e' not in tmux(self.socket, 'capture-pane', '-p', '-t', pane):
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.05)
+
+    def test_fullscreen_scroll_checks_identity_and_mode_before_sending(self):
+        pane = self.app.panes(self.tabs[0]['id'])[0]
+        args = (self.tabs[0]['id'], pane['id'], pane['identity'])
+        with patch('server.tmux') as terminal:
+            with self.assertRaises(ValueError):
+                self.app.scroll_terminal(*args[:2], None, 'up')
+            terminal.assert_not_called()
+        with patch.object(self.app, 'validate_pane', return_value={**pane, 'command': 'codex'}) as validate, \
+             patch('server.tmux', return_value='1') as terminal:
+            self.app.scroll_terminal(*args, 'up')
+            validate.assert_called_once_with(*args)
+            self.assertEqual(terminal.call_args.args, (self.socket, 'send-keys', '-t', pane['id'], 'PPage'))
+            self.app.scroll_terminal(*args, 'down')
+            self.assertEqual(terminal.call_args.args[-1], 'NPage')
+            terminal.reset_mock()
+            terminal.return_value = '0'
+            with self.assertRaises(ValueError):
+                self.app.scroll_terminal(*args, 'up')
+            self.assertEqual(terminal.call_count, 1)
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.app.scroll_terminal(*args[:2], 'stale', 'up')
 
     def test_terminal_includes_scrollback_without_entering_copy_mode(self):
         window = self.tabs[0]['id']

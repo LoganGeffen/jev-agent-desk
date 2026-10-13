@@ -1022,6 +1022,10 @@
           element.querySelector('.pane-label').addEventListener('click', () => element.querySelector('.terminal').focus());
           element.querySelector('.pane-close').addEventListener('click', () => closePane(tab.id, pane.id));
           container.append(element);
+          bindTerminalScroll(element.querySelector('.terminal'), async payload => {
+            await post('/api/scroll', payload);
+            await refresh();
+          }, showError);
         }
         element.className = 'pane' + (pane.active ? ' active' : '');
         Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
@@ -1040,6 +1044,7 @@
         terminal.dataset.tab = tab.id;
         terminal.dataset.pane = pane.id;
         terminal.dataset.identity = pane.identity;
+        terminal.remoteScroll = pane.remote_scroll === true;
         terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
         renderTerminal(terminal, pane.terminal_ansi || '');
         if (activeTab !== state.selected) terminal.scrollTop = terminal.scrollHeight;

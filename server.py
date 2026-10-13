@@ -322,6 +322,8 @@ class Playground:
                 pane['active'] = pane['id'] == view_pane
         for pane in visible:
             pane['terminal_ansi'] = tmux(self.socket, 'capture-pane', '-p', '-e', '-S', '-', '-t', pane['id'])
+            pane['remote_scroll'] = pane['command'] == 'codex' and tmux(
+                self.socket, 'display-message', '-p', '-t', pane['id'], '#{alternate_on}') == '1'
         active = next(pane for pane in visible if pane['active'])
         terminal_ansi = active['terminal_ansi']
         terminal = re.sub(r"\x1b\[[0-9;:]*m", "", terminal_ansi)
@@ -805,6 +807,19 @@ class Playground:
         self.focus(window_id, pane_id)
         return self.state()
 
+    def scroll_terminal(self, tab, pane, identity, direction):
+        if not isinstance(identity, str) or not identity:
+            raise ValueError('An exact pane identity is required')
+        if direction not in ('up', 'down'):
+            raise ValueError('Choose a scroll direction')
+        with self.input_lock:
+            live = self.validate_pane(tab, pane, identity)
+            if live['command'] != 'codex' or tmux(
+                    self.socket, 'display-message', '-p', '-t', pane, '#{alternate_on}') != '1':
+                raise ValueError('This pane no longer uses fullscreen scrolling')
+            tmux(self.socket, 'send-keys', '-t', pane, 'PPage' if direction == 'up' else 'NPage')
+        return {'submitted': True}
+
     def terminal_input(self, window_id, text=None, key=None, pane_id=None, identity=None):
         if not isinstance(window_id, str):
             raise ValueError("A tab id is required")
@@ -1227,6 +1242,11 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.terminal_input(
                         body["tab"], text=body.get("text"), key=body.get("key"),
                         pane_id=body['pane'], identity=body['identity']))
+                    return
+                if self.path == '/api/scroll':
+                    if set(body) != {'tab', 'pane', 'identity', 'direction'}:
+                        raise ValueError('An exact pane and scroll direction are required')
+                    self.send(200, playground.scroll_terminal(**body))
                     return
                 if self.path == '/api/panes/start-agent':
                     if set(body) != {'tab', 'pane', 'identity', 'provider'}:
