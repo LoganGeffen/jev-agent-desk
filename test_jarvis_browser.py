@@ -284,12 +284,16 @@ class RealBrowserTests(DisposableDesk):
                   audioSources[0].lateEnd();
                 }""")
                 self.assertEqual(page.evaluate('audioSources.length'), 2)
+                playback_id = page.evaluate("""() =>
+                  [...jarvis.owned.entries()].find(([, ledger]) => ledger.player === savedPlayer)[0]
+                """)
                 page.locator('#stop-readback').click()
-                page.wait_for_function("""async () => {
+                page.wait_for_function("""async id => {
                   const state = await (await fetch('/api/jarvis/state')).json();
-                  return Object.values(state.playbacks).some(p => p.status === 'cancelled' && p.heard_prefix?.chars === 8);
-                }""")
-                ledger = next(iter(self.app.jarvis.snapshot()['playbacks'].values()))
+                  const playback = state.playbacks[id];
+                  return playback?.status === 'cancelled' && playback.heard_prefix?.chars === 8;
+                }""", arg=playback_id)
+                ledger = self.app.jarvis.snapshot()['playbacks'][playback_id]
                 expected = {'chars': len(prefix), 'sha256': hashlib.sha256(prefix.encode()).hexdigest(), 'alignment': 'provider'}
                 self.assertEqual(ledger['heard_prefix'], expected)
                 self.assertEqual(ledger['source_ref']['original'], original)
