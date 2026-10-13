@@ -1246,7 +1246,14 @@ def make_server(playground, port=0, public_origin=None):
                 if self.path == '/api/scroll':
                     if set(body) != {'tab', 'pane', 'identity', 'direction'}:
                         raise ValueError('An exact pane and scroll direction are required')
-                    self.send(200, playground.scroll_terminal(**body))
+                    diagnostic('terminal_scroll_input', **body)
+                    try:
+                        result = playground.scroll_terminal(**body)
+                    except Exception as error:
+                        diagnostic('terminal_scroll_failed', **body, error=str(error))
+                        raise
+                    diagnostic('terminal_scroll_submitted', **body)
+                    self.send(200, result)
                     return
                 if self.path == '/api/panes/start-agent':
                     if set(body) != {'tab', 'pane', 'identity', 'provider'}:

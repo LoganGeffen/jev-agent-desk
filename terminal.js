@@ -84,8 +84,12 @@ function renderTerminal(element, screen) {
   return true;
 }
 
-function bindTerminalScroll(element, send, onError) {
+function bindTerminalScroll(element, send, onError, trace = () => {}) {
   let touch = null, pending = false, wheel = 0;
+  const report = (event, extra = {}) => {
+    try { trace({event, remote: element.remoteScroll, top: element.scrollTop,
+      height: element.clientHeight, contentHeight: element.scrollHeight, ...extra}); } catch {}
+  };
   const atEdge = delta => element.remoteScroll && (delta < 0
     ? element.scrollTop <= 1
     : element.scrollHeight - element.scrollTop - element.clientHeight <= 1);
@@ -93,8 +97,11 @@ function bindTerminalScroll(element, send, onError) {
   const page = (delta, captured) => {
     if (pending) return;
     pending = true;
+    report('page_requested', {target: captured, direction: delta < 0 ? 'up' : 'down'});
     Promise.resolve().then(() => send({...captured, direction: delta < 0 ? 'up' : 'down'}))
-      .catch(onError).finally(() => { pending = false; });
+      .then(() => report('page_submitted'))
+      .catch(error => { report('page_failed', {error: String(error)}); onError(error); })
+      .finally(() => { pending = false; });
   };
   element.addEventListener('wheel', event => {
     if (event.ctrlKey || !atEdge(event.deltaY)) { wheel = 0; return; }
@@ -104,9 +111,11 @@ function bindTerminalScroll(element, send, onError) {
   }, {passive: false});
   element.addEventListener('touchstart', event => {
     touch = event.touches.length === 1 ? {y: event.touches[0].clientY, target: target()} : null;
+    report('touchstart', {target: target(), touches: event.touches.length});
   }, {passive: true});
   element.addEventListener('touchmove', event => {
     if (!touch || event.touches.length !== 1 || touch.target.identity !== element.dataset.identity) {
+      if (touch) report('touch_invalidated', {identityChanged: touch.target.identity !== element.dataset.identity});
       touch = null;
       return;
     }
@@ -117,6 +126,6 @@ function bindTerminalScroll(element, send, onError) {
     if (Math.abs(delta) >= 60) { page(delta, touch.target); touch.y = y; }
   }, {passive: false});
   for (const name of ['touchend', 'touchcancel']) {
-    element.addEventListener(name, () => { touch = null; }, {passive: true});
+    element.addEventListener(name, () => { report(name); touch = null; }, {passive: true});
   }
 }

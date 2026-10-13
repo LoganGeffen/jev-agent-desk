@@ -1025,7 +1025,7 @@
           bindTerminalScroll(element.querySelector('.terminal'), async payload => {
             await post('/api/scroll', payload);
             await refresh();
-          }, showError);
+          }, showError, detail => voice.log('pipeline', {stage: 'terminal_scroll', ...detail}));
         }
         element.className = 'pane' + (pane.active ? ' active' : '');
         Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
