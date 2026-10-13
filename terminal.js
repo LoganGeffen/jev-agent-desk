@@ -3,6 +3,109 @@ const terminalPalette = [
   '#7f7f7f', '#ff0000', '#00ff00', '#ffff00', '#5c5cff', '#ff00ff', '#00ffff', '#ffffff'
 ];
 
+class ConversationHistory {
+  constructor(element, post) {
+    this.element = element;
+    this.post = post;
+    this.turns = new Map();
+    this.status = document.createElement('div');
+    this.status.className = 'history-status';
+    element.append(this.status);
+    element.addEventListener('touchstart', () => { this.touching = true; }, {passive: true});
+    for (const name of ['touchend', 'touchcancel']) {
+      element.addEventListener(name, () => { this.touching = false; }, {passive: true});
+    }
+    element.addEventListener('scroll', () => {
+      if (element.scrollTop < 1200 && this.before) this.load(true);
+    }, {passive: true});
+  }
+  update(target, available) {
+    if (!available) { this.status.textContent = 'Waiting for conversation identity…'; return; }
+    if (target.identity !== this.identity) {
+      this.identity = target.identity;
+      this.target = target;
+      this.turns.clear();
+      this.element.replaceChildren(this.status);
+      this.before = null;
+      this.loaded = false;
+      this.loading = null;
+      this.lastFetch = 0;
+    }
+    if (Date.now() - this.lastFetch > 3000) this.load(false);
+  }
+  async load(older) {
+    if (this.loading || !this.target || this.element.hidden || !this.element.isConnected) return;
+    const target = this.target;
+    const request = {};
+    this.loading = request;
+    this.lastFetch = Date.now();
+    this.status.textContent = older ? 'Loading earlier messages…' : this.loaded ? '' : 'Loading conversation…';
+    try {
+      const result = await this.post('/api/history', {...target, ...(older ? {before: this.before} : {})});
+      if (this.target !== target || !this.element.isConnected || result.identity !== target.identity) return;
+      const element = this.element;
+      const first = !this.loaded;
+      const following = !this.touching && element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+      const anchor = [...element.querySelectorAll('.history-turn')].find(node => node.getBoundingClientRect().bottom > element.getBoundingClientRect().top);
+      const anchorTop = anchor?.getBoundingClientRect().top;
+      const insertion = older ? this.status.nextSibling : null;
+      for (const turn of result.turns) {
+        let node = this.turns.get(turn.id);
+        if (!node) {
+          node = document.createElement('article');
+          node.className = 'history-turn';
+          this.turns.set(turn.id, node);
+          element.insertBefore(node, insertion);
+        }
+        this.renderTurn(node, turn);
+      }
+      if (first || older) this.before = result.before;
+      this.loaded = true;
+      this.status.textContent = result.missing ? 'No saved messages yet.' : this.before ? '' : 'Start of conversation';
+      if (first || (!older && following)) element.scrollTop = element.scrollHeight;
+      else if (anchor) element.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    } catch (error) {
+      if (this.target === target) this.status.textContent = 'History unavailable: ' + error.message;
+    } finally {
+      if (this.loading === request) this.loading = null;
+    }
+  }
+  renderTurn(node, turn) {
+    const items = (turn.items || []).filter(item => item.type !== 'reasoning');
+    items.forEach((item, index) => {
+      const encoded = JSON.stringify(item);
+      let message = node.children[index];
+      if (message?.encoded === encoded) return;
+      if (!message) { message = document.createElement('div'); node.append(message); }
+      message.encoded = encoded;
+      message.className = 'history-message';
+      if (item.type === 'userMessage') {
+        message.classList.add('user');
+        message.textContent = (item.content || []).map(part => part.type === 'text' ? part.text : '[' + part.type + ']').join('\n');
+      } else if (item.type === 'agentMessage') {
+        message.innerHTML = DOMPurify.sanitize(marked.parse(item.text || ''), {
+          ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a'],
+          ALLOWED_ATTR: ['href', 'title', 'start']});
+        for (const link of message.querySelectorAll('a')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+      } else {
+        const details = document.createElement('details');
+        const summary = document.createElement('summary');
+        summary.textContent = [item.tool || item.type, item.status].filter(Boolean).join(' · ');
+        details.append(summary);
+        details.addEventListener('toggle', () => {
+          if (!details.open || details.children.length > 1) return;
+          const body = document.createElement('pre');
+          body.textContent = item.preview || JSON.stringify(item, null, 2);
+          if (item.shortened) body.textContent += '\n\nOutput shortened. Full tool output is available in Terminal.';
+          details.append(body);
+        });
+        message.replaceChildren(details);
+      }
+    });
+    while (node.children.length > items.length) node.lastChild.remove();
+  }
+}
+
 function terminalColor(index) {
   if (index < 16) return terminalPalette[index];
   if (index >= 232) {

@@ -14,6 +14,7 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 import jev
+from conversation_history import display_turns, read_page as conversation_page
 from diagnostics import Diagnostics
 from jarvis_controller import JarvisController
 from jarvis_haiku import run_turn as jarvis_run_turn
@@ -321,6 +322,7 @@ class Playground:
             for pane in visible:
                 pane['active'] = pane['id'] == view_pane
         for pane in visible:
+            pane['conversation_history'] = bool(pane.get('thread_id'))
             pane['terminal_ansi'] = tmux(self.socket, 'capture-pane', '-p', '-e', '-S', '-', '-t', pane['id'])
             pane['remote_scroll'] = pane['command'] == 'codex' and tmux(
                 self.socket, 'display-message', '-p', '-t', pane['id'], '#{alternate_on}') == '1'
@@ -807,6 +809,20 @@ class Playground:
         self.focus(window_id, pane_id)
         return self.state()
 
+    def conversation_history(self, tab, pane, identity, before=None):
+        if not isinstance(identity, str) or not identity:
+            raise ValueError('An exact conversation identity is required')
+        if before is not None and (not isinstance(before, str) or len(before) > 8192):
+            raise ValueError('Invalid history position')
+        live = self.validate_pane(tab, pane, identity)
+        if not live.get('thread_id'):
+            raise ValueError('Conversation identity is unavailable; retry when it is identified')
+        binding = read_binding(self.log.parent, live['process']) if live['provider'] == 'claude' else None
+        result = conversation_page(live['provider'], live['thread_id'], binding, before)
+        self.validate_pane(tab, pane, identity)
+        return {'identity': identity, 'turns': display_turns(result.get('turns', [])), 'before': result.get('nextCursor'),
+                'missing': result.get('history_missing', False)}
+
     def scroll_terminal(self, tab, pane, identity, direction):
         if not isinstance(identity, str) or not identity:
             raise ValueError('An exact pane identity is required')
@@ -1061,7 +1077,7 @@ def make_server(playground, port=0, public_origin=None):
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move", "/api/panes/start-agent",
-                                 "/api/tabs/close", "/api/panes/close", "/api/scroll",
+                                 "/api/tabs/close", "/api/panes/close", "/api/scroll", "/api/history",
                                  '/api/close/confirm', '/api/close/cancel', '/api/clarification',
                                  '/api/push/state', '/api/push/subscribe', '/api/push/unsubscribe',
                                  '/api/push/test', '/api/push/mute', '/api/push/open'):
@@ -1242,6 +1258,11 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.terminal_input(
                         body["tab"], text=body.get("text"), key=body.get("key"),
                         pane_id=body['pane'], identity=body['identity']))
+                    return
+                if self.path == '/api/history':
+                    if set(body) - {'tab', 'pane', 'identity', 'before'} or not {'tab', 'pane', 'identity'} <= set(body):
+                        raise ValueError('An exact conversation is required')
+                    self.send(200, playground.conversation_history(**body))
                     return
                 if self.path == '/api/scroll':
                     if set(body) != {'tab', 'pane', 'identity', 'direction'}:

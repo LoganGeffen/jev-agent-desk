@@ -54,6 +54,9 @@ def thread_read(binding):
         row = nodes[cursor]
         chain.append(row)
         cursor = row.get('parentUuid')
+    return {'id': session, 'turns': parse_turns(chain), 'history_truncated': bool(start or cursor)}
+
+def parse_turns(chain):
     turns = []
     for row in reversed(chain):
         kind = row.get('type')
@@ -85,7 +88,7 @@ def thread_read(binding):
                     turns[-1]['items'].append({'type': 'mcpToolCall', 'tool': part.get('tool_use_id'),
                                                'status': 'failed' if part.get('is_error') else 'completed',
                                                'result': part.get('content')})
-    return {'id': session, 'turns': turns, 'history_truncated': bool(start or cursor)}
+    return turns
 
 
 def working_indicator(screen):

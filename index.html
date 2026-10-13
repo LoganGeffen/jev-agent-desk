@@ -228,6 +228,18 @@
       cursor: text;
     }
     .terminal:focus { outline: 1px solid var(--line-strong); outline-offset: -1px; }
+    .history-view { overflow-y: auto; min-height: 0; padding: 12px 16px; overscroll-behavior: contain; overflow-anchor: none; font: 14px/1.6 system-ui, sans-serif; }
+    .history-view[hidden], .terminal[hidden] { display: none; }
+    .history-status { color: var(--muted); font-size: 12px; min-height: 20px; }
+    .history-turn { max-width: 900px; margin: 0 auto 24px; }
+    .history-message { overflow-wrap: anywhere; margin: 12px 0; }
+    .history-message.user { padding: 10px 14px; border-radius: 10px; background: #18271f; white-space: pre-wrap; }
+    .history-message pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #101713; padding: 12px; border-radius: 6px; }
+    .history-message table { display: block; max-width: 100%; overflow-x: auto; }
+    .history-message td, .history-message th { padding: 4px 8px; border: 1px solid var(--line); }
+    .history-message a { color: var(--accent); }
+    .history-message details { color: var(--muted); font-size: 12px; }
+    .pane-view-toggle { border: 1px solid var(--line); border-radius: 5px; background: none; color: var(--muted); cursor: pointer; }
     #composer {
       position: relative;
       display: grid;
@@ -1018,8 +1030,13 @@
         if (!element) {
           element = document.createElement('section');
           element.dataset.pane = pane.id;
-          element.innerHTML = '<div class="pane-heading"><button class="pane-label" type="button"></button><button class="pane-close" type="button">×</button></div><pre class="terminal" tabindex="0" role="region"></pre>';
-          element.querySelector('.pane-label').addEventListener('click', () => element.querySelector('.terminal').focus());
+          element.innerHTML = '<div class="pane-heading"><button class="pane-label" type="button"></button><button class="pane-view-toggle" type="button" hidden>Terminal</button><button class="pane-close" type="button">×</button></div><pre class="terminal" tabindex="0" role="region"></pre><div class="history-view" tabindex="0" role="region" aria-label="Conversation history" hidden></div>';
+          element.history = new ConversationHistory(element.querySelector('.history-view'), post);
+          element.querySelector('.pane-view-toggle').onclick = () => {
+            element.showTerminal = !element.showTerminal;
+            renderPanes(currentState);
+          };
+          element.querySelector('.pane-label').addEventListener('click', () => element.querySelector(element.history.identity && !element.showTerminal ? '.history-view' : '.terminal').focus());
           element.querySelector('.pane-close').addEventListener('click', () => closePane(tab.id, pane.id));
           container.append(element);
           bindTerminalScroll(element.querySelector('.terminal'), async payload => {
@@ -1044,7 +1061,15 @@
         terminal.dataset.tab = tab.id;
         terminal.dataset.pane = pane.id;
         terminal.dataset.identity = pane.identity;
+        Object.assign(element.querySelector('.history-view').dataset, {tab: tab.id, pane: pane.id, identity: pane.identity});
         terminal.remoteScroll = pane.remote_scroll === true;
+        const hasHistory = pane.conversation_history || element.history.identity;
+        const showHistory = hasHistory && !element.showTerminal;
+        element.querySelector('.pane-view-toggle').hidden = !hasHistory;
+        element.querySelector('.pane-view-toggle').textContent = showHistory ? 'Terminal' : 'Chat';
+        element.querySelector('.history-view').hidden = !showHistory;
+        terminal.hidden = !!showHistory;
+        if (showHistory) element.history.update({tab: tab.id, pane: pane.id, identity: pane.identity}, pane.conversation_history);
         terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
         renderTerminal(terminal, pane.terminal_ansi || '');
         if (activeTab !== state.selected) terminal.scrollTop = terminal.scrollHeight;
@@ -1484,7 +1509,7 @@
     }
     $('new-group').addEventListener('click', createGroup);
     $('panes').addEventListener('focusin', event => {
-      if (!event.target.matches('.terminal')) return;
+      if (!event.target.matches('.terminal, .history-view')) return;
       const {tab, pane} = event.target.dataset;
       if (pane === currentState?.selected_pane) return;
       selectTab(tab, pane).catch(showError);

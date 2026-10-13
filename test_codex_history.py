@@ -35,7 +35,7 @@ for line in sys.stdin:
             response['result']={'thread':{'id':'fixture','historyMode':config.get('mode','legacy'),
                 'turns':config.get('turns',[]) if params['includeTurns'] else []}}
     elif method=='thread/turns/list':
-        if params['itemsView']!='full' or params['sortDirection']!='asc':
+        if params['itemsView']!='full' or params['sortDirection']!=config.get('direction','asc'):
             response['error']={'code':-1,'message':'Full chronological history required'}
         else:
             cursor=params.get('cursor') or 'first'
@@ -58,6 +58,25 @@ def turn(id, text, status='completed'):
 
 
 class CodexHistoryTests(unittest.TestCase):
+    def test_backward_page_fetches_only_requested_turns(self):
+        newest, older = turn('newest', 'Newest'), turn('older', 'Older')
+        self.config.write_text(json.dumps({'mode': 'paginated', 'direction': 'desc', 'pages': {
+            'first': {'data': [newest, older], 'nextCursor': 'previous'},
+            'previous': {'data': [turn('oldest', 'Oldest')], 'nextCursor': None}}}))
+        result = codex_actions.thread_read('fixture', page_size=2)
+        self.assertEqual(result['turns'], [older, newest])
+        self.assertEqual(result['nextCursor'], 'previous')
+        self.assertEqual(self.requests()[-1]['params']['limit'], 2)
+        result = codex_actions.thread_read('fixture', page_size=2, before='previous')
+        self.assertEqual([turn['id'] for turn in result['turns']], ['oldest'])
+        self.assertIsNone(result['nextCursor'])
+
+    def test_legacy_pages_remain_stable_when_new_turns_arrive(self):
+        self.config.write_text(json.dumps({'turns': [turn(str(i), str(i)) for i in range(6)]}))
+        result = codex_actions.thread_read('fixture', page_size=2, before='4')
+        self.assertEqual([turn['id'] for turn in result['turns']], ['2', '3'])
+        self.assertEqual(result['nextCursor'], '2')
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix='jev-history-')
         self.addCleanup(directory.cleanup)

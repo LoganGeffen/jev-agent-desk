@@ -23,7 +23,7 @@ def focus(socket, window, pane=None, session="tabs"):
         tmux(socket, "select-pane", "-t", pane)
 
 
-def thread_read(thread_id):
+def thread_read(thread_id, *, page_size=None, before=None):
     process = subprocess.Popen(
         ["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         env={key: value for key, value in os.environ.items() if key not in ("TYPESAFE_API_KEY", "ELEVENLABS_API_KEY")},
@@ -62,7 +62,21 @@ def thread_read(thread_id):
         try:
             thread = call("thread/read", {"threadId": thread_id, "includeTurns": False})['thread']
             if thread.get('historyMode', 'legacy') != 'paginated':
-                return call("thread/read", {"threadId": thread_id, "includeTurns": True})['thread']
+                thread = call("thread/read", {"threadId": thread_id, "includeTurns": True})['thread']
+                if page_size is None:
+                    return thread
+                turns = thread.get('turns', [])
+                end = next((i for i, turn in enumerate(turns) if turn['id'] == before), len(turns)) if before else len(turns)
+                if before and end == len(turns):
+                    raise ValueError('History position is no longer available')
+                start = max(0, end - page_size)
+                return {**thread, 'turns': turns[start:end], 'nextCursor': turns[start]['id'] if start else None}
+            if page_size is not None:
+                page = call('thread/turns/list', {'threadId': thread_id, 'cursor': before,
+                            'limit': page_size, 'sortDirection': 'desc', 'itemsView': 'full'})
+                if any(turn.get('itemsView', 'full') != 'full' for turn in page['data']):
+                    raise RuntimeError('Codex returned incomplete turn items')
+                return {**thread, 'turns': list(reversed(page['data'])), 'nextCursor': page.get('nextCursor')}
             turns, cursors = [], set()
             cursor = None
             while True:

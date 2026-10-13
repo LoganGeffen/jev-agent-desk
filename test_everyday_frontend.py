@@ -62,6 +62,13 @@ class EverydayFrontendTests(unittest.TestCase):
         if route.request.method == 'POST':
             body = route.request.post_data_json
             self.posts.append((path, body))
+            if path == '/api/history':
+                end = int(body['before']) if body.get('before') else 60
+                start = max(0, end - 20)
+                return route.fulfill(json={'identity': body['identity'], 'before': str(start) if start else None,
+                    'turns': [{'id': str(i), 'items': [
+                        {'type': 'userMessage', 'content': [{'type': 'text', 'text': f'Question {i}'}]},
+                        {'type': 'agentMessage', 'text': f'Answer {i}\n\n' + 'Readable text. ' * 30}]} for i in range(start, end)]})
             if path == '/api/scroll':
                 return route.fulfill(json={'submitted': True})
             if path.startswith('/api/browser/'):
@@ -208,6 +215,56 @@ class EverydayFrontendTests(unittest.TestCase):
         self.assertTrue(page.locator('#more-controls').is_visible())
         page.keyboard.press('Escape')
         self.assertFalse(page.locator('#settings-dialog').evaluate('(element) => element.open'))
+
+    def test_history_pane_focus_selects_the_matching_recipient(self):
+        self.browser_pages = {'a': [], 'b': []}
+        pane = self.state['tabs'][0]['panes'][0]
+        pane.update(conversation_history=True, width=60)
+        self.state['tabs'][0]['panes'].append({**pane, 'id': '%second', 'number': 2,
+            'identity': 'second:original', 'active': False, 'left': 60})
+        page = self.page(mobile=True)
+        page.locator('.history-view').nth(1).focus()
+        page.wait_for_function("currentState.selected_pane === '%second'")
+        self.assertEqual(page.evaluate('phoneTarget().pane'), '%second')
+        self.assertFalse(any(path == '/api/input' for path, _ in self.posts))
+
+    def test_history_scrolls_locally_and_prepends_without_moving_reading_position(self):
+        self.browser_pages = {'a': [], 'b': []}
+        self.state['tabs'][0]['panes'][0]['conversation_history'] = True
+        page = self.page(mobile=True)
+        history = page.locator('.history-view').first
+        page.wait_for_function("document.querySelectorAll('.history-turn').length === 20")
+        self.assertTrue(page.locator('.terminal').first.is_hidden())
+        cdp = page.context.new_cdp_session(page)
+        cdp.send('Emulation.setTouchEmulationEnabled', {'enabled': True})
+        box = history.bounding_box()
+        x, y = box['x'] + 100, box['y'] + 100
+        cdp.send('Input.dispatchTouchEvent', {'type': 'touchStart', 'touchPoints': [{'x': x, 'y': y}]})
+        positions = []
+        for step in range(1, 9):
+            cdp.send('Input.dispatchTouchEvent', {'type': 'touchMove', 'touchPoints': [{'x': x, 'y': y + step * 18}]})
+            page.wait_for_timeout(25)
+            positions.append(history.evaluate('e => e.scrollTop'))
+        cdp.send('Input.dispatchTouchEvent', {'type': 'touchEnd', 'touchPoints': []})
+        page.wait_for_timeout(350)
+        self.assertGreater(len(set(positions)), 3)
+        self.assertLess(positions[-1], positions[0])
+        anchor = page.locator('.history-turn').first.element_handle()
+        anchor_top = history.evaluate('e => {e.scrollTop = 800; return e.querySelector(".history-turn").getBoundingClientRect().top;}')
+        page.wait_for_function("document.querySelectorAll('.history-turn').length === 40")
+        self.assertAlmostEqual(anchor.evaluate('e => e.getBoundingClientRect().top'), anchor_top, delta=1)
+        position = history.evaluate('e => e.scrollTop')
+        page.evaluate('refresh()')
+        self.assertAlmostEqual(history.evaluate('e => e.scrollTop'), position, delta=1)
+        self.assertFalse(any(path in ('/api/scroll', '/api/input') for path, _ in self.posts))
+        history.evaluate('e => e.scrollTop = 0')
+        page.wait_for_function("document.querySelectorAll('.history-turn').length === 60")
+        self.assertEqual(page.locator('.history-turn').first.locator('.user').text_content(), 'Question 0')
+        position = history.evaluate('e => e.scrollTop')
+        page.locator('.pane-view-toggle').first.click()
+        self.assertTrue(page.locator('.terminal').first.is_visible())
+        page.locator('.pane-view-toggle').first.click()
+        self.assertAlmostEqual(history.evaluate('e => e.scrollTop'), position, delta=1)
 
     def test_fullscreen_terminal_swipe_and_wheel_page_captured_pane(self):
         self.browser_pages = {'a': [], 'b': []}

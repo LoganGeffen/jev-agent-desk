@@ -17,6 +17,31 @@ from websockets.exceptions import InvalidStatus
 
 
 class MobileTests(unittest.TestCase):
+    def test_history_http_route_reads_only_validated_conversation(self):
+        server = make_server(self.app, public_origin='https://mobile.example')
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        live = self.app.panes(self.window)[0]
+        body = {'tab': self.window, 'pane': live['id'], 'identity': live['identity'], 'before': 'older'}
+        request = Request(f'http://127.0.0.1:{server.server_port}/api/history',
+                          data=json.dumps(body).encode(),
+                          headers={'Host': 'mobile.example', 'Origin': 'https://mobile.example', 'Content-Type': 'application/json'})
+        with patch.object(self.app, 'validate_pane', return_value={**live, 'provider': 'codex', 'thread_id': 'thread'}) as validate, \
+             patch('server.conversation_page', return_value={'turns': [{'id': 'old', 'items': []}], 'nextCursor': 'oldest'}) as read:
+            with urlopen(request) as response:
+                result = json.load(response)
+            self.assertEqual(result['identity'], live['identity'])
+            self.assertEqual(result['before'], 'oldest')
+            self.assertEqual(validate.call_count, 2)
+            read.assert_called_once_with('codex', 'thread', None, 'older')
+        body['identity'] = 'stale'
+        request.data = json.dumps(body).encode()
+        with patch('server.conversation_page') as read, self.assertRaises(HTTPError) as rejected:
+            urlopen(request)
+        self.assertEqual(rejected.exception.code, 400)
+        read.assert_not_called()
+
     def test_scroll_http_route_dispatches_and_rejects_stale_identity(self):
         server = make_server(self.app, public_origin='https://mobile.example')
         self.addCleanup(server.server_close)

@@ -336,7 +336,7 @@ elsewhere), requires a service restart, and should wait for the gates listed in
 
 ## Voice and mobile use
 
-Mobile opens with the terminal filling the available space. **Tabs** opens a
+Mobile opens with the conversation filling the available space. **Tabs** opens a
 drawer over the conversation; selecting a tab closes it. Drag tabs to move them. Tap the selected tab name in
 the top bar to rename it; its adjacent menu has **Close tab**, which asks for
 confirmation because closing ends the tab's running processes. The workspace
@@ -348,13 +348,21 @@ follows the Jarvis/Pane switch; Pane mode delivers to the selected agent and
 presses Enter automatically. Drafts stay with their panes when switching tabs.
 **Escape** sits beside the message box. **History** remains a dropdown, while
 **Settings** opens notification and voice controls.
+Identified Codex and Claude chats use normal browser scrolling. Earlier messages
+load as you approach the top, without a fixed history cutoff or terminal page
+jumps. New replies follow the bottom only while you are already there; reading
+older messages keeps your position. Messages and replies retain their full text;
+large tool outputs have labeled previews. **Terminal** in the pane heading opens
+the live terminal, and **Chat** returns to the conversation reader.
+
 Terminal text stays at 12 px and wraps wide lines, paths and identifiers inside
 the pane. Original text, whitespace and
 intentional line breaks remain intact; long rows continue on another display line.
 Scroll vertically for available tmux scrollback. Polling preserves the reading
 position and follows new output when already at the bottom. This does not resize
 the underlying tmux workspace. Alternate-screen applications may keep older
-conversation history internally; the terminal view can only show what tmux captures.
+conversation history internally; the terminal view forwards edge swipes as page
+navigation. Use Chat for smooth history scrolling.
 
 Replies wait quietly. Ask **“What's next?”** for one recommended chat and its
 reason, or **“What else is ready?”** for a rundown. Agents explicitly needing

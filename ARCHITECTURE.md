@@ -351,6 +351,14 @@ at completion. It schedules incoming PCM audio immediately.
 Observer answers already use spoken prose and bypass the rendition step.
 
 The browser can recover a lost POST response through request IDs in polling.
+Identified agent panes open a browser-native conversation reader by default.
+`/api/history` validates the captured conversation before and after each read.
+Codex uses reverse provider pagination; Claude follows transcript parent links
+backward with bounded file reads. Older pages prepend while preserving the visible
+turn's position, and unchanged messages retain their DOM nodes. Live updates follow
+the bottom only when the reader is already there and not touching the view.
+User and assistant text is complete; tool previews are limited to 2,000 characters
+with an explicit label. Terminal switches back to the original interactive capture.
 Fullscreen Codex panes expose `remote_scroll` alongside their captured screen.
 At a captured screen edge, touch and wheel scrolling use `/api/scroll` to send
 PageUp or PageDown to the captured pane. The server revalidates its identity,
