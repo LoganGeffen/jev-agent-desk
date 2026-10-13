@@ -58,10 +58,13 @@ class ReadbackPlayer {
   write(delta) {
     if (this.closed) return;
     this.text += delta;
-    let sentence;
-    while ((sentence = this.text.match(/^[\s\S]*?[.!?]["')\]]*\s+/))) {
-      this.send({text: sentence[0]});
-      this.text = this.text.slice(sentence[0].length);
+    while (this.text) {
+      const boundaries = [this.text.match(/^[\s\S]*?[,;:.!?]["')\]]*\s+/),
+        this.text.match(/^(?:\s*\S+\s+){6}/)].filter(Boolean);
+      if (!boundaries.length) break;
+      const phrase = boundaries.reduce((first, next) => next[0].length < first[0].length ? next : first)[0];
+      this.send({text: phrase});
+      this.text = this.text.slice(phrase.length);
     }
   }
   end() {

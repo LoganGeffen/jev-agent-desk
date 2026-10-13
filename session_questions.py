@@ -28,6 +28,8 @@ or finished, not still working. A past background-command message is not proof i
 Use recent conversation and tool results for context. Distinguish requested/planned work from observed
 execution and completion. Do not infer success from a command being started or from the user's request.
 If evidence is missing, truncated, or does not answer the question, say so briefly rather than guessing.
+A count of passed checks does not establish how many failed: other checks may be pending, skipped or
+not run. State only recorded outcomes; do not infer failed checks from a partial pass count.
 For an unverified outcome, lead with 'Not confirmed' or 'I cannot tell', never a categorical yes or no.
 Do not invent causal or timing links between facts. A disconnected terminal and a missing result do
 not establish why the result is missing or whether the command finished before the disconnect.
@@ -95,7 +97,7 @@ def terminal_content(text):
 
 
 def answer_question(question, snapshot, instructions=INSTRUCTIONS, on_text=None):
-    model = os.environ.get("JEV_ASK_MODEL", "gpt-6-luna")
+    model = os.environ.get("JEV_ASK_MODEL", "claude-haiku-4-5-20251001")
     evidence = {key: terminal_content(value) if key in ("visible_terminal", "recent_terminal") else value
                 for key, value in snapshot.items()}
     return stream_answer(question, evidence, instructions, model, on_text)

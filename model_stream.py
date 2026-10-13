@@ -101,6 +101,10 @@ def connection():
 
 
 def stream_answer(question, evidence, instructions, model, on_text=None):
+    if model.startswith('claude-'):
+        from claude_stream import stream_answer as claude_answer
+        with _slots:
+            return claude_answer(question, evidence, instructions, model, on_text)
     started = time.monotonic()
     first_text_ms = None
     text = ''

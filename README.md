@@ -53,8 +53,8 @@ Set configuration in the environment **before starting** the app:
 | `TYPESAFE_API_KEY` | TypeSafe Jev request interpretation |
 | `ELEVENLABS_API_KEY` | ElevenLabs realtime recognition and speech synthesis |
 | `ELEVENLABS_VOICE_ID` | A voice accessible to that ElevenLabs account |
-| `JEV_ASK_MODEL` | Codex model for session questions, indirect-question grammar, and spoken renditions; default `gpt-6-luna` |
-| `JEV_ASK_EFFORT` | Reasoning effort for those calls; default `none`. Must be supported by the selected model. |
+| `JEV_ASK_MODEL` | Model for session questions, indirect-question grammar, and spoken renditions; default `claude-haiku-4-5-20251001` through Claude CLI. Non-Claude model names use Codex. |
+| `JEV_ASK_EFFORT` | Codex reasoning effort when a Codex model is selected; default `none`. Claude calls use low effort with thinking disabled. |
 | `JEV_SETTINGS_FILE` | Optional explicit path to a private settings file; no file is loaded by default |
 
 `python launch.py start --ask-key` prompts privately for just the TypeSafe key.
@@ -62,13 +62,17 @@ An optional settings file accepts `NAME=value` or `export NAME=value` for the th
 TypeSafe/ElevenLabs variables only; existing environment values win. Keep that file
 outside the checkout with owner-only permissions. Do not commit credentials.
 
-Background preparation uses the configured Codex model and its existing account
+Background preparation uses the configured model and its existing CLI account
 allowance, even while voice is off. Replies over 20,000 characters are not prepared.
 Fresh or unfinished replies wait for completion; unidentified panes are skipped.
 
-Native Codex sessions and text generation require an installed, authenticated
-Codex CLI and access to the selected model. Claude sessions require an installed,
-authenticated Claude Code CLI. Authenticate those CLIs separately; this app does
+Generated answers and spoken renditions default to Haiku with thinking disabled,
+using an authenticated Claude Code CLI subscription. Each call uses a fresh temporary
+session with tools, MCP, hooks and session persistence disabled. Provider failure is
+reported without switching models or authentication routes. Selecting a non-Claude
+`JEV_ASK_MODEL` explicitly uses the isolated Codex path instead.
+Native Codex sessions require an installed, authenticated Codex CLI. Claude sessions
+require an installed, authenticated Claude Code CLI. Authenticate those CLIs separately; this app does
 not provision accounts. Voice requires ElevenLabs access to `scribe_v2_realtime`
 and `eleven_flash_v2_5` (or the optional `eleven_multilingual_v2` voice profile).
 
@@ -80,7 +84,7 @@ account-dependent. Automated tests use synthetic provider responses.
 
 For a systemd deployment, ensure the service's `PATH` resolves the same Codex
 installation you tested in the terminal. An older npm-installed CLI can shadow
-the standalone CLI in `~/.local/bin`. With the default model, CLI `0.145.0`
+the standalone CLI in `~/.local/bin`. With `gpt-6-luna`, CLI `0.145.0`
 returned a ChatGPT model-support error; the same request succeeded on `0.159.3`.
 Restart the service after correcting its `PATH`.
 
@@ -172,13 +176,17 @@ Replies to Jev-sent messages appear with their originating request. Readback use
 the prepared rendition by default; Original wording bypasses rewriting. Rendering
 preserves already-readable prose and converts visual structure into spoken sentences.
 Provider failure leaves the original visible. Generated text streams into speech
-sentence by sentence, and audio plays as it arrives. A background watcher checks
+in short phrases, and audio plays as it arrives. A phrase is up to six complete
+words, or ends at punctuation followed by whitespace, whichever comes first.
+Partial words wait for a boundary; the final tail is flushed when generation ends.
+Punctuation inside numbers, identifiers and URLs does not split a phrase.
+A background watcher checks
 all identified agent panes, pausing three seconds between scans, independently of
 the browser and voice toggle. It prepares the latest completed reply on attachment and each new
 completed reply, including terminal-originated conversations. Jev is not involved
 in preparation. The latest rendition for each attached session stays in memory;
 preparation never starts playback. Original wording remains available.
-Fresh explanations still wait for the model's first sentence; streaming
+Fresh explanations still wait for the model's first text and a complete phrase; streaming
 does not make that initial inference instant. Stop cancels queued audio and ignores
 late results; server preparation already in progress may finish.
 
@@ -243,7 +251,7 @@ See [verification](VERIFICATION.md) for the export checks and their limits.
 `.run/` can contain messages, terminal captures, transcripts, process bindings and
 provider diagnostics. Treat it as private. Requests go to TypeSafe; microphone
 audio and spoken text go to ElevenLabs; session questions and renditions use your
-authenticated Codex provider. Review those data flows before using sensitive
+configured Claude or Codex CLI provider. Review those data flows before using sensitive
 conversations.
 
 This repository begins with a clean source export, without private workspace
