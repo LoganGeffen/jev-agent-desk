@@ -4,6 +4,7 @@ import re
 import select
 import subprocess
 import time
+from contextlib import contextmanager
 from pane_identity import process_identity
 
 
@@ -23,7 +24,8 @@ def focus(socket, window, pane=None, session="tabs"):
         tmux(socket, "select-pane", "-t", pane)
 
 
-def thread_read(thread_id, *, page_size=None, before=None):
+@contextmanager
+def app_server():
     process = subprocess.Popen(
         ["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         env={key: value for key, value in os.environ.items() if key not in ("TYPESAFE_API_KEY", "ELEVENLABS_API_KEY")},
@@ -59,6 +61,20 @@ def thread_read(thread_id, *, page_size=None, before=None):
         call("initialize", {"clientInfo": {"name": "jev_playground", "version": "0.1"}})
         process.stdin.write(b'{"method":"initialized"}\n')
         process.stdin.flush()
+        yield call
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+def thread_read(thread_id, *, page_size=None, before=None):
+    with app_server() as call:
         try:
             thread = call("thread/read", {"threadId": thread_id, "includeTurns": False})['thread']
             if thread.get('historyMode', 'legacy') != 'paginated':
@@ -97,15 +113,6 @@ def thread_read(thread_id, *, page_size=None, before=None):
             if str(error) == f"thread not loaded: {thread_id}":
                 return {"id": thread_id, "turns": [], "history_missing": True}
             raise
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        process.stdin.close()
-        process.stdout.close()
 
 
 def latest_reply(thread):
