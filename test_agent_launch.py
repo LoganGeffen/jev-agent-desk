@@ -32,7 +32,8 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ready')
         self.assertEqual(result['settings'], {'provider': 'codex', 'model': 'gpt-test', 'effort': 'high', 'cwd': self.temp.name})
         self.assertEqual(self.metadata.call_args.args[1], {'old-thread'})
-        self.pg.validate_pane.assert_called_once_with('@1', '%1', 'old-identity')
+        self.pg.validate_pane.assert_called_with('@1', '%1', 'old-identity')
+        self.assertEqual(self.pg.validate_pane.call_count, 2)
 
     def test_provider_change_never_inherits_other_provider_settings(self):
         result = agent_launch.resolve_settings(self.pg, self.source, {'provider': 'claude'})
@@ -116,7 +117,7 @@ class LaunchTests(unittest.TestCase):
         self.tmux.assert_called_once()
 
     def test_new_identity_changed_during_confirmation(self):
-        self.pg.validate_pane.side_effect = [self.old, self.old, ValueError('changed')]
+        self.pg.validate_pane.side_effect = [self.old, self.old, self.old, ValueError('changed')]
         result = agent_launch.launch_agent(self.pg, self.source)
         self.assertEqual(result['status'], 'uncertain')
         self.pg.focus.assert_not_called()

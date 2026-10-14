@@ -43,6 +43,7 @@ def resolve_settings(playground, source, overrides=None):
             raise ValueError(f'Launch {key} must be nonempty text')
     pane = validate_source(playground, source)
     inherited = source_settings(pane)
+    validate_source(playground, source)
     provider = overrides.get('provider', inherited.get('provider'))
     if provider is not None and provider not in ('codex', 'claude'):
         raise ValueError('Choose Codex or Claude')
