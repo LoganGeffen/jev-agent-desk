@@ -95,6 +95,25 @@ def working_indicator(screen):
     return bool(re.search(r'(?im)^.*\besc to interrupt\b.*$', '\n'.join(screen.splitlines()[-8:])))
 
 
+
+def require_empty_composer(socket, agent):
+    binding = check_target(socket, agent)
+    if binding.get('state') not in ('idle', 'ready'):
+        raise ValueError('Wait for Claude to be idle before changing the conversation')
+    screen = tmux(socket, 'capture-pane', '-p', '-t', agent['pane_id'])
+    if working_indicator(screen):
+        raise ValueError('Wait for the running turn before changing the conversation')
+    lines = screen.splitlines()
+    prompts = [index for index, line in enumerate(lines) if line.startswith('❯')]
+    if not prompts:
+        raise ValueError('The native Claude composer is unavailable')
+    index = prompts[-1]
+    border = lambda line: len(line) >= 10 and set(line) == {'─'}
+    if (lines[index][1:].strip() or index == 0 or index + 1 >= len(lines)
+            or not border(lines[index - 1]) or not border(lines[index + 1])):
+        raise ValueError('Empty the native Claude composer before changing the conversation')
+
+
 def send_message(socket, agent, text):
     check_target(socket, agent)
     if not agent.get('preserve_focus'):

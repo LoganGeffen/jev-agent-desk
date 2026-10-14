@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import native_edit as edit
+import claude_actions
 
 
 def turn(id, text):
@@ -94,6 +95,26 @@ class NativeEditTests(unittest.TestCase):
                  patch.object(edit.codex_actions, 'tmux', return_value=screen):
                 with self.assertRaises(ValueError):
                     edit.require_empty_composer('socket', {'pane_id': '%1'})
+
+
+class ClaudeComposerTests(unittest.TestCase):
+    def check(self, screen, state='idle'):
+        with patch.object(claude_actions, 'check_target', return_value={'state': state}), \
+             patch.object(claude_actions, 'tmux', return_value=screen):
+            claude_actions.require_empty_composer('socket', {'pane_id': '%1'})
+
+    def test_blank_composer_between_borders_is_empty(self):
+        self.check('─' * 80 + '\n❯\u00a0\n' + '─' * 80)
+
+    def test_draft_placeholder_multiline_and_working_are_rejected(self):
+        border = '─' * 80
+        for middle in ('❯ Draft', '❯ Try something', '❯ \n\n  Draft', '❯ \n  Draft'):
+            with self.assertRaises(ValueError):
+                self.check(border + '\n' + middle + '\n' + border)
+        with self.assertRaises(ValueError):
+            self.check(border + '\n❯ \n' + border, state='working')
+        with self.assertRaises(ValueError):
+            self.check(border + '\n❯ \n' + border + '\nesc to interrupt')
 
 
 if __name__ == '__main__':
