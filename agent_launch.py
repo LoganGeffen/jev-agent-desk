@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import sqlite3
@@ -9,6 +10,7 @@ import time
 from claude_runtime import hook_settings
 from codex_actions import tmux
 from pane_identity import CODEX_IDENTITY_CONFIG, thread_metadata
+from model_stream import ModelConnection
 
 
 FIELDS = ('provider', 'model', 'effort', 'cwd')
@@ -24,6 +26,59 @@ def source_settings(pane):
             metadata = {}
         settings.update(model=metadata.get('model'), effort=metadata.get('reasoning_effort'))
     return settings
+
+
+def provider_models(provider):
+    if provider == 'claude':
+        help_text = subprocess.run(['claude', '--help'], capture_output=True, text=True,
+                                   check=True, timeout=10).stdout
+        model_help = re.search(r'  --model .*?(?=\n  -)', help_text, re.S)
+        effort_help = re.search(r'  --effort .*?(?=\n  -)', help_text, re.S)
+        if not model_help or not effort_help:
+            raise RuntimeError('Installed Claude does not describe model and effort settings')
+        aliases = re.findall(r"'([a-z][a-z0-9-]*)'", model_help[0])
+        efforts = re.search(r'\(([^)]+)\)', effort_help[0])
+        if not aliases or not efforts:
+            raise RuntimeError('Installed Claude settings are not recognizable')
+        return [{'model': name, 'names': [name], 'efforts': efforts[1].split(', ')} for name in aliases]
+    client = ModelConnection()
+    try:
+        models, cursors = [], set()
+        cursor = None
+        while True:
+            page = client.call('model/list', {'includeHidden': True, 'limit': 100, 'cursor': cursor})
+            models.extend({'model': row['model'], 'names': [row['id'], row['model'], row['displayName']],
+                           'efforts': [effort['reasoningEffort'] for effort in row['supportedReasoningEfforts']]}
+                          for row in page['data'])
+            cursor = page.get('nextCursor')
+            if not cursor:
+                return models
+            if cursor in cursors:
+                raise RuntimeError('Provider model pagination did not advance')
+            cursors.add(cursor)
+    finally:
+        client.close()
+
+
+def validate_model_settings(settings):
+    if not settings['provider'] or not settings['model']:
+        return {}
+    try:
+        models = provider_models(settings['provider'])
+    except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError):
+        return {'model': 'The installed provider model catalog is unavailable; settings were not guessed'}
+    matches = [model for model in models if settings['model'].casefold() in
+               {name.casefold() for name in model['names']}]
+    if len(matches) != 1:
+        return {'model': 'Unknown or ambiguous model. Use an exact supported name: ' +
+                ', '.join(model['model'] for model in models)}
+    model = matches[0]
+    settings['model'] = model['model']
+    if settings['effort']:
+        if settings['effort'].casefold() not in model['efforts']:
+            return {'effort': 'Unsupported effort for ' + model['model'] + '. Use: ' + ', '.join(model['efforts'])}
+        settings['effort'] = settings['effort'].casefold()
+    return {}
 
 
 def validate_source(playground, source):
@@ -43,7 +98,6 @@ def resolve_settings(playground, source, overrides=None):
             raise ValueError(f'Launch {key} must be nonempty text')
     pane = validate_source(playground, source)
     inherited = source_settings(pane)
-    validate_source(playground, source)
     provider = overrides.get('provider', inherited.get('provider'))
     if provider is not None and provider not in ('codex', 'claude'):
         raise ValueError('Choose Codex or Claude')
@@ -53,9 +107,11 @@ def resolve_settings(playground, source, overrides=None):
     settings = {key: overrides.get(key, inherited.get(key)) for key in FIELDS}
     if settings['cwd'] and (not Path(settings['cwd']).is_absolute() or not Path(settings['cwd']).is_dir()):
         raise ValueError('Launch cwd must be an existing absolute directory')
-    missing = [key for key in FIELDS if not settings[key]]
+    invalid = validate_model_settings(settings)
+    validate_source(playground, source)
+    missing = [key for key in FIELDS if not settings[key] or key in invalid]
     return {'status': 'missing_settings' if missing else 'ready', 'settings': settings,
-            'missing': missing, 'source': dict(source)}
+            'missing': missing, 'invalid_settings': invalid, 'source': dict(source)}
 
 
 def provider_command(settings, socket, run_dir):
@@ -76,7 +132,8 @@ def launch_agent(playground, source, overrides=None, name=None, group_id=None, t
         result = resolve_settings(playground, source, overrides)
         if result['missing']:
             return {**result, 'ok': False, 'status': 'blocked', 'missing_settings': result['missing'],
-                    'attempted': False, 'retryable': False}
+                    'attempted': False, 'retryable': False,
+                    'error': '; '.join(result['invalid_settings'].values()) or 'Missing launch settings: ' + ', '.join(result['missing'])}
         settings = result['settings']
         name = name or settings['provider'].title()
         if not isinstance(name, str) or not name.strip() or len(name) > 80 or any(ord(c) < 32 for c in name):

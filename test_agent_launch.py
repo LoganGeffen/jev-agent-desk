@@ -26,6 +26,12 @@ class LaunchTests(unittest.TestCase):
             'old-thread': {'model': 'gpt-test', 'reasoning_effort': 'high'}}).start()
         self.addCleanup(patch.stopall)
         self.tmux = patch('agent_launch.tmux', return_value='@2\t%2').start()
+        self.catalog = patch('agent_launch.provider_models', side_effect=lambda provider: [
+            {'model': 'gpt-test', 'names': ['gpt-test', 'GPT-Test'], 'efforts': ['low', 'high']},
+            {'model': 'gpt-6-astra', 'names': ['gpt-6-astra', 'GPT-6-Astra'], 'efforts': ['low', 'high']},
+        ] if provider == 'codex' else [
+            {'model': 'sonnet', 'names': ['sonnet'], 'efforts': ['low', 'high']}
+        ]).start()
 
     def test_inherits_exact_thread_and_workspace(self):
         result = agent_launch.resolve_settings(self.pg, self.source)
@@ -122,6 +128,43 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(result['status'], 'uncertain')
         self.pg.focus.assert_not_called()
 
+    def test_unknown_informal_model_blocks_instead_of_inheriting(self):
+        result = agent_launch.launch_agent(self.pg, self.source, {'model': 'Astra', 'effort': 'high'})
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(result['missing_settings'], ['model'])
+        self.assertIn('gpt-6-astra', result['error'])
+        self.assertEqual(result['settings']['model'], 'Astra')
+        self.tmux.assert_not_called()
+
+    def test_exact_catalog_display_name_is_canonicalized(self):
+        result = agent_launch.resolve_settings(self.pg, self.source, {'model': 'GPT-6-Astra', 'effort': 'HIGH'})
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(result['settings']['model'], 'gpt-6-astra')
+        self.assertEqual(result['settings']['effort'], 'high')
+
+    def test_unsupported_effort_blocks_before_launch(self):
+        result = agent_launch.launch_agent(self.pg, self.source, {'effort': 'ultra'})
+        self.assertEqual(result['missing_settings'], ['effort'])
+        self.tmux.assert_not_called()
+
+    def test_other_provider_model_is_blocked(self):
+        result = agent_launch.launch_agent(self.pg, self.source, {'provider': 'claude', 'model': 'gpt-test', 'effort': 'high'})
+        self.assertEqual(result['missing_settings'], ['model'])
+        self.tmux.assert_not_called()
+
+    def test_catalog_failure_blocks_without_fallback(self):
+        self.catalog.side_effect = RuntimeError('unavailable')
+        result = agent_launch.launch_agent(self.pg, self.source)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('catalog is unavailable', result['error'])
+        self.tmux.assert_not_called()
+
+    def test_catalog_read_revalidates_source(self):
+        self.catalog.side_effect = lambda provider: setattr(self.pg.validate_pane, 'side_effect', ValueError('changed')) or []
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            agent_launch.resolve_settings(self.pg, self.source)
+        self.tmux.assert_not_called()
+
     def test_bad_cwd_or_source_fails_before_launch(self):
         for overrides in ({'cwd': 'relative'}, {'cwd': '/does-not-exist'}, {'model': ''}):
             with self.assertRaises(ValueError):
@@ -129,6 +172,34 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent_launch.resolve_settings(self.pg, {'tab': '@1'})
         self.tmux.assert_not_called()
+
+
+class CatalogTests(unittest.TestCase):
+    def test_codex_catalog_pagination_and_cleanup(self):
+        client = Mock()
+        row = {'id': 'gpt-one', 'model': 'gpt-one', 'displayName': 'GPT One',
+               'supportedReasoningEfforts': [{'reasoningEffort': 'high'}]}
+        client.call.side_effect = [{'data': [row], 'nextCursor': 'page2'}, {'data': [], 'nextCursor': None}]
+        with patch('agent_launch.ModelConnection', return_value=client):
+            models = agent_launch.provider_models('codex')
+        self.assertEqual(models[0]['efforts'], ['high'])
+        self.assertEqual(client.call.call_args.args[1]['cursor'], 'page2')
+        client.close.assert_called_once()
+
+    def test_codex_catalog_repeating_cursor_fails_and_closes(self):
+        client = Mock()
+        client.call.return_value = {'data': [], 'nextCursor': 'same'}
+        with patch('agent_launch.ModelConnection', return_value=client):
+            with self.assertRaisesRegex(RuntimeError, 'did not advance'):
+                agent_launch.provider_models('codex')
+        client.close.assert_called_once()
+
+    def test_claude_aliases_and_efforts_come_from_installed_help(self):
+        help_text = "  --effort <level> Effort level (low, high)\n  --example Example\n  --model <model> An alias (e.g.\n       'fable', 'opus', or 'sonnet') or a full name.\n  -n, --name Name\n"
+        with patch('agent_launch.subprocess.run', return_value=Mock(stdout=help_text)):
+            models = agent_launch.provider_models('claude')
+        self.assertEqual([model['model'] for model in models], ['fable', 'opus', 'sonnet'])
+        self.assertEqual(models[0]['efforts'], ['low', 'high'])
 
 
 if __name__ == '__main__':
