@@ -71,6 +71,12 @@ class NativeEditTests(unittest.TestCase):
         self.assertEqual(result['status'], 'uncertain')
         self.assertEqual(len(sent), 1)
 
+    def test_slash_edit_is_not_delivered_as_a_command(self):
+        result = edit.edit_message('socket', self.agent, 'b', 'item-b', 'Second', '/clear')
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['draft'], '/clear')
+        self.assertEqual(self.calls, [])
+
     def test_stale_turn_and_attachments_rejected(self):
         with self.assertRaises(ValueError):
             edit.edit_target(self.source, 'b', 'item-b', 'Old')

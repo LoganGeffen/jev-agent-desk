@@ -62,6 +62,8 @@ def edit_message(socket, agent, turn_id, item_id, original_text, text):
             raise ValueError('Native message editing is currently supported for Codex only')
         if not isinstance(text, str) or not text.strip():
             raise ValueError('The edited message cannot be empty')
+        if text.lstrip().startswith('/'):
+            raise ValueError('Slash commands cannot be submitted as edited messages')
         if not agent.get('process'):
             raise ValueError('The target process identity is unavailable')
         require_empty_composer(socket, agent)
