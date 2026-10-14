@@ -71,17 +71,18 @@ class ConversationHistory {
     }
   }
   renderTurn(node, turn) {
-    const items = (turn.items || []).filter(item => item.type !== 'reasoning');
+    const items = (turn.items || []).filter(item => !['reasoning', 'thinking', 'redacted_thinking'].includes(item.type));
     items.forEach((item, index) => {
       const encoded = JSON.stringify(item);
-      let message = node.children[index];
+      let message = node.querySelectorAll('.history-message')[index];
       if (message?.encoded === encoded) return;
       if (!message) { message = document.createElement('div'); node.append(message); }
       message.encoded = encoded;
       message.className = 'history-message';
       if (item.type === 'userMessage') {
         message.classList.add('user');
-        message.textContent = (item.content || []).map(part => part.type === 'text' ? part.text : '[' + part.type + ']').join('\n');
+        message.textContent = (item.content || []).map(part => part.type === 'text' ? part.text
+          : '[' + [part.type, part.name || part.filename || part.fileName || part.path, part.mimeType || part.media_type].filter(Boolean).join(' · ') + ']\n' + (part.availability || 'Attachment metadata only.')).join('\n');
       } else if (item.type === 'agentMessage') {
         message.innerHTML = DOMPurify.sanitize(marked.parse(item.text || ''), {
           ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a'],
@@ -96,13 +97,51 @@ class ConversationHistory {
           if (!details.open || details.children.length > 1) return;
           const body = document.createElement('pre');
           body.textContent = item.preview || JSON.stringify(item, null, 2);
-          if (item.shortened) body.textContent += '\n\nOutput shortened. Full tool output is available in Terminal.';
           details.append(body);
+          if (item.shortened && item.detail_ref) this.addDetails(details, body, item);
+          else if (item.shortened) body.textContent += '\n\nOutput shortened; refresh history for full details.';
         });
         message.replaceChildren(details);
       }
     });
-    while (node.children.length > items.length) node.lastChild.remove();
+    const messages = [...node.querySelectorAll('.history-message')];
+    for (const message of messages.slice(items.length)) message.remove();
+    let status = node.querySelector('.history-turn-status');
+    if (!status) { status = document.createElement('small'); status.className = 'history-turn-status'; node.append(status); }
+    const statusText = turn.status ? 'Turn: ' + turn.status : '';
+    if (status.textContent !== statusText) status.textContent = statusText;
+    if (node.lastChild !== status) node.append(status);
+  }
+  addDetails(details, body, item) {
+    const target = this.target;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Load full output';
+    const note = document.createElement('small');
+    let offset = 0;
+    const current = () => this.target === target && details.isConnected;
+    button.addEventListener('click', async () => {
+      if (button.disabled || !current()) return;
+      button.disabled = true;
+      note.textContent = ' Loading…';
+      try {
+        const result = await this.post('/api/history/details', {...target, ...item.detail_ref, offset});
+        if (!current() || result.identity !== target.identity || result.item_key !== item.detail_ref.item_key || result.offset !== offset) return;
+        const top = this.element.scrollTop;
+        const anchor = details.firstChild.getBoundingClientRect().top;
+        if (offset === 0) body.textContent = '';
+        body.append(document.createTextNode(result.text));
+        offset = result.nextOffset;
+        note.textContent = offset === null ? ' Complete output.' : ' Loaded ' + offset + ' of ' + result.total + ' characters.';
+        button.textContent = offset === null ? 'Full output loaded' : 'Load more output';
+        this.element.scrollTop = top + details.firstChild.getBoundingClientRect().top - anchor;
+      } catch (error) {
+        if (current()) note.textContent = ' Details unavailable: ' + error.message;
+      } finally {
+        if (current()) button.disabled = offset === null;
+      }
+    });
+    details.append(button, note);
   }
 }
 
