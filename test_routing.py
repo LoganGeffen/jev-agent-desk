@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import jev
 from test_playground import answer
@@ -80,14 +80,37 @@ class RoutingTests(unittest.TestCase):
 
 
 class CreateTabRoutingTests(unittest.TestCase):
-    def test_workspace_create_action_opens_one_selected_terminal(self):
+    def test_uncertain_clear_does_not_claim_nothing_was_sent(self):
         from test_playground import PlaygroundTests
         fixture = PlaygroundTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        fixture.response = answer('create_tab')
-        event = fixture.app.submit('Create a new tab')
+        before = fixture.app.observe()
+        tab = next(tab for tab in before['tabs'] if tab['id'] == before['selected'])
+        pane = next(pane for pane in tab['panes'] if pane['active'])
+        target = {'tab': tab['id'], 'pane': pane['id'], 'identity': pane['identity']}
+        result = {'ok': False, 'status': 'uncertain', 'error': 'Clear input is unconfirmed. No automatic retry.'}
+        with patch.object(fixture.app.workspace_actions, 'run', return_value=result):
+            event = fixture.app.submit('/clear', request_id='clear-once', capture_target=target)
+        self.assertEqual(event['delivery'], 'uncertain')
+        self.assertEqual(event['control_result'], result)
+        self.assertEqual(event['outcome'], 'error')
+
+    def test_workspace_create_action_uses_captured_source_and_shared_launcher(self):
+        from test_playground import PlaygroundTests
+        fixture = PlaygroundTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        before = fixture.app.observe()
+        tab = next(tab for tab in before['tabs'] if tab['id'] == before['selected'])
+        pane = next(pane for pane in tab['panes'] if pane['active'])
+        fixture.response = answer('create_tab', tab['id'], pane['id'])
+        result = {'ok': True, 'status': 'completed', 'tab': '@new', 'pane': '%new', 'identity': 'new'}
+        with patch('server.launch_overrides', return_value={'provider': 'codex'}) as settings, \
+             patch.object(fixture.app.workspace_actions, 'run', return_value=result) as launch:
+            event = fixture.app.submit('Create a new Codex tab')
+        settings.assert_called_once()
+        self.assertEqual(launch.call_args.args[1], 'launch')
+        self.assertEqual(launch.call_args.args[2], {'tab': tab['id'], 'pane': pane['id'], 'identity': pane['identity']})
         self.assertEqual(event['outcome'], 'ok', event['error'])
-        self.assertEqual(len(event['after']['tabs']), len(event['before']['tabs']) + 1)
-        selected = next(tab for tab in event['after']['tabs'] if tab['id'] == event['after']['selected'])
-        self.assertEqual(selected['name'], 'Terminal')
+        self.assertEqual(event['view_target'], {'tab': '@new', 'pane': '%new', 'identity': 'new'})

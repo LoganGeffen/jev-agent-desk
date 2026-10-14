@@ -234,6 +234,7 @@
     .history-turn { max-width: 900px; margin: 0 auto 24px; }
     .history-message { overflow-wrap: anywhere; margin: 12px 0; }
     .history-message.user { padding: 10px 14px; border-radius: 10px; background: #18271f; white-space: pre-wrap; }
+    .history-message.user > button { display: block; margin-top: 8px; }
     .history-message pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #101713; padding: 12px; border-radius: 6px; }
     .history-message table { display: block; max-width: 100%; overflow-x: auto; }
     .history-message td, .history-message th { padding: 4px 8px; border: 1px solid var(--line); }
@@ -747,6 +748,7 @@
       }
     }
     function requestOutcome(result) {
+      if (result.control_result) return result.control_result.output || result.control_result.error || 'Control outcome is unconfirmed; no automatic retry.';
       if (result.delivery === 'uncertain') return 'Delivery is uncertain. Check the recipient before sending again; the text may already be in its input.';
       if (result.delivery === 'submitted') return 'Submitted to ' + targetName(result) + '.' + (result.reply_watch_error ? ' Reply notification is unavailable; ask to read the reply later.' : '');
       if (result.outcome === 'error') return (result.delivery === 'not_attempted' ? 'Nothing was sent. ' : '') + (result.error || 'Request failed.');
@@ -1118,21 +1120,97 @@
       await mutate('/api/groups/rename', {group: group.id, name});
     }
 
+    function agentSettingsDialog(resolved) {
+      return new Promise(resolve => {
+        const dialog = document.createElement('dialog');
+        const form = document.createElement('form');
+        form.method = 'dialog';
+        const heading = document.createElement('h3');
+        heading.textContent = 'New agent tab';
+        const note = document.createElement('p');
+        note.textContent = 'Known settings are inherited. Change any field to override.';
+        const fields = {};
+        form.append(heading, note);
+        for (const key of ['provider', 'model', 'effort', 'cwd', 'name']) {
+          const label = document.createElement('label');
+          label.textContent = key === 'cwd' ? 'Working directory' : key;
+          label.style.display = 'block';
+          const input = document.createElement('input');
+          input.name = key;
+          input.required = true;
+          input.value = key === 'name' ? (resolved.settings.provider || 'Agent') : (resolved.settings[key] || '');
+          input.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin:4px 0 12px';
+          label.append(input); form.append(label); fields[key] = input;
+        }
+        fields.provider.addEventListener('change', () => {
+          if (fields.provider.value !== resolved.settings.provider) {
+            fields.model.value = ''; fields.effort.value = '';
+            note.textContent = 'Specify a supported model and effort for the new provider.';
+          }
+        });
+        const launch = document.createElement('button');
+        launch.type = 'submit'; launch.textContent = 'Launch agent';
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.onclick = () => dialog.close();
+        let result = null;
+        form.onsubmit = event => {
+          event.preventDefault();
+          result = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value.trim()]));
+          dialog.close();
+        };
+        dialog.addEventListener('close', () => { dialog.remove(); resolve(result); });
+        form.append(launch, cancel); dialog.append(form);
+        dialog.style.cssText = 'width:min(90vw,480px);max-height:85vh;overflow:auto';
+        document.body.append(dialog); dialog.showModal();
+      });
+    }
+
     async function createTab() {
       if (!currentState) return;
-      const name = window.prompt('Name the new terminal tab', 'Shell');
-      if (name === null || !name.trim()) return;
       const source = phoneTarget();
       const selected = currentState.tabs.find(tab => tab.id === source?.tab);
-      flushTerminalText();
-      await terminalQueue;
-      const group = selected?.group_id || groupDefinitions(currentState)[0]?.id;
-      const state = await mutate('/api/tabs/create', {name, group, source});
-      if (state) {
-        await selectTab(state.selected, state.selected_pane);
+      if (!source) return;
+      try {
+        const recoveryKey = 'jev-agent-launch';
+        const previous = JSON.parse(localStorage.getItem(recoveryKey) || 'null');
+        if (previous && (!previous.result || previous.result.status === 'uncertain')) {
+          const dialog = document.createElement('dialog');
+          const note = document.createElement('p');
+          note.textContent = 'The previous launch is unconfirmed and will not be repeated. Check the existing tabs before starting another.';
+          const details = document.createElement('pre');
+          details.textContent = JSON.stringify(previous, null, 2);
+          const close = document.createElement('button');
+          close.textContent = 'Close'; close.onclick = () => dialog.close();
+          const discard = document.createElement('button');
+          discard.textContent = 'Discard saved launch record';
+          discard.onclick = () => { localStorage.removeItem(recoveryKey); dialog.close(); };
+          dialog.style.cssText = 'width:min(90vw,650px);max-height:85vh;overflow:auto';
+          dialog.append(note, details, close, discard);
+          dialog.addEventListener('close', () => dialog.remove());
+          document.body.append(dialog); dialog.showModal();
+          return;
+        }
+        const resolved = await post('/api/agents/settings', {source});
+        if (previous?.arguments?.overrides) {
+          resolved.settings = {...resolved.settings, ...previous.arguments.overrides};
+        }
+        const settings = await agentSettingsDialog(resolved);
+        if (!settings) return;
+        const {name, ...overrides} = settings;
+        flushTerminalText();
+        await terminalQueue;
+        const group_id = selected?.group_id || groupDefinitions(currentState)[0]?.id;
+        const request = {request_id: crypto.randomUUID(), operation: 'launch', target: source, arguments: {name, group_id, overrides}};
+        localStorage.setItem(recoveryKey, JSON.stringify(request));
+        const result = await post('/api/actions', request);
+        localStorage.setItem(recoveryKey, JSON.stringify({...request, result}));
+        if (!result.ok) throw new Error(result.error || 'Launch is unconfirmed. It will not be retried automatically.');
+        localStorage.removeItem(recoveryKey);
+        await refresh();
+        await selectTab(result.tab, result.pane);
         if (matchMedia('(max-width: 700px)').matches) setTabsCollapsed(true);
         $('phone-text').focus({preventScroll: true});
-      }
+      } catch (error) { showError(error); }
     }
 
     async function renameTab(tab) {
@@ -1356,7 +1434,8 @@
         $('result').className = result.outcome === 'error' ? 'error' : '';
         $('result').textContent = outcome;
         refresh().catch(showError);
-        const spoken = ['read_reply', 'read_recommended', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
+        const spoken = result.control_result ? outcome
+          : ['read_reply', 'read_recommended', 'ask_session'].includes(result.action) && result.outcome === 'ok' ? result.output
           : attentionAction && result.outcome === 'error' ? outcome
           : result.outcome === 'error' && result.delivery === 'not_attempted'
           ? 'I could not complete that request. Nothing was sent. Your words and the error are on screen.' : outcome;

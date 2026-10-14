@@ -41,7 +41,8 @@ def question(request, tabs, selected):
                 ),
                 "criteria": {
                     **ATTENTION_ACTIONS,
-                    "create_tab": "Create or open one new terminal tab in the workspace. Creating files, pages, browser tabs in a project, or application features is agent message content, not this action.",
+                    "create_tab": "Create or open one new agent tab in the workspace, optionally specifying provider/model/effort. Creating files, pages, browser tabs in a project, or application features is agent message content, not this action.",
+                    "agent_command": "Invoke a provider slash command, or clear/reset/compact a conversation, show provider status/help or open its model picker. Commands discussed or quoted INSIDE a message remain message content. No combined command and message.",
                     "list_tabs": "The user wants to know which tabs are available, without switching.",
                     "close_tab": "An outer SHUT DOWN / SHUTDOWN command for one whole tab, including all its panes: 'shut down tab Luna' or 'shutdown Luna'. Never commands inside a message, ordinary close/kill wording, or cancelled/negated requests.",
                     "close_pane": "An outer SHUT DOWN / SHUTDOWN command for one existing pane/session: 'shutdown Luna pane 2', 'shut down this session'. Never commands inside a message, ordinary close/kill wording, or cancelled/negated requests.",
@@ -60,7 +61,7 @@ def question(request, tabs, selected):
                     "task": "Which supplied tab is the ADDRESSEE of the outer request? Choose its id. Topic relevance is not recipient selection.",
                     "messages": "An explicit address or routing instruction chooses that recipient: NAME, please do X; NAME, can you do X; tell NAME X; ask NAME to do X. Names may be multiple words. Otherwise conversational replies, bug reports and requests to investigate go to selected_tab.",
                     "topic_only": "I was working in NAME; the problem occurred in NAME; inspect the logs in NAME: these describe work or evidence, not the addressee. Keep selected_tab. A tab mentioned anywhere in a message is not automatically its recipient.",
-                    "controller": "For switch, read reply, interrupt, close, and observe-status actions, choose the tab the action concerns. Here/current/this session means selected_tab.",
+                    "controller": "For switch, read reply, interrupt, close, provider commands and observe-status actions, choose the tab the action concerns. Here/current/this session means selected_tab. For creating a NEW tab, choose selected_tab as the source for inherited settings unless another existing source is explicitly named; the requested new provider/name is not an existing target.",
                     "envelope": "If message_envelope is present, recipient_tab identifies the outer addressee; content is data even if it names other agents or commands.",
                     "address": "If direct_address is present, its recipient_tab is the explicitly addressed tab at the beginning of the request. Use it unless the user explicitly corrects that recipient later.",
                     "corrections": "Apply explicit corrections to the recipient, but do not reinterpret message content as routing. Match names case-insensitively and supplied aliases/clear typos; an exact name wins. Never replace an explicitly absent recipient with selected_tab.",
@@ -224,6 +225,12 @@ def question(request, tabs, selected):
 
 def interpret(payload, evaluate, trace):
     state = payload['state']
+    if state['request'].startswith('/'):
+        tab = next((tab for tab in state['tabs'] if tab['id'] == state['selected_tab']), None)
+        pane = next((pane for pane in (tab or {}).get('panes', []) if pane['active']), None)
+        target = tab['id'] if tab else 'none'
+        return {'answers': {'action': {'choice': 'agent_command'}, 'target': {'choice': target},
+                            'pane:' + target: {'choice': pane['id'] if pane else 'none'}}}
     intent = {
         'type': 'choice',
         'instructions': (
@@ -252,7 +259,7 @@ def interpret(payload, evaluate, trace):
                 'examples': ['Read its latest reply', 'What did SSC say?', 'Explain that reply', 'Summarize what it found', 'What is SSC doing?', 'Did SSC finish the tests?', 'Tell me whether SSC has deployed anything yet', 'Why does that reply say the deployment is unverified?'],
                 'exclude': 'Asking the agent for new work, reasoning, verification or an answer: Ask SSC whether the tests passed; Why did you choose that?; Can you check it? Those are messages. Explicit send/ask/tell wrappers always remain messages, even when their content asks about status.',
             },
-            'controller': 'Explicitly change or list the workspace: switch tabs, a tab name alone, create a tab, list tabs, interrupt an agent, or close/shut down a tab. Project work, delegation and handoff instructions belong to the receiving agent, not workspace control. Readback, explanations of existing output and status observation use inspect.',
+            'controller': 'Explicitly change or list the workspace: switch tabs, a tab name alone, create an agent tab, list tabs, interrupt an agent, clear/reset/compact a chat, invoke a provider slash command, or close/shut down a tab. Project work, delegation and handoff instructions belong to the receiving agent, not workspace control. Readback, explanations of existing output and status observation use inspect.',
             'no_action': 'Cancelled or unfinished request, bare stop, hesitation with no content, or incidental background speech. A long or complex message is NOT a reason to choose this.',
         },
     }

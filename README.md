@@ -352,8 +352,30 @@ Identified Codex and Claude chats use normal browser scrolling. Earlier messages
 load as you approach the top, without a fixed history cutoff or terminal page
 jumps. New replies follow the bottom only while you are already there; reading
 older messages keeps your position. Messages and replies retain their full text;
-large tool outputs have labeled previews. **Terminal** in the pane heading opens
+large tool outputs have previews with **Load full output** and **Load more output**.
+Attachment metadata and turn status remain visible. **Terminal** in the pane heading opens
 the live terminal, and **Chat** returns to the conversation reader.
+
+Use **Edit** on a Codex text message to revise it on a native branch. The original
+conversation is retained. The edit dialog saves the draft locally; after a failure
+or lost response, **Recover edited message** shows its text and any branch receipt.
+An uncertain edit never retries automatically. Claude edits and edits containing
+attachments are not supported. Editing requires known model/effort, paginated
+Codex history and an idle empty terminal composer.
+
+Literal commands such as `/clear` and natural requests such as “clear the ML chat”
+share execution in Pane and Jarvis modes. Unnamed commands use the selected pane
+in Pane mode and the captured subject in Jarvis. Supported commands are `/clear`,
+`/compact`, `/status`, `/model`, plus Codex `/new` and Claude `/help`. Unsupported
+commands fail explicitly. Clear waits for a new conversation identity; other
+commands report input submission and may require interaction in Terminal.
+
+**New tab** opens agent settings with known provider, model, reasoning effort and
+working directory inherited. Explicit overrides are supported; unknown settings
+or unsupported model/effort combinations block launch. A provider change requires
+compatible settings. New tabs report success only after a fresh conversation is
+observed. Claude settings must be explicit when the current session cannot prove
+them. Natural launch requests use the same checks; use exact supported model names.
 
 Terminal text stays at 12 px and wraps wide lines, paths and identifiers inside
 the pane. Original text, whitespace and

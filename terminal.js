@@ -26,6 +26,13 @@ class ConversationHistory {
       this.target = target;
       this.turns.clear();
       this.element.replaceChildren(this.status);
+      this.recovery = document.createElement('button');
+      this.recovery.type = 'button';
+      this.recovery.textContent = 'Recover edited message';
+      this.recovery.hidden = true;
+      this.recovery.onclick = () => this.openEdit(this.savedEdit());
+      this.element.append(this.recovery);
+      this.recovery.hidden = !this.savedEdit();
       this.before = null;
       this.loaded = false;
       this.loading = null;
@@ -83,6 +90,19 @@ class ConversationHistory {
         message.classList.add('user');
         message.textContent = (item.content || []).map(part => part.type === 'text' ? part.text
           : '[' + [part.type, part.name || part.filename || part.fileName || part.path, part.mimeType || part.media_type].filter(Boolean).join(' · ') + ']\n' + (part.availability || 'Attachment metadata only.')).join('\n');
+        if (item.id && item.content?.length && item.content.every(part => part.type === 'text')) {
+          const edit = document.createElement('button');
+          edit.type = 'button';
+          edit.textContent = 'Edit';
+          edit.addEventListener('click', () => {
+            const previous = this.savedEdit();
+            if (previous) { this.openEdit(previous); return; }
+            const text = item.content.map(part => part.text).join('');
+            this.openEdit({target: {...this.target}, request_id: crypto.randomUUID(),
+              arguments: {turn_id: turn.id, item_id: item.id, original_text: text, text}});
+          });
+          message.append(edit);
+        }
       } else if (item.type === 'agentMessage') {
         message.innerHTML = DOMPurify.sanitize(marked.parse(item.text || ''), {
           ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a'],
@@ -111,6 +131,65 @@ class ConversationHistory {
     const statusText = turn.status ? 'Turn: ' + turn.status : '';
     if (status.textContent !== statusText) status.textContent = statusText;
     if (node.lastChild !== status) node.append(status);
+  }
+  editKey() { return 'jev-edit:' + this.target.tab + ':' + this.target.pane; }
+  savedEdit() {
+    try { return JSON.parse(localStorage.getItem(this.editKey())); } catch { return null; }
+  }
+  openEdit(draft) {
+    if (!draft || this.editDialog?.open) return;
+    const key = this.editKey();
+    const dialog = document.createElement('dialog');
+    this.editDialog = dialog;
+    const title = document.createElement('p');
+    title.textContent = 'Edit on a new branch. The original conversation stays available.';
+    const input = document.createElement('textarea');
+    input.value = draft.arguments.text;
+    input.setAttribute('aria-label', 'Edited message');
+    input.style.cssText = 'width:100%;min-height:180px;box-sizing:border-box';
+    const note = document.createElement('p');
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Submit edit';
+    const close = document.createElement('button');
+    close.type = 'button'; close.textContent = 'Close'; close.onclick = () => dialog.close();
+    const discard = document.createElement('button');
+    discard.type = 'button'; discard.textContent = 'Discard saved draft';
+    discard.onclick = () => { localStorage.removeItem(key); if (this.recovery) this.recovery.hidden = true; dialog.close(); };
+    const persist = () => {
+      draft.arguments.text = input.value;
+      localStorage.setItem(key, JSON.stringify(draft));
+      if (this.recovery) this.recovery.hidden = false;
+    };
+    input.addEventListener('input', persist);
+    const stale = () => this.target.identity !== draft.target.identity;
+    const update = () => {
+      save.disabled = !!draft.attempted || stale();
+      input.readOnly = !!draft.attempted;
+      note.textContent = draft.result?.output || draft.result?.error || (draft.attempted
+        ? 'Outcome unconfirmed. Your draft is saved; this operation will not be repeated.'
+        : stale() ? 'The conversation changed. Your draft is retained; submission is blocked.' : 'Codex text messages only.');
+      if (draft.result?.branch_thread_id) note.textContent += ' Branch: ' + draft.result.branch_thread_id;
+      if (draft.result?.source_thread_id) note.textContent += ' Original: ' + draft.result.source_thread_id;
+    };
+    save.onclick = async () => {
+      if (draft.attempted || stale()) { update(); return; }
+      if (!input.value.trim()) { note.textContent = 'The edited message cannot be empty.'; return; }
+      draft.attempted = true;
+      persist(); update();
+      try {
+        draft.result = await this.post('/api/actions', {request_id: draft.request_id, operation: 'edit',
+          target: draft.target, arguments: draft.arguments});
+      } catch (error) {
+        draft.result = {status: 'uncertain', error: 'Edit outcome is unconfirmed: ' + error.message + '. No automatic retry.'};
+      }
+      persist(); update();
+    };
+    dialog.style.cssText = 'width:min(90vw,650px);max-height:85vh;overflow:auto';
+    dialog.append(title, input, note, save, close, discard);
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.append(dialog);
+    persist(); update(); dialog.showModal(); input.focus();
   }
   addDetails(details, body, item) {
     const target = this.target;

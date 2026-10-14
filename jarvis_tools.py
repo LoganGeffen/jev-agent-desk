@@ -5,6 +5,7 @@ import time
 import uuid
 
 import jev
+from workspace_actions import plan as workspace_plan
 from jarvis_state import captured_target
 from message_delivery import compose_message, prepare_message
 from session_actions import interrupt_turn, read_reply
@@ -65,6 +66,7 @@ def spec(name, description, properties=None, required=()):
 
 NAME = {'type': 'string'}
 TOOLS = [
+    spec('workspace_action', 'Execute one provider slash command, clear/reset/compact a conversation, or launch a configured new agent tab explicitly requested in the CURRENT user text. Uses the captured subject unless a target is explicitly named. Settings and action are validated from user text; do not send commands as messages.'),
     spec('list_sessions', 'List available conversation identities without changing this turn\'s captured subject.'),
     spec('list_ready', 'List quiet ready replies and requests needing user input.'),
     spec('resolve_subject', 'Resolve an exact conversation name and remember its validated identity.', {'name': NAME}, ['name']),
@@ -415,6 +417,15 @@ class JarvisTools:
         return [option]
 
     def authorize(self, name, arguments, turn):
+        if name == 'workspace_action':
+            key = (turn['turn_id'], 'workspace')
+            if key not in self.decisions:
+                try:
+                    self.decisions[key] = workspace_plan(self.app, turn['user_text'], turn['subject'])
+                except ValueError as error:
+                    self.denials[turn['turn_id']] = str(error)
+                    return False
+            return True
         if name == 'send_draft':
             try:
                 self.validate(arguments['target'])
@@ -578,6 +589,12 @@ class JarvisTools:
             for action in actions:
                 label = (action.get('target') or {}).get('label', 'the captured conversation')
                 status = action['status']
+                if action['tool'] == 'workspace_action':
+                    receipt = action.get('result', {})
+                    phrases.append(str(receipt.get('output') or receipt.get('error') or 'Control outcome is unconfirmed.'))
+                    if status in ('uncertain', 'attempting'):
+                        phrases.append('It will not be retried automatically.')
+                    continue
                 if status == 'submitted':
                     phrases.append('Input submitted to ' + label + '. Waiting for its reply; its task is not complete.')
                 elif status in ('uncertain', 'attempting'):
@@ -670,6 +687,17 @@ class JarvisTools:
                 if error['kind'].startswith('job_') and (job_id is None or error['record_id'] == job_id)]
 
     def execute(self, name, arguments, turn):
+        if name == 'workspace_action':
+            operation, target, options = self.decisions[(turn['turn_id'], 'workspace')]
+            result = self.app.workspace_actions.run('jarvis:' + turn['request_id'], operation, target, options)
+            if result.get('ok'):
+                current = ({key: result[key] for key in ('tab', 'pane', 'identity')} if operation == 'launch'
+                           else result.get('target', target))
+                result['subject'] = self.validate(current)
+                result.setdefault('output', 'New agent conversation confirmed.' if operation == 'launch' else 'Provider command submitted.')
+            else:
+                result.setdefault('error', 'Specify launch settings: ' + ', '.join(result.get('missing_settings', [])))
+            return result
         if name == 'list_sessions':
             return {'ok': True, 'status': 'completed', 'sessions': self.sessions(),
                     'output': '; '.join(item['label'] for item in self.sessions()) or 'No identified conversations.'}

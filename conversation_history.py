@@ -22,8 +22,7 @@ def visible_item(value):
             metadata['media_type'] = source['media_type']
         metadata['availability'] = 'Metadata only; open the original attachment in the provider.'
         return metadata
-    return {key: visible_item(part) for key, part in value.items()
-            if key not in ('reasoning', 'thinking', 'encrypted_content', 'encryptedContent', 'signature')}
+    return {key: visible_item(part) for key, part in value.items()}
 
 
 def item_text(item):

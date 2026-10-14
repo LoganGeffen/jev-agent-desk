@@ -419,3 +419,34 @@ All names are in the private run directory unless noted.
   `SOL-AVAILABLE-READBACK-CLIENT.json`, `FINAL-HYGIENE-DELTA.json`
 - Repository: `README.md`, `ARCHITECTURE.md`, `test_jarvis_browser.py`,
   `test_jarvis_restart_browser.py`
+
+## Native controls and chat details — 2026-10-14
+
+Implemented and tested native Codex branch editing, shared Pane/Jarvis provider
+commands, configured agent launches, durable control receipts and on-demand full
+visible tool details. Literal message and audio controls retain their prior paths.
+
+Installed Codex 0.162.1 double-Escape rewinds the same thread. Disposable tests
+verified that native fork plus exact resume preserves the original history for
+both first-turn and later-turn edits. Model, effort and working directory were
+retained; the tested read-only/never permission mode remained unchanged. Shared
+`WorkspaceActions.run` clear tests confirmed new conversation identities in Codex
+and Claude (2.1.299 at final probe), with unchanged processes and no second command
+on repeated request IDs. New Codex launch confirmed a distinct identity without
+submitting a prompt; effective first-turn model telemetry was not tested.
+
+The full check run passed 569 Python tests (one skipped) and 185 JavaScript tests.
+The final browser scenario initially exposed a test timing assumption around new
+agent selection and tab collapse; waiting for completed UI collapse fixed that
+check, and both browser scenarios passed on rerun. A final targeted run passed 75
+tests covering current command routing, replay, stale identity, native edit,
+provider settings, details and browser draft recovery. Semantic routing tests use
+synthetic judgments; physical-phone feel and real microphone behavior are not
+proven by these checks.
+
+Limits: editing currently supports text-only paginated Codex history, not Claude
+or attachments. Shared-daemon edit activation was not live-tested and unresolved
+identity blocks submission. Unknown models/effort block launch; Claude inheritance
+is unavailable when its current runtime cannot prove settings. Interactive slash
+commands may need Terminal interaction. Attachment metadata is available without
+fetching attachment bytes, and internal reasoning remains omitted.

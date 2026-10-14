@@ -357,8 +357,30 @@ Codex uses reverse provider pagination; Claude follows transcript parent links
 backward with bounded file reads. Older pages prepend while preserving the visible
 turn's position, and unchanged messages retain their DOM nodes. Live updates follow
 the bottom only when the reader is already there and not touching the view.
-User and assistant text is complete; tool previews are limited to 2,000 characters
-with an explicit label. Terminal switches back to the original interactive capture.
+User and assistant text is complete; tool previews are limited to 2,000 characters.
+Full visible tool details load on demand in 32,000-character chunks, bound to the
+captured pane identity, turn, item and content digest. Attachment metadata is shown
+without fetching arbitrary paths or URLs. Internal reasoning is omitted.
+Terminal switches back to the original interactive capture.
+
+`workspace_actions.py` executes provider commands, configured tab launches and
+native edits for direct controls and Jarvis. Its SQLite ledger records the exact
+request before effects; repeated request IDs return receipts, and an interrupted
+attempt remains uncertain without replay. Literal slash commands bypass message
+interpretation. Natural-language actions use the same Jev routing and execution;
+Jarvis binds unnamed actions to its subject, while direct mode binds the selection.
+Supported commands require a verified idle, empty native composer. Clear/reset
+completion requires a changed conversation identity. Interactive commands only
+report submitted; their native UI remains available in Terminal.
+
+`agent_launch.py` resolves explicit or compatible inherited provider/model/effort
+and cwd, validates the installed model catalog, and waits for a fresh identity.
+Unknown settings block launch. `native_edit.py` supports text-only paginated Codex
+history: exact turn/item/text binding, native fork through the prior turn, then
+verified native resume and one submission. First-turn edits revert only the newly
+created branch. Original history stays intact. Installed 0.162.1 double-Escape
+editing itself reverts the current thread, so Desk forks first. Browser edit drafts
+and source/branch receipts persist locally; uncertain submissions cannot replay.
 Fullscreen Codex panes expose `remote_scroll` alongside their captured screen.
 At a captured screen edge, touch and wheel scrolling use `/api/scroll` to send
 PageUp or PageDown to the captured pane. The server revalidates its identity,

@@ -76,16 +76,19 @@ def run():
         if path == '/api/push/open':
             opened.append(body)
             return r.fulfill(json={'status': body['status']})
-        if path == '/api/tabs/create':
+        if path == '/api/agents/settings':
+            return r.fulfill(json={'status': 'ready', 'settings': {'provider': 'codex', 'model': 'gpt-6-astra',
+                'effort': 'high', 'cwd': '/project/a'}, 'missing': []})
+        if path == '/api/actions' and body['operation'] == 'launch':
             created.append(body)
-            state['tabs'].append({'id': '@new', 'workspace_id': 'workspace-new', 'name': body['name'],
+            state['tabs'].append({'id': '@new', 'workspace_id': 'workspace-new', 'name': body['arguments']['name'],
                                   'index': 2, 'group': 'Workspace', 'group_id': 'workspace',
-                                  'state': 'open', 'agent': False, 'panes': [{'id': '%new', 'number': 1,
-                                  'active': True, 'identity': 'shell:original', 'command': 'zsh',
-                                  'agent': False, 'codex': False, 'thread_id': None, 'workspace': '/project/a',
+                                  'state': 'ready', 'agent': True, 'panes': [{'id': '%new', 'number': 1,
+                                  'active': True, 'identity': 'new:original', 'command': 'codex',
+                                  'agent': True, 'codex': True, 'thread_id': 'new', 'workspace': '/project/a',
                                   'left': 0, 'top': 0, 'width': 120, 'height': 24, 'terminal_ansi': '', 'handoff': {}}]})
             state.update(selected='@new', selected_pane='%new')
-            return r.fulfill(json=state)
+            return r.fulfill(json={'ok': True, 'status': 'completed', 'tab': '@new', 'pane': '%new', 'identity': 'new:original'})
         if path == '/api/panes/start-agent':
             started.append(body)
             return r.fulfill(json={'submitted': True})
@@ -511,14 +514,22 @@ def run():
         page.wait_for_function("visuals.workspace?.workspace_id === 'workspace-a' && !visuals.request && !visuals.open")
         assert opened[-1]['target'] == target and opened[-1]['status'] == 'opened'
         assert page.evaluate('location.search') == ''
-        page.evaluate("window.prompt = () => 'New Agent'")
         page.locator('#tabs-toggle').click()
         page.locator('#new-tab').click()
+        page.locator('dialog input[name=name]').fill('New Agent')
+        assert page.locator('dialog input[name=model]').input_value() == 'gpt-6-astra'
+        page.get_by_role('button', name='Launch agent', exact=True).click()
         page.wait_for_function("currentState?.selected === '@new'")
-        assert created == [{'name': 'New Agent', 'group': 'workspace', 'source': target}]
-        assert 'codex or claude' in page.locator('#phone-text').get_attribute('placeholder')
+        assert len(created) == 1 and created[0]['target'] == target
+        assert created[0]['arguments'] == {'name': 'New Agent', 'group_id': 'workspace',
+            'overrides': {'provider': 'codex', 'model': 'gpt-6-astra', 'effort': 'high', 'cwd': '/project/a'}}
+        page.wait_for_function("document.getElementById('tabs-toggle').getAttribute('aria-expanded') === 'false'")
         assert page.locator('#tabs-toggle').get_attribute('aria-expanded') == 'false'
         assert page.evaluate('inputMode') == 'jarvis'
+        state['tabs'][-1]['agent'] = False
+        state['tabs'][-1]['panes'][0].update(agent=False, codex=False, thread_id=None, command='zsh', identity='shell:original')
+        page.evaluate('refresh()')
+        page.wait_for_function("currentState.tabs.at(-1).panes[0].identity === 'shell:original'")
         jarvis_count = len(jarvis_posts)
         for provider in ('codex', 'claude'):
             submit_composer(page, provider)

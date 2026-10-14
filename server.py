@@ -14,7 +14,8 @@ import uuid
 from urllib.parse import parse_qs, urlsplit
 
 import jev
-from conversation_history import display_turns, read_page as conversation_page
+from workspace_actions import WorkspaceActions, command_text, launch_overrides
+from conversation_history import display_turns, read_details as conversation_details, read_page as conversation_page
 from diagnostics import Diagnostics
 from jarvis_controller import JarvisController
 from jarvis_haiku import run_turn as jarvis_run_turn
@@ -228,6 +229,7 @@ class Playground:
         self.pending_clarification = None
         self.lock = threading.Lock()
         self.input_lock = threading.Lock()
+        self.workspace_actions = WorkspaceActions(self, self.log.parent / 'workspace-actions.sqlite3')
         self.groups = TabGroups(self.log.parent / "groups.json")
         self.diagnostics = Diagnostics(self.log.parent / 'diagnostics' / 'pipeline.jsonl')
         self.voice = Voice(self.log.parent / "voice.jsonl", trace=self.diagnostics.record)
@@ -236,7 +238,7 @@ class Playground:
         self.jarvis_tools = JarvisTools(self)
         self.jarvis = JarvisController(jarvis_provider or jarvis_run_turn, self.jarvis_tools.execute, JARVIS_TOOLS,
             authorize=self.jarvis_tools.authorize, literal_boundaries=self.jarvis_tools.boundaries,
-            response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent"}, state=jarvis_state,
+            response_policy=self.jarvis_tools.response, effect_tools={"interrupt_agent", "workspace_action"}, state=jarvis_state,
             continuity_classifier=self.classify_continuity, trace=self.diagnostics.record)
         self.jarvis_tools.controller = self.jarvis
         self.jarvis_turns = JarvisTurns(self)
@@ -572,10 +574,30 @@ class Playground:
                         if item:
                             event['heard_reply'] = self.attention.reference(item)
 
+                def workspace_action():
+                    tab, pane = target_pane()
+                    captured = {'tab': tab['id'], 'pane': pane['id'], 'identity': pane['identity']}
+                    if capture_target and (captured['tab'], captured['pane']) == (capture_target['tab'], capture_target['pane']):
+                        captured['identity'] = capture_target['identity']
+                    operation = 'command' if action == 'agent_command' else 'launch'
+                    arguments = ({'command': command_text(request, self.evaluate)} if operation == 'command' else
+                                 {'overrides': launch_overrides(request, self.evaluate), 'group_id': tab['group_id']})
+                    result = self.workspace_actions.run(request_id or uuid.uuid4().hex, operation, captured, arguments)
+                    event['control_result'] = result
+                    if result.get('status') in ('submitted', 'uncertain'):
+                        event['delivery'] = result['status']
+                    event['output'] = result.get('output') or result.get('error') or (
+                        'Specify launch settings: ' + ', '.join(result.get('missing_settings', [])))
+                    if result.get('ok') and operation == 'launch':
+                        event['output'] = 'New agent conversation confirmed.'
+                        event['view_target'] = {key: result[key] for key in ('tab', 'pane', 'identity')}
+                    if not result.get('ok'):
+                        raise ValueError(event['output'])
+
                 {**{name: lambda: self.attention_action(action, attention_target, event)
                     for name in jev.ATTENTION_ACTIONS},
                  "select_tab": select, "list_tabs": lambda: None,
-                 "create_tab": lambda: self.create_tab('Terminal', next(tab['group_id'] for tab in before['tabs'] if tab['id'] == before['selected'])),
+                 "create_tab": workspace_action, "agent_command": workspace_action,
                  "close_tab": close, "close_pane": close, 'clarify_close': close,
                  "send_message": agent_action, "read_reply": agent_action,
                  "interrupt_turn": agent_action, "ask_session": agent_action,
@@ -820,8 +842,20 @@ class Playground:
         binding = read_binding(self.log.parent, live['process']) if live['provider'] == 'claude' else None
         result = conversation_page(live['provider'], live['thread_id'], binding, before)
         self.validate_pane(tab, pane, identity)
-        return {'identity': identity, 'turns': display_turns(result.get('turns', [])), 'before': result.get('nextCursor'),
+        return {'identity': identity, 'turns': display_turns(result.get('turns', []), before), 'before': result.get('nextCursor'),
                 'missing': result.get('history_missing', False)}
+
+    def conversation_details(self, tab, pane, identity, turn_id, item_index, item_key, before=None, offset=0):
+        if not isinstance(identity, str) or not identity:
+            raise ValueError('An exact conversation identity is required')
+        live = self.validate_pane(tab, pane, identity)
+        if not live.get('thread_id'):
+            raise ValueError('Conversation identity is unavailable; retry when it is identified')
+        binding = read_binding(self.log.parent, live['process']) if live['provider'] == 'claude' else None
+        result = conversation_details(live['provider'], live['thread_id'], binding, before,
+                                      turn_id=turn_id, item_index=item_index, item_key=item_key, offset=offset)
+        self.validate_pane(tab, pane, identity)
+        return {'identity': identity, **result}
 
     def scroll_terminal(self, tab, pane, identity, direction):
         if not isinstance(identity, str) or not identity:
@@ -1077,7 +1111,7 @@ def make_server(playground, port=0, public_origin=None):
             if self.path not in ("/api/jarvis/turn", "/api/jarvis/turn-decision", "/api/jarvis/cancel", "/api/jarvis/playback", "/api/request", "/api/select", "/api/input", "/api/speech", "/api/spoken-version", '/api/replies/heard',
                                  "/api/voice-event", "/api/groups/create", "/api/groups/rename",
                                  "/api/tabs/create", "/api/tabs/rename", "/api/tabs/move", "/api/panes/start-agent",
-                                 "/api/tabs/close", "/api/panes/close", "/api/scroll", "/api/history",
+                                 "/api/tabs/close", "/api/panes/close", "/api/scroll", "/api/history", "/api/history/details", "/api/agents/settings", "/api/actions",
                                  '/api/close/confirm', '/api/close/cancel', '/api/clarification',
                                  '/api/push/state', '/api/push/subscribe', '/api/push/unsubscribe',
                                  '/api/push/test', '/api/push/mute', '/api/push/open'):
@@ -1259,10 +1293,34 @@ def make_server(playground, port=0, public_origin=None):
                         body["tab"], text=body.get("text"), key=body.get("key"),
                         pane_id=body['pane'], identity=body['identity']))
                     return
+                if self.path == '/api/agents/settings':
+                    from agent_launch import resolve_settings
+                    if set(body) - {'source', 'overrides'} or 'source' not in body:
+                        raise ValueError('An exact source pane is required')
+                    self.send(200, resolve_settings(playground, **body))
+                    return
+                if self.path == '/api/actions':
+                    if set(body) != {'request_id', 'operation', 'target', 'arguments'}:
+                        raise ValueError('An exact control request is required')
+                    allowed = {'command': {'command'}, 'launch': {'overrides', 'name', 'group_id'},
+                               'edit': {'turn_id', 'item_id', 'original_text', 'text'}}
+                    operation, arguments = body['operation'], body['arguments']
+                    if operation not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[operation]:
+                        raise ValueError('Unsupported control arguments')
+                    if not isinstance(body['target'], dict) or set(body['target']) != {'tab', 'pane', 'identity'}:
+                        raise ValueError('An exact captured pane is required')
+                    self.send(200, playground.workspace_actions.run(**body))
+                    return
                 if self.path == '/api/history':
                     if set(body) - {'tab', 'pane', 'identity', 'before'} or not {'tab', 'pane', 'identity'} <= set(body):
                         raise ValueError('An exact conversation is required')
                     self.send(200, playground.conversation_history(**body))
+                    return
+                if self.path == '/api/history/details':
+                    required = {'tab', 'pane', 'identity', 'turn_id', 'item_index', 'item_key'}
+                    if set(body) - (required | {'before', 'offset'}) or not required <= set(body):
+                        raise ValueError('An exact conversation and history item are required')
+                    self.send(200, playground.conversation_details(**body))
                     return
                 if self.path == '/api/scroll':
                     if set(body) != {'tab', 'pane', 'identity', 'direction'}:
@@ -1386,3 +1444,4 @@ if __name__ == "__main__":
         app.readback_preparation.stop()
         app.readbacks.pool.shutdown(wait=True, cancel_futures=True)
         app.jarvis_store.close()
+        app.workspace_actions.db.close()
