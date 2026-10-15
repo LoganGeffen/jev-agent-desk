@@ -41,7 +41,7 @@ class HistoryDetailsBrowserTests(unittest.TestCase):
             self.assertEqual(page.evaluate('requests.length'), 0)
             self.assertIn('/not/fetched.png', page.locator('.user').inner_text())
             self.assertEqual(page.locator('img').count(), 0)
-            self.assertEqual(page.locator('.history-turn-status').inner_text(), 'Turn: completed')
+            self.assertEqual(page.locator('.history-turn-status').inner_text(), '')
             page.locator('summary').click()
             self.assertEqual(page.evaluate('requests.length'), 0)
             page.locator('button').click()

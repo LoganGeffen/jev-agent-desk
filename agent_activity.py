@@ -93,7 +93,7 @@ class AgentActivity:
             raise ValueError('Unexpected conversation rollout path')
         return path
 
-    def codex(self, agent):
+    def codex(self, agent, include_children=True):
         path = self.rollout_path(agent['thread_id'])
         key = (agent['thread_id'], str(path))
         with path.open('rb') as stream:
@@ -129,21 +129,58 @@ class AgentActivity:
         if complete < len(data):
             return {**observation(source='codex_rollout', reason='Lifecycle history is being written'),
                     'generation': generation}
-        value = {**cached['value'], 'generation': generation}
+        value = {**cached['value'], 'generation': generation,
+                 'tools': list(cached.get('calls', {}).values()),
+                 'recent': list(cached.get('recent', {}).values())[-6:]}
         if value['state'] == 'working':
             if timestamp(value['observed_at']) < codex_process_started(agent, self.codex_home):
                 return {**observation(source='codex_rollout', reason='Unclosed turn predates current process'),
                         'generation': generation}
+        if include_children:
+            children = []
+            for identifier, related in list(cached.get('agents', {}).items())[-16:]:
+                try:
+                    child = self.codex({**agent, 'thread_id': identifier}, include_children=False)
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    child = observation(reason='Subagent activity unavailable')
+                if child['state'] not in ('ready', 'idle', 'stopped', 'failed') or related['turn_id'] == value['turn_id']:
+                    children.append({'id': identifier, 'name': related['name'], **child})
+            value['agents'] = children
         return value
 
     @staticmethod
     def reduce(cached, row):
         if not isinstance(row, dict):
             raise ValueError('Invalid history record')
+        payload = row.get('payload', {})
+        if row.get('type') == 'response_item':
+            kind = payload.get('type')
+            identifier = payload.get('call_id')
+            if identifier and kind in ('function_call', 'custom_tool_call'):
+                calls = cached.setdefault('calls', {})
+                calls[identifier] = {'name': str(payload.get('name', 'Tool'))[:160], 'status': 'running'}
+                if len(calls) > 32:
+                    calls.pop(next(iter(calls)))
+            elif identifier and kind in ('function_call_output', 'custom_tool_call_output'):
+                call = cached.setdefault('calls', {}).pop(identifier, None)
+                if call:
+                    recent = cached.setdefault('recent', {})
+                    recent[identifier] = {**call, 'status': 'returned'}
+                    if len(recent) > 6:
+                        recent.pop(next(iter(recent)))
+            return
         if row.get('type') != 'event_msg':
             return
-        payload = row['payload']
         kind = payload.get('type')
+        if kind == 'item_completed':
+            item = payload.get('item', {})
+            if item.get('type') == 'SubAgentActivity' and UUID.fullmatch(item.get('agent_thread_id') or ''):
+                agents = cached.setdefault('agents', {})
+                agents[item['agent_thread_id']] = {'name': str(item.get('agent_path') or 'Subagent')[:160],
+                                                  'turn_id': cached.get('started_turn')}
+                if len(agents) > 16:
+                    agents.pop(next(iter(agents)))
+            return
         if kind not in ('task_started', 'task_complete', 'turn_aborted'):
             return
         turn_id = payload.get('turn_id')
@@ -155,6 +192,8 @@ class AgentActivity:
             return
         if kind == 'task_started':
             cached['started_turn'] = turn_id
+            cached['calls'] = {}
+            cached['recent'] = {}
             state = 'working'
         else:
             if cached['started_turn'] and turn_id != cached['started_turn']:
@@ -162,6 +201,7 @@ class AgentActivity:
             state = ('stopped' if kind == 'turn_aborted' else
                      'ready' if isinstance(payload.get('last_agent_message'), str)
                      and payload['last_agent_message'].strip() else 'idle')
+            cached['calls'] = {}
         cached['value'] = observation(state, turn_id, event_time.isoformat(), 'codex_rollout')
 
     @staticmethod

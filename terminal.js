@@ -19,8 +19,12 @@ class ConversationHistory {
       if (element.scrollTop < 1200 && this.before) this.load(true);
     }, {passive: true});
   }
-  update(target, available) {
-    if (!available) { this.status.textContent = 'Waiting for conversation identity…'; return; }
+  update(target, available, activity, screen) {
+    if (!available) {
+      this.status.textContent = 'Waiting for conversation identity…';
+      this.live?.update({state: 'unknown', reason: 'Waiting for conversation identity'}, '');
+      return;
+    }
     if (target.identity !== this.identity) {
       this.identity = target.identity;
       this.target = target;
@@ -32,12 +36,15 @@ class ConversationHistory {
       this.recovery.hidden = true;
       this.recovery.onclick = () => this.openEdit(this.savedEdit());
       this.element.append(this.recovery);
+      this.live = new ConversationActivity(this);
+      this.element.append(this.live.element);
       this.recovery.hidden = !this.savedEdit();
       this.before = null;
       this.loaded = false;
       this.loading = null;
       this.lastFetch = 0;
     }
+    this.live.update(activity, screen);
     if (Date.now() - this.lastFetch > 3000) this.load(false);
   }
   async load(older) {
@@ -55,7 +62,7 @@ class ConversationHistory {
       const following = !this.touching && element.scrollHeight - element.scrollTop - element.clientHeight < 24;
       const anchor = [...element.querySelectorAll('.history-turn')].find(node => node.getBoundingClientRect().bottom > element.getBoundingClientRect().top);
       const anchorTop = anchor?.getBoundingClientRect().top;
-      const insertion = older ? this.status.nextSibling : null;
+      const insertion = older ? this.status.nextSibling : this.live?.element || null;
       for (const turn of result.turns) {
         let node = this.turns.get(turn.id);
         if (!node) {
@@ -131,7 +138,7 @@ class ConversationHistory {
     for (const message of messages.slice(items.length)) message.remove();
     let status = node.querySelector('.history-turn-status');
     if (!status) { status = document.createElement('small'); status.className = 'history-turn-status'; node.append(status); }
-    const statusText = turn.status ? 'Turn: ' + turn.status : '';
+    const statusText = turn.status === 'failed' ? 'Failed' : '';
     if (status.textContent !== statusText) status.textContent = statusText;
     if (node.lastChild !== status) node.append(status);
   }
@@ -280,6 +287,90 @@ function terminalRuns(screen) {
     }
   }
   return runs;
+}
+
+class ConversationActivity {
+  constructor(history) {
+    this.history = history;
+    this.children = new Map();
+    this.element = document.createElement('details');
+    this.element.className = 'conversation-activity';
+    this.heading = document.createElement('summary');
+    this.heading.textContent = 'Activity unavailable';
+    this.events = document.createElement('div');
+    this.agents = document.createElement('div');
+    const terminal = document.createElement('details');
+    this.terminal = terminal;
+    const title = document.createElement('summary');
+    title.textContent = 'View terminal';
+    this.screen = document.createElement('pre');
+    this.screen.className = 'activity-terminal';
+    terminal.append(title, this.screen);
+    terminal.addEventListener('toggle', () => { if (terminal.open) renderTerminal(this.screen, this.nativeScreen || ''); });
+    this.element.append(this.heading, this.events, this.agents, terminal);
+  }
+  update(activity, screen) {
+    const following = !this.history.touching && this.history.element.scrollHeight - this.history.element.scrollTop - this.history.element.clientHeight < 24;
+    activity ||= {state: 'unknown'};
+    this.activity = activity;
+    const children = activity.agents || [];
+    const working = activity.state === 'working' || children.some(child => child.state === 'working');
+    const state = working ? 'working' : activity.state;
+    if (state !== this.state) {
+      this.element.open = working || state === 'unknown' || state === 'stopped';
+      this.state = state;
+    }
+    const labels = {working: 'Working…', ready: 'Activity', idle: 'Activity', stopped: 'Interrupted', failed: 'Failed'};
+    this.heading.textContent = labels[state] || 'Activity unavailable';
+    this.heading.title = activity.reason || 'From the provider’s native lifecycle events';
+    const lines = [...(activity.tools || []), ...(activity.recent || [])].map(tool => tool.name + ' · ' + tool.status);
+    const text = lines.join('\n') || (activity.state === 'unknown' ? activity.reason || 'Live activity could not be confirmed.' : '');
+    if (this.events.textContent !== text) this.events.textContent = text;
+    const liveIds = new Set(children.map(child => child.id));
+    for (const [id, entry] of this.children) {
+      if (!liveIds.has(id)) { entry.node.remove(); this.children.delete(id); }
+    }
+    for (const child of children) {
+      let entry = this.children.get(child.id);
+      if (!entry) {
+        const node = document.createElement('details');
+        const summary = document.createElement('summary');
+        const body = document.createElement('pre');
+        body.textContent = 'Open to read this subagent’s output.';
+        node.append(summary, body);
+        entry = {node, summary, body, child, fetched: 0};
+        this.children.set(child.id, entry);
+        node.addEventListener('toggle', () => { if (node.open) this.loadChild(entry); });
+        this.agents.append(node);
+      }
+      entry.child = child;
+      const status = {working: 'Working…', ready: 'Finished', idle: 'Idle', stopped: 'Interrupted', failed: 'Failed'}[child.state] || 'Activity unavailable';
+      entry.summary.textContent = child.name.split('/').filter(Boolean).pop() + ' · ' + status;
+      if (entry.node.open && Date.now() - entry.fetched > 3000) this.loadChild(entry);
+    }
+    this.nativeScreen = screen;
+    if (this.terminal.open) renderTerminal(this.screen, screen || '');
+    if (following) this.history.element.scrollTop = this.history.element.scrollHeight;
+  }
+  async loadChild(entry) {
+    if (entry.loading) return;
+    entry.loading = true;
+    entry.fetched = Date.now();
+    const target = this.history.target;
+    try {
+      const result = await this.history.post('/api/history', {...target, agent_id: entry.child.id});
+      if (this.history.target !== target || result.identity !== target.identity || !entry.node.isConnected) return;
+      const lines = [];
+      for (const turn of result.turns || []) for (const item of turn.items || []) {
+        if (item.type === 'agentMessage') lines.push(item.text || '');
+        else if (!['userMessage', 'reasoning', 'thinking', 'redacted_thinking'].includes(item.type)) lines.push(item.preview || item.tool || item.type);
+      }
+      const text = lines.join('\n\n') || 'No output recorded yet.';
+      if (entry.body.textContent !== text) entry.body.textContent = text;
+    } catch (error) {
+      if (this.history.target === target) entry.body.textContent = 'Subagent output unavailable: ' + error.message;
+    } finally { entry.loading = false; }
+  }
 }
 
 function renderTerminal(element, screen) {

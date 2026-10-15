@@ -421,6 +421,12 @@ evidence shows **status unknown**; an interruption shows **stopped** and a known
 provider failure shows **error**. Old window status flags do not override this.
 Required-input alerts are not inferred from quiet terminals or error messages.
 
+Chat includes a live activity area below the messages. It shows native working
+status and Codex tool calls and subagents; tap a subagent for its recorded output
+or **View terminal** for the actual terminal capture. Finished activity collapses.
+Reconstructed history does not label live turns completed or interrupted. A lost
+connection shows activity unavailable. Subagent output is read-only.
+
 The notification content shows only the tab name and carries an
 opaque event plus exact conversation identity; reply and terminal text are never
 sent to the browser vendor. Tapping resolves that immutable event after the page

@@ -831,7 +831,7 @@ class Playground:
         self.focus(window_id, pane_id)
         return self.state()
 
-    def conversation_history(self, tab, pane, identity, before=None):
+    def conversation_history(self, tab, pane, identity, before=None, agent_id=None):
         if not isinstance(identity, str) or not identity:
             raise ValueError('An exact conversation identity is required')
         if before is not None and (not isinstance(before, str) or len(before) > 8192):
@@ -839,8 +839,12 @@ class Playground:
         live = self.validate_pane(tab, pane, identity)
         if not live.get('thread_id'):
             raise ValueError('Conversation identity is unavailable; retry when it is identified')
+        if agent_id is not None:
+            activity = self.activity.read(live)
+            if not isinstance(agent_id, str) or live['provider'] != 'codex' or agent_id not in {child['id'] for child in activity.get('agents', [])}:
+                raise ValueError('Subagent does not belong to this conversation')
         binding = read_binding(self.log.parent, live['process']) if live['provider'] == 'claude' else None
-        result = conversation_page(live['provider'], live['thread_id'], binding, before)
+        result = conversation_page(live['provider'], agent_id or live['thread_id'], binding, before)
         self.validate_pane(tab, pane, identity)
         return {'identity': identity, 'turns': display_turns(result.get('turns', []), before), 'before': result.get('nextCursor'),
                 'missing': result.get('history_missing', False)}
@@ -1312,7 +1316,7 @@ def make_server(playground, port=0, public_origin=None):
                     self.send(200, playground.workspace_actions.run(**body))
                     return
                 if self.path == '/api/history':
-                    if set(body) - {'tab', 'pane', 'identity', 'before'} or not {'tab', 'pane', 'identity'} <= set(body):
+                    if set(body) - {'tab', 'pane', 'identity', 'before', 'agent_id'} or not {'tab', 'pane', 'identity'} <= set(body):
                         raise ValueError('An exact conversation is required')
                     self.send(200, playground.conversation_history(**body))
                     return

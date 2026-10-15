@@ -240,6 +240,13 @@
     .history-message td, .history-message th { padding: 4px 8px; border: 1px solid var(--line); }
     .history-message a { color: var(--accent); }
     .history-message details { color: var(--muted); font-size: 12px; }
+    .conversation-activity { max-width: 900px; margin: 12px auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; }
+    .conversation-activity summary { cursor: pointer; padding: 6px 0; }
+    .conversation-activity > summary { color: var(--accent); font-size: 14px; }
+    .conversation-activity > div { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .conversation-activity pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .conversation-activity .activity-terminal { white-space: pre; background: var(--terminal-background); }
+
     .pane-view-toggle { border: 1px solid var(--line); border-radius: 5px; background: none; color: var(--muted); cursor: pointer; }
     #composer {
       position: relative;
@@ -1090,7 +1097,7 @@
         element.querySelector('.pane-view-toggle').textContent = showHistory ? 'Terminal' : 'Chat';
         element.querySelector('.history-view').hidden = !showHistory;
         terminal.hidden = !!showHistory;
-        if (showHistory) element.history.update({tab: tab.id, pane: pane.id, identity: pane.identity}, pane.conversation_history);
+        if (showHistory) element.history.update({tab: tab.id, pane: pane.id, identity: pane.identity}, pane.conversation_history, pane.activity, pane.terminal_ansi);
         terminal.setAttribute('aria-label', `${tab.name} pane ${pane.number} terminal`);
         renderTerminal(terminal, pane.terminal_ansi || '');
         if (activeTab !== state.selected) terminal.scrollTop = terminal.scrollHeight;
@@ -1267,6 +1274,7 @@
         const status = document.querySelector('.rail-status');
         status.dataset.state = 'offline';
         $('connection').textContent = 'Offline';
+        for (const element of paneViews.values()) element.history.live?.update({state: 'unknown', reason: 'Connection lost'}, '');
         visuals.offline();
       }
       setTimeout(poll, 500);

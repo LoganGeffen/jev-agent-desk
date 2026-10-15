@@ -189,6 +189,21 @@ class WorkspaceActionTests(unittest.TestCase):
                 Playground.conversation_details(app, **A, turn_id='turn', item_index=0, item_key='a' * 64)
             read.assert_not_called()
 
+    def test_subagent_history_requires_observed_parent_relationship_and_live_identity(self):
+        pane = {'provider': 'codex', 'thread_id': 'parent', 'process': '100:200'}
+        app = SimpleNamespace(validate_pane=Mock(return_value=pane), activity=Mock())
+        app.activity.read.return_value = {'agents': [{'id': 'child'}]}
+        with patch('server.conversation_page', return_value={'turns': []}) as read:
+            Playground.conversation_history(app, **A, agent_id='child')
+            read.assert_called_once_with('codex', 'child', None, None)
+            for foreign in ('foreign', ['child']):
+                with self.assertRaisesRegex(ValueError, 'does not belong'):
+                    Playground.conversation_history(app, **A, agent_id=foreign)
+            self.assertEqual(read.call_count, 1)
+            app.validate_pane.side_effect = [pane, ValueError('changed during read')]
+            with self.assertRaisesRegex(ValueError, 'changed during read'):
+                Playground.conversation_history(app, **A, agent_id='child')
+
 
 class WorkspaceHTTPTests(unittest.TestCase):
     def setUp(self):

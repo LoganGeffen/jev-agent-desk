@@ -222,6 +222,13 @@ process presence and unversioned tmux status flags are not lifecycle evidence.
 Stopped/failed turns are distinct from reply-ready. Historical originals remain
 readable independently, and no state asserts overall task completion.
 
+The conversation activity area consumes these observations, including bounded
+tool names and parent-observed Codex subagent relationships. Each subagent state
+comes from its own rollout, not a send-message event or the parent's completion.
+`/api/history` accepts an optional `agent_id` only for an observed child of the
+identity-validated parent; it revalidates the pane after the read. Terminal captures
+are rendered on expansion. Late child responses cannot populate a replacement view.
+
 `notifications.js` registers the root-scoped service worker and exposes explicit
 per-device enable/test/disable controls. Tests target the selected agent pane.
 Mute changes revalidate the current exact

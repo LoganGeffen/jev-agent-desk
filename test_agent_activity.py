@@ -51,6 +51,40 @@ class CodexActivityTests(unittest.TestCase):
         self.assertEqual(self.read()['state'], 'working')
         self.assertNotIn('items', repr(self.reader.cache))
 
+    def test_tools_retain_names_only_and_clear_at_native_completion(self):
+        self.append(event('task_started'))
+        def tool(kind, **fields):
+            return json.dumps({'type': 'response_item', 'payload': {'type': kind, 'call_id': 'call', **fields}}) + '\n'
+        self.append(tool('custom_tool_call', name='functions.exec', input='PRIVATE INPUT'))
+        self.assertEqual(self.read()['tools'], [{'name': 'functions.exec', 'status': 'running'}])
+        self.assertNotIn('PRIVATE INPUT', repr(self.reader.cache))
+        self.append(tool('custom_tool_call_output', output='PRIVATE OUTPUT'))
+        self.assertEqual(self.read()['tools'], [])
+        self.assertEqual(self.read()['recent'][0]['status'], 'returned')
+        self.assertNotIn('PRIVATE OUTPUT', repr(self.reader.cache))
+        self.append(tool('function_call', name='unfinished'))
+        self.append(event('turn_aborted', second=12))
+        self.assertEqual(self.read()['tools'], [])
+
+    def test_subagent_uses_own_lifecycle_not_interaction_or_parent_completion(self):
+        child = self.root / ('rollout-' + OTHER + '.jsonl')
+        child.write_text(event('task_started', 'child-turn'))
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('INSERT INTO threads VALUES (?,?)', (OTHER, str(child)))
+        self.append(event('task_started'))
+        self.append(event('item_completed', item={'type': 'SubAgentActivity', 'kind': 'interacted',
+                                                 'agent_thread_id': OTHER, 'agent_path': '/root/check'}))
+        self.append(event('task_complete', second=11, last_agent_message='Parent done'))
+        value = self.read()
+        self.assertEqual(value['state'], 'ready')
+        self.assertEqual(value['agents'][0]['state'], 'working')
+        with child.open('a') as stream:
+            stream.write(event('task_complete', 'child-turn', 12, last_agent_message='Child done'))
+        self.assertEqual(self.read()['agents'][0]['state'], 'ready')
+        self.append(event('item_completed', second=13, item={'type': 'SubAgentActivity', 'kind': 'interacted',
+                                                          'agent_thread_id': OTHER, 'agent_path': '/root/check'}))
+        self.assertEqual(self.read()['agents'][0]['state'], 'ready')
+
     def test_completed_reply_new_turn_and_late_old_close(self):
         self.append(event('task_started'))
         self.append(event('task_complete', second=11, last_agent_message='PRIVATE SYNTHETIC REPLY'))
