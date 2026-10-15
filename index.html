@@ -1414,8 +1414,8 @@
       if (submitting) {
         retainSpeech({id, status: 'Held, not sent — another request is still being processed.', recoverable: true});
         voice.restoreDraft(text, captureTarget, 'Held, not sent — another request is still being processed.', meta.visual_reference || null);
-        showError(new Error('Your new words are saved while another message is being sent.'));
-        voice.speak('Your new words are saved while another message is being sent.', voice.stopReadback('held busy input'));
+        showError(new Error('Your new words are saved, but were not sent because another send is in progress.'));
+        voice.speak('Your new words are saved, but were not sent because another send is in progress.', voice.stopReadback('held busy input'));
         return;
       }
       const generation = voice.stopReadback('new request');
