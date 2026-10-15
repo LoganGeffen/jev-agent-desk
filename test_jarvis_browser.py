@@ -177,10 +177,7 @@ class RealBrowserTests(DisposableDesk):
                 self.assertEqual(self.app.observe()['selected'], self.targets['Notes']['tab'])
                 before = page.evaluate('({presented:presented.length, speechAttempts:spokenAttempts.length, records:speechRecords.length, original:document.getElementById("reply-original").textContent})')
                 observer_release.set()
-                page.wait_for_function("""async (id) => {
-                    await jarvis.refresh();
-                    return jarvis.snapshot.jobs[id]?.status === 'completed';
-                }""", arg=job_id)
+                page.wait_for_function("(id) => jarvis.snapshot.jobs[id]?.status === 'completed'", arg=job_id)
                 page.evaluate('refresh()')
                 after = page.evaluate('({presented:presented.length, speechAttempts:spokenAttempts.length, records:speechRecords.length, original:document.getElementById("reply-original").textContent})')
                 self.assertEqual(after, before)
@@ -288,9 +285,8 @@ class RealBrowserTests(DisposableDesk):
                   [...jarvis.owned.entries()].find(([, ledger]) => ledger.player === savedPlayer)[0]
                 """)
                 page.locator('#stop-readback').click()
-                page.wait_for_function("""async id => {
-                  const state = await (await fetch('/api/jarvis/state')).json();
-                  const playback = state.playbacks[id];
+                page.wait_for_function("""id => {
+                  const playback = jarvis.snapshot?.playbacks?.[id];
                   return playback?.status === 'cancelled' && playback.heard_prefix?.chars === 8;
                 }""", arg=playback_id)
                 ledger = self.app.jarvis.snapshot()['playbacks'][playback_id]
