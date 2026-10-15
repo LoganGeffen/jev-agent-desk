@@ -180,17 +180,15 @@ class ApiTests(DisposableDesk):
             new.join(3)
         self.assertEqual(sorted(result['status'] for result in results), ['cancelled', 'completed'])
 
-    def test_legacy_direct_request_id_deduplicates_actual_terminal_delivery(self):
+    def test_literal_direct_request_id_deduplicates_actual_terminal_delivery(self):
         target = self.targets['Dog Data']
         request = 'literal direct fixture'
-        response = answer('send_message', target['tab'], target['pane'])
-        response['answers'].update(message_start={'choice': '0'}, message_end={'choice': str(len(request))},
-                                   message_form={'choice': 'verbatim'})
-        with patch('server.jev.interpret', return_value=response):
-            first = self.post('/api/request', {'request': request, 'request_id': 'direct'})
-            second = self.post('/api/request', {'request': request, 'request_id': 'direct'})
+        captured = {key: target[key] for key in ('tab', 'pane', 'identity')}
+        with patch('server.jev.interpret', side_effect=AssertionError('Direct input must not route')):
+            first = self.post('/api/request', {'request': request, 'request_id': 'direct', 'capture_target': captured})
+            second = self.post('/api/request', {'request': request, 'request_id': 'direct', 'capture_target': captured})
             with self.assertRaises(HTTPError) as error:
-                self.post('/api/request', {'request': 'different', 'request_id': 'direct'})
+                self.post('/api/request', {'request': 'different', 'request_id': 'direct', 'capture_target': captured})
         self.assertEqual(error.exception.code, 400)
         self.assertEqual(first['outcome'], 'ok', first)
         self.assertEqual(second['delivery'], 'submitted')

@@ -363,19 +363,24 @@ An uncertain edit never retries automatically. Claude edits and edits containing
 attachments are not supported. Editing requires known model/effort, paginated
 Codex history and an idle empty terminal composer.
 
-Literal commands such as `/clear` and natural requests such as “clear the ML chat”
-share execution in Pane and Jarvis modes. Unnamed commands use the selected pane
-in Pane mode and the captured subject in Jarvis. Supported commands are `/clear`,
-`/compact`, `/status`, `/model`, plus Codex `/new` and Claude `/help`. Unsupported
-commands fail explicitly. Clear waits for a new conversation identity; other
-commands report input submission and may require interaction in Terminal.
+**Pane** sends your entire typed or dictated message literally to its captured
+conversation, including questions, pasted command output, routing words and slash
+commands. It does not ask Jev to interpret, rewrite or choose a recipient. A changed
+or unresolved conversation blocks delivery. Lost or uncertain sends never retry
+automatically. Native slash commands are handled by the agent itself.
+
+Use **Jarvis** for natural requests such as “clear the ML chat,” listing tabs,
+reading replies, or routing a message to another agent. Its supported commands
+are `/clear`, `/compact`, `/status`, `/model`, plus Codex `/new` and Claude `/help`.
+Unsupported commands fail explicitly. Clear waits for a new conversation identity;
+other commands report input submission and may require interaction in Terminal.
 
 **New tab** opens agent settings with known provider, model, reasoning effort and
 working directory inherited. Explicit overrides are supported; unknown settings
 or unsupported model/effort combinations block launch. A provider change requires
 compatible settings. New tabs report success only after a fresh conversation is
 observed. Claude settings must be explicit when the current session cannot prove
-them. Natural launch requests use the same checks; use exact supported model names.
+them. In Jarvis mode, natural launch requests use the same checks; use exact supported model names.
 
 Terminal text stays at 12 px and wraps wide lines, paths and identifiers inside
 the pane. Original text, whitespace and
@@ -386,7 +391,7 @@ the underlying tmux workspace. Alternate-screen applications may keep older
 conversation history internally; the terminal view forwards edge swipes as page
 navigation. Use Chat for smooth history scrolling.
 
-Replies wait quietly. Ask **“What's next?”** for one recommended chat and its
+Replies wait quietly. In Jarvis mode, ask **“What's next?”** for one recommended chat and its
 reason, or **“What else is ready?”** for a rundown. Agents explicitly needing
 your input come first, followed by unread completed replies in arrival order.
 **“Go there”** selects the recommended pane; **“Read it”** selects it and reads

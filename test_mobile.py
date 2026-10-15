@@ -122,13 +122,17 @@ class MobileTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{server.server_port}'
-        body = {'request': 'fixture', 'request_id': 'fixture-request-id'}
-        with urlopen(Request(url + '/api/request', data=json.dumps(body).encode(),
-                             headers={'Content-Type': 'application/json'})) as response:
-            event = json.load(response)
+        pane = self.app.panes(self.window)[0]
+        body = {'request': 'fixture', 'request_id': 'fixture-request-id',
+                'capture_target': {'tab': self.window, 'pane': pane['id'], 'identity': pane['identity']}}
+        with self.assertRaises(HTTPError) as rejected:
+            urlopen(Request(url + '/api/request', data=json.dumps(body).encode(),
+                            headers={'Content-Type': 'application/json'}))
+        event = json.load(rejected.exception)
         with urlopen(url + '/api/state') as response:
             latest = json.load(response)['latest']
-        self.assertEqual(event['outcome'], 'ok')
+        self.assertEqual(event['outcome'], 'error')
+        self.assertEqual(event['delivery'], 'not_attempted')
         self.assertEqual(event['request_id'], body['request_id'])
         self.assertEqual(latest['request_id'], body['request_id'])
 

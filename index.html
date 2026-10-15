@@ -530,7 +530,7 @@
         </button>
             <div id="mode-switch" role="group" aria-label="Message destination">
               <button id="mode-jarvis" type="button" aria-pressed="true">Jarvis</button>
-              <button id="mode-pane" type="button" aria-pressed="false">Pane</button>
+              <button id="mode-pane" type="button" aria-pressed="false" title="Send exact text to the selected pane">Pane</button>
             </div>
             <button type="submit">Send</button>
           </div>
@@ -1410,12 +1410,12 @@
       const tab = currentState?.tabs.find(tab => tab.id === captureTarget?.tab);
       const pane = tab?.panes.find(pane => pane.id === captureTarget?.pane);
       retainSpeech({id, text, source, target: captureTarget, visualReference: meta.visual_reference,
-        targetLabel: tab && pane ? `${tab.name} · pane ${pane.number}` : 'Captured conversation', status: 'Waiting to interpret'});
+        targetLabel: tab && pane ? `${tab.name} · pane ${pane.number}` : 'Captured conversation', status: 'Sending exact text'});
       if (submitting) {
         retainSpeech({id, status: 'Held, not sent — another request is still being processed.', recoverable: true});
         voice.restoreDraft(text, captureTarget, 'Held, not sent — another request is still being processed.', meta.visual_reference || null);
-        showError(new Error('Your new words are saved, but were not sent while Jev was busy.'));
-        voice.speak('Your new words are saved, but were not sent while Jev was busy.', voice.stopReadback('held busy input'));
+        showError(new Error('Your new words are saved while another message is being sent.'));
+        voice.speak('Your new words are saved while another message is being sent.', voice.stopReadback('held busy input'));
         return;
       }
       const generation = voice.stopReadback('new request');

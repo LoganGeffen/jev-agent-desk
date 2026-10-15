@@ -415,6 +415,54 @@ class Playground:
                 "voice": self.voice.config(),
                 "api_configured": bool(os.environ.get("TYPESAFE_API_KEY"))}
 
+    def submit_literal(self, request, source='typed', request_id=None, capture_target=None):
+        if not isinstance(request, str) or not request.strip():
+            raise ValueError('A nonempty message is required')
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError('A nonempty request ID is required')
+        if (not isinstance(capture_target, dict) or set(capture_target) != {'tab', 'pane', 'identity'}
+                or not all(isinstance(value, str) and value for value in capture_target.values())):
+            raise ValueError('Select an exact conversation before sending')
+        with self.lock:
+            fingerprint = copy.deepcopy((request, source, capture_target, 'literal'))
+            if request_id in self.direct_inputs:
+                if self.direct_inputs[request_id] != fingerprint:
+                    raise ValueError('Request ID already belongs to different submitted input')
+                return copy.deepcopy(self.direct_receipts[request_id])
+            self.direct_inputs[request_id] = fingerprint
+            started = time.monotonic()
+            event = {'timestamp': datetime.now(timezone.utc).isoformat(), 'request': request,
+                     'source': source, 'request_id': request_id, 'action': 'send_message',
+                     'input': None, 'response': None, 'target': capture_target['tab'],
+                     'pane': capture_target['pane'], 'before': None, 'after': None,
+                     'outcome': 'error', 'error': None, 'delivery': 'not_attempted'}
+            try:
+                with self.input_lock:
+                    pane = self.validate_pane(capture_target['tab'], capture_target['pane'], capture_target['identity'])
+                    if not pane.get('agent') or not pane.get('thread_id'):
+                        raise ValueError('This pane has no confirmed agent conversation. Your words were not sent.')
+                    before = self.observe(capture_target['tab'], capture_target['pane'])
+                    event['before'] = before
+                    tab = next(tab for tab in before['tabs'] if tab['id'] == capture_target['tab'])
+                    event['target_label'] = f"{tab['name']} · pane {pane['number']}"
+                    agent = {'socket': self.socket, 'window_id': capture_target['tab'], 'pane_id': pane['id'],
+                             'view_session': self.view_session, 'preserve_focus': self.independent_selection,
+                             'run_dir': str(self.log.parent),
+                             **{key: pane[key] for key in ('provider', 'thread_id', 'process', 'workspace')}}
+                    event['execution'] = {'agent': agent, 'text': request, 'source_text': request, 'form': 'verbatim'}
+                    self.deliver(agent, request, event)
+                    event['outcome'] = 'ok'
+            except Exception as error:
+                event['error'] = f'{type(error).__name__}: {error}'
+            try:
+                event['after'] = self.observe()
+            except Exception as error:
+                event['observation_error'] = str(error)
+            event['elapsed_ms'] = round((time.monotonic() - started) * 1000)
+            self.direct_receipts[request_id] = copy.deepcopy(event)
+            self.record_event(event)
+            return event
+
     def submit(self, request, source="typed", request_id=None, capture_target=None, on_text=None,
                attention_target=None):
         if request_id is not None and (not isinstance(request_id, str) or not request_id):
@@ -1393,10 +1441,8 @@ def make_server(playground, port=0, public_origin=None):
             if streaming:
                 self.start_stream()
             try:
-                event = playground.submit(request, "voice" if body.get("source") == "voice" else "typed",
-                                          request_id=body.get("request_id"), capture_target=body.get('capture_target'),
-                                          attention_target=body.get('attention_target'),
-                                          on_text=(lambda text: self.stream_event('text', text=text)) if streaming else None)
+                event = playground.submit_literal(request, "voice" if body.get("source") == "voice" else "typed",
+                                                  request_id=body.get("request_id"), capture_target=body.get('capture_target'))
             except ValueError as error:
                 if streaming:
                     self.stream_event('error', error=str(error))

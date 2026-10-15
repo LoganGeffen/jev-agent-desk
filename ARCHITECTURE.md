@@ -171,7 +171,7 @@ which is reported uncertain.
 recovers a lost POST response by polling `/api/jarvis/state` (10 s grace, 90 s
 deadline) and says the message "was not resent". The destination switch in
 `index.html` defaults to Jarvis; Pane mode calls `supersedeForDirect()` and uses
-the legacy request path. The + button carries the selected tab, pane and process
+the literal request path. The + button carries the selected tab, pane and process
 identity to `/api/tabs/create`; the server validates it and uses that pane's
 current directory. A typed, standalone `codex` or `claude` in a shell pane goes
 through `/api/panes/start-agent` with the same exact identity. Codex starts with
@@ -244,26 +244,18 @@ push database and never updates the audio heard ledger.
 
 ## Direct path
 
-The browser's typed and spoken drafts converge on `/api/request`. It sends exact
-composed text, a request ID, and a captured tab/pane/process-conversation identity.
-`server.py` snapshots available targets, calls Jev, validates the selected action
-and identity, then dispatches through `session_actions.py` to a provider adapter.
-Jev first distinguishes a direct message, a routed message, inspection of existing
-output, a workspace command, or cancelled input. Direct messages use the selected pane and complete original
-text without boundary extraction. Routed messages resolve the recipient and text;
-inspection chooses readback or an observer answer and identifies the subject session;
-unnamed references use the selected session, while named references get a separate
-lookup with no selected-session fallback.
-workspace commands choose an action without message extraction. Code restricts each
-branch's available actions. A delivery judgment rejects unsupported outer action
-sequences without treating commands inside a message as workspace commands. Close requests
-retain clarification and explicit confirmation paths.
+Pane-mode typed and spoken drafts converge on `/api/request`. The endpoint uses
+`Playground.submit_literal`: validate the captured tab/pane/conversation, then send
+the complete unchanged text through `session_actions.py`. It never calls Jev,
+extracts message boundaries, selects another recipient, or executes observer or
+workspace actions. Native slash commands pass through as literal input.
 
-`jev.py` builds typed choice questions for action, recipient, pane and message
-boundaries. Message delivery slices the selected span from the original request;
-`message_delivery.py` only generates text when indirect-question grammar requires
-conversion. Literal messages retain their wording. Jev probabilities are model
-judgments, not measured guarantees.
+Request IDs deduplicate exact input and target, including uncertain attempts.
+Missing or changed identities fail without falling back to current selection.
+Provider adapters revalidate identity before paste and Enter. Receipt polling,
+visual references and reply watching retain the same delivery path. The historical
+`Playground.submit` interpreter remains for compatibility tests; the browser does
+not call it. Natural-language routing belongs to Jarvis mode.
 
 `codex_actions.py` reads history through Codex app-server and sends via tmux.
 It reads thread metadata first: legacy histories use `thread/read`, while paginated
