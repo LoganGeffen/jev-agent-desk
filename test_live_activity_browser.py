@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 
 class LiveActivityBrowserTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class LiveActivityBrowserTests(unittest.TestCase):
             page.evaluate('finishChild({identity:"one", turns:[{items:[{type:"agentMessage",text:"Checked actual files"}]}]})')
             page.wait_for_function('document.querySelector(".conversation-activity").textContent.includes("Checked actual files")')
             page.get_by_text('View terminal', exact=True).click()
-            self.assertIn('Native Working…', page.locator('.activity-terminal').inner_text())
+            expect(page.locator('.activity-terminal')).to_have_text('Native Working…')
             page.evaluate('''() => {
               reader.element.scrollTop = 100;
               window.topBefore = reader.element.scrollTop;
