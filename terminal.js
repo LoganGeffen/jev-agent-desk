@@ -323,7 +323,9 @@ class ConversationActivity {
     const labels = {working: 'Working…', ready: 'Activity', idle: 'Activity', stopped: 'Interrupted', failed: 'Failed'};
     this.heading.textContent = labels[state] || 'Activity unavailable';
     this.heading.title = activity.reason || 'From the provider’s native lifecycle events';
-    const lines = [...(activity.tools || []), ...(activity.recent || [])].map(tool => tool.name + ' · ' + tool.status);
+    const lines = (activity.tools || [])
+      .filter(tool => !['sleep', 'wait', 'wait_agent', 'yield_control'].includes(tool.name.split(/[./]|__/).pop()))
+      .map(tool => tool.name + ' · ' + tool.status);
     const text = lines.join('\n') || (activity.state === 'unknown' ? activity.reason || 'Live activity could not be confirmed.' : '');
     if (this.events.textContent !== text) this.events.textContent = text;
     const liveIds = new Set(children.map(child => child.id));

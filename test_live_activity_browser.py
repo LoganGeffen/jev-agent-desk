@@ -20,13 +20,18 @@ class LiveActivityBrowserTests(unittest.TestCase):
                   items: [{type: 'userMessage', content: [{type:'text', text:'long history '.repeat(600)}]}]}]});
               });
               window.target = {tab:'@1', pane:'%1', identity:'one'};
-              window.activity = {state:'working', turn_id:'turn', tools:[{name:'read_file',status:'running'}],
+              window.activity = {state:'working', turn_id:'turn',
+                tools:[{name:'read_file',status:'running'}, {name:'clock.sleep',status:'running'}],
+                recent:[{name:'sleep',status:'returned'}, {name:'exec',status:'returned'}],
                 agents:[{id:'child',name:'/root/checks',state:'working'}]};
               reader.update(target, true, activity, 'Native Working…');
             }''')
             page.wait_for_function('reader.loaded')
             self.assertEqual(page.locator('.conversation-activity > summary').inner_text(), 'Working…')
             self.assertNotIn('Turn:', page.locator('#history').inner_text())
+            self.assertIn('read_file · running', page.locator('.conversation-activity').inner_text())
+            self.assertNotIn('sleep', page.locator('.conversation-activity').inner_text())
+            self.assertNotIn('returned', page.locator('.conversation-activity').inner_text())
             self.assertIn('checks · Working…', page.locator('.conversation-activity').inner_text())
             page.get_by_text('checks · Working…', exact=True).click()
             page.wait_for_function('requests.some(request => request.agent_id === "child")')
