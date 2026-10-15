@@ -46,7 +46,7 @@ class ConversationHistory {
     const request = {};
     this.loading = request;
     this.lastFetch = Date.now();
-    this.status.textContent = older ? 'Loading earlier messages…' : this.loaded ? '' : 'Loading conversation…';
+    if (older || !this.loaded) this.status.textContent = older ? 'Loading earlier messages…' : 'Loading conversation…';
     try {
       const result = await this.post('/api/history', {...target, ...(older ? {before: this.before} : {})});
       if (this.target !== target || !this.element.isConnected || result.identity !== target.identity) return;
@@ -74,7 +74,10 @@ class ConversationHistory {
     } catch (error) {
       if (this.target === target) this.status.textContent = 'History unavailable: ' + error.message;
     } finally {
-      if (this.loading === request) this.loading = null;
+      if (this.loading === request) {
+        this.loading = null;
+        if (!this.element.isConnected) this.lastFetch = 0;
+      }
     }
   }
   renderTurn(node, turn) {

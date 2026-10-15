@@ -1016,22 +1016,35 @@
       return document.querySelector('.pane.active .terminal');
     }
 
+    const paneViews = new Map();
+
     function renderPanes(state) {
       const tab = state.tabs.find(tab => tab.id === state.selected);
       const container = $('panes');
       const ids = tab.panes.map(pane => pane.id);
+      const livePanes = new Map(state.tabs.flatMap(tab => tab.panes.map(pane => [tab.id + ':' + pane.id, pane])));
+      for (const [key, element] of paneViews) {
+        const live = livePanes.get(key);
+        if (!live || element.querySelector('.terminal').dataset.identity !== live.identity) {
+          element.remove();
+          paneViews.delete(key);
+        }
+      }
       for (const element of [...container.children]) {
         if (!ids.includes(element.dataset.pane)) {
+          element.savedScroll = [...element.querySelectorAll('.history-view, .terminal')].map(view => view.scrollTop);
           element.remove();
         }
       }
       const width = Math.max(...tab.panes.map(pane => pane.left + pane.width));
       const height = Math.max(...tab.panes.map(pane => pane.top + pane.height));
       for (const pane of tab.panes) {
-        let element = [...container.children].find(element => element.dataset.pane === pane.id);
+        const key = tab.id + ':' + pane.id;
+        let element = paneViews.get(key);
         if (!element) {
           element = document.createElement('section');
           element.dataset.pane = pane.id;
+          paneViews.set(key, element);
           element.innerHTML = '<div class="pane-heading"><button class="pane-label" type="button"></button><button class="pane-view-toggle" type="button" hidden>Terminal</button><button class="pane-close" type="button">×</button></div><pre class="terminal" tabindex="0" role="region"></pre><div class="history-view" tabindex="0" role="region" aria-label="Conversation history" hidden></div>';
           element.history = new ConversationHistory(element.querySelector('.history-view'), post);
           element.querySelector('.pane-view-toggle').onclick = () => {
@@ -1045,6 +1058,12 @@
             await post('/api/scroll', payload);
             await refresh();
           }, showError, detail => voice.log('pipeline', {stage: 'terminal_scroll', ...detail}));
+        }
+        if (!element.isConnected) {
+          container.append(element);
+          [...element.querySelectorAll('.history-view, .terminal')].forEach((view, index) => {
+            view.scrollTop = element.savedScroll?.[index] || 0;
+          });
         }
         element.className = 'pane' + (pane.active ? ' active' : '');
         Object.assign(element.style, {left: `${pane.left / width * 100}%`, top: `${pane.top / height * 100}%`, width: `${pane.width / width * 100}%`, height: `${pane.height / height * 100}%`});
