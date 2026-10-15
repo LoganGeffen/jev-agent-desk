@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import zipfile
 
+from unittest.mock import patch
+
 from playwright.sync_api import sync_playwright
 from server import make_server, tmux
 from test_jarvis_tools import DisposableDesk
@@ -78,6 +80,56 @@ class VisualHttpFixture(DisposableDesk):
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+
+class VisualLaunchIntegrationTests(VisualHttpFixture):
+    def test_new_tab_worker_publishes_to_its_own_workspace(self):
+        import agent_launch
+        from desk_mcp import Bridge
+        from managed_provider import read_record
+
+        binary = self.root / 'bin'
+        binary.mkdir()
+        fixture = self.root / 'provider.py'
+        fixture.write_text(
+            'import ctypes, json, pathlib, sys, time\n'
+            "ctypes.CDLL(None).prctl(15, b'codex', 0, 0, 0)\n"
+            "pathlib.Path('argv.json').write_text(json.dumps(sys.argv[1:]))\n"
+            'time.sleep(60)\n')
+        (binary / 'codex').write_text('#!/bin/bash\nexec -a codex ' + shlex.join([sys.executable, str(fixture)]) + ' "$@"\n')
+        (binary / 'codex').chmod(0o700)
+        (self.root / 'url').write_text(self.url)
+        source = {key: self.targets['Dog Data'][key] for key in ('tab', 'pane', 'identity')}
+        settings = {'provider': 'codex', 'model': 'synthetic', 'effort': 'high', 'cwd': str(self.root)}
+        command = agent_launch.provider_command
+        def synthetic_command(*args):
+            return ['env', 'PATH=' + str(binary) + ':' + os.environ['PATH'], *command(*args)]
+        with patch('agent_launch.validate_model_settings', return_value={}), patch('agent_launch.provider_command', side_effect=synthetic_command):
+            launched = agent_launch.launch_agent(self.app, source, settings, name='Publishing fixture')
+        self.assertTrue(launched['ok'], launched)
+        records = list((self.root / 'managed-sessions').glob('*.json'))
+        self.assertEqual(len(records), 1)
+        identifier = records[0].stem
+        record = read_record(self.root, identifier)
+        self.assertEqual(record['tab'], launched['tab'])
+        self.assertEqual(record['pane'], launched['pane'])
+        deadline = time.monotonic() + 3
+        while not (self.root / 'argv.json').exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue((self.root / 'argv.json').exists(), tmux(self.socket, 'capture-pane', '-p', '-t', launched['pane']))
+        argv = json.loads((self.root / 'argv.json').read_text())
+        self.assertTrue(any('desk_mcp.py' in value for value in argv))
+        self.assertIn('model_reasoning_effort="high"', argv)
+        bridge = Bridge(self.root, identifier)
+        saved = bridge.call('desk_create_document', {
+            'path': 'visual.html', 'title': 'Launch publication', 'text': '<h1>Published from new tab</h1>'})
+        raw, _ = self.get('/api/visual/workspace?' + urlencode({'tab': launched['tab']}))
+        workspace = json.loads(raw)
+        self.assertEqual(workspace['workspace_id'], saved['workspace_id'])
+        version = workspace['creations'][0]['versions'][0]
+        self.assertEqual(version['id'], saved['version_id'])
+        self.assertEqual(self.get(version['content_url'])[0], b'<h1>Published from new tab</h1>')
+        self.assertEqual(self.workspace()['creations'], [])
 
 
 class VisualHttpIntegrationTests(VisualHttpFixture):

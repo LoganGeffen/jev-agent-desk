@@ -753,6 +753,12 @@ same loopback/private-proxy access boundary as Desk; it is not a multi-user serv
 
 ## Managed browser, outputs and app sessions
 
+New agent tabs created in Desk include its browser and publishing tools, with
+the chosen model and effort and the provider's existing permission settings.
+Files appear in Visuals after the agent publishes them successfully; saving a
+local file alone does not publish it. Existing unconnected conversations are
+not retroactively connected by creating a new tab.
+
 After starting Desk against a disposable or chosen tmux session, provision a new
 managed agent once. Ordinary requests inside that conversation then use the Desk
 browser/output tools automatically:

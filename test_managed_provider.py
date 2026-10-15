@@ -76,6 +76,19 @@ class PublicationTests(unittest.TestCase):
             self.assertNotIn('--tools', argv)
         self.assertIn('--no-daemon', provider_command('codex', '/tmp/run', 'a' * 32, '/tmp/socket'))
 
+    def test_new_tab_tools_preserve_provider_settings_and_effort(self):
+        for provider in ('claude', 'codex'):
+            argv = provider_command(provider, '/tmp/run', 'a' * 32, '/tmp/socket',
+                                    model='test-model', effort='high', inherit_settings=True)
+            self.assertTrue(any('desk_mcp.py' in arg for arg in argv))
+            self.assertEqual(argv[argv.index('--model') + 1], 'test-model')
+            for option in ('--sandbox', '--ask-for-approval', '--permission-mode', '--setting-sources', '--strict-mcp-config'):
+                self.assertNotIn(option, argv)
+            if provider == 'codex':
+                self.assertIn('model_reasoning_effort="high"', argv)
+            else:
+                self.assertEqual(argv[argv.index('--effort') + 1], 'high')
+
     def test_bridge_cannot_capture_outside_workspace_or_symlink(self):
         root = self.fixture.root
         identifier = 'a' * 32

@@ -6,10 +6,11 @@ import shlex
 import sqlite3
 import subprocess
 import time
+import sys
+import uuid
 
-from claude_runtime import hook_settings
 from codex_actions import tmux
-from pane_identity import CODEX_IDENTITY_CONFIG, thread_metadata
+from pane_identity import thread_metadata
 from model_stream import ModelConnection
 
 
@@ -115,16 +116,12 @@ def resolve_settings(playground, source, overrides=None):
 
 
 def provider_command(settings, socket, run_dir):
-    if settings['provider'] == 'codex':
-        argv = ['codex', '--no-daemon', '--no-alt-screen', *CODEX_IDENTITY_CONFIG,
-                '--model', settings['model'], '-c', 'model_reasoning_effort=' + json.dumps(settings['effort'])]
-    elif settings['provider'] == 'claude':
-        argv = ['claude', '--settings', json.dumps(hook_settings(socket, run_dir)),
-                '--model', settings['model'], '--effort', settings['effort']]
-    else:
+    if settings['provider'] not in ('codex', 'claude'):
         raise ValueError('Choose Codex or Claude')
-    return ['env', '-u', 'TYPESAFE_API_KEY', '-u', 'ELEVENLABS_API_KEY',
-            '-u', 'ELEVENLABS_VOICE_ID', '-u', 'CLAUDECODE', *argv]
+    return [sys.executable, str(Path(__file__).with_name('managed_session.py')), '--worker', '--inherit-settings',
+            '--socket', socket, '--run-dir', str(run_dir), '--session-id', uuid.uuid4().hex,
+            '--provider', settings['provider'], '--workspace', settings['cwd'],
+            '--model', settings['model'], '--effort', settings['effort']]
 
 
 def launch_agent(playground, source, overrides=None, name=None, group_id=None, timeout=15):
