@@ -319,15 +319,26 @@ class PlaygroundTests(unittest.TestCase):
         with urlopen(url) as page:
             self.assertIn(b'Terminal panes', page.read())
         self.response = answer("select_tab", self.tabs[1]["id"])
+        selected = self.app.observe()['selected']
         request = Request(url + "/api/request", data=b'{"request":"Go to Beta"}',
                           headers={"Content-Type": "application/json"})
-        with urlopen(request) as response:
-            event = json.load(response)
-        self.assertEqual(event["after"]["selected"], self.tabs[1]["id"])
+        with self.assertRaises(HTTPError) as missing_target:
+            urlopen(request)
+        self.assertEqual(missing_target.exception.code, 400)
+        pane = self.tabs[0]['panes'][0]
+        request.data = json.dumps({'request': 'Go to Beta', 'request_id': 'literal',
+                                  'capture_target': {'tab': self.tabs[0]['id'], 'pane': pane['id'],
+                                                     'identity': pane['identity']}}).encode()
+        with self.assertRaises(HTTPError) as no_agent:
+            urlopen(request)
+        self.assertEqual(no_agent.exception.code, 502)
+        event = json.load(no_agent.exception)
+        self.assertEqual(event['delivery'], 'not_attempted')
+        self.assertEqual(event["after"]["selected"], selected)
         with urlopen(url + "/api/state") as response:
             state = json.load(response)
         self.assertEqual(state["latest"], event)
-        self.assertEqual(state["selected"], self.tabs[1]["id"])
+        self.assertEqual(state["selected"], selected)
         direct = Request(url + "/api/select", data=json.dumps({"tab": self.tabs[0]["id"]}).encode(),
                          headers={"Content-Type": "application/json"})
         with urlopen(direct) as response:
@@ -340,12 +351,12 @@ class PlaygroundTests(unittest.TestCase):
                            headers={"Content-Type": "application/json"})
         with urlopen(terminal) as response:
             self.assertEqual(json.load(response)["selected"], self.tabs[0]["id"])
-        self.assertEqual(len(self.payloads), 2)
+        self.assertEqual(len(self.payloads), 0)
         request.add_header("Origin", "https://unrelated.example")
         with self.assertRaises(HTTPError) as error:
             urlopen(request)
         self.assertEqual(error.exception.code, 403)
-        self.assertEqual(len(self.payloads), 2)
+        self.assertEqual(len(self.payloads), 0)
 
 
 class ActivityStateTests(unittest.TestCase):
