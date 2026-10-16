@@ -32,7 +32,7 @@ class LiteralPaneTests(DisposableDesk):
 
     def test_browser_pane_mode_sends_the_captured_text_without_interpretation(self):
         import threading
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import expect, sync_playwright
         from server import make_server
 
         server = make_server(self.app)
@@ -59,6 +59,16 @@ class LiteralPaneTests(DisposableDesk):
             self.assertIn(text.replace('\n', '\r').encode(), self.received('Dog Data'))
             self.assertEqual(self.received('Controller'), b'')
             self.app.evaluate.assert_not_called()
+            page.wait_for_function('!submitting')
+            page.locator('#phone-text').fill('/status')
+            with page.expect_response(lambda response: response.url.endswith('/api/request')) as response:
+                page.locator('#phone-input [type=submit]').click()
+            self.assertEqual(response.value.json()['delivery'], 'submitted')
+            terminal = page.locator('.activity-terminal').locator('..')
+            expect(terminal).to_be_visible()
+            expect(terminal).to_have_attribute('open', '')
+            self.assertIn(b'/status', self.received('Dog Data'))
+            self.assertEqual(self.received('Controller'), b'')
             browser.close()
 
     def test_missing_and_stale_targets_never_fall_back_to_selected_pane(self):

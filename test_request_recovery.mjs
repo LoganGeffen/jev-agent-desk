@@ -17,7 +17,7 @@ function setup(fetch, refresh = () => new Promise(() => {})) {
     retainSpeech(record) { records.set(record.id, {...records.get(record.id), ...record}); }, requestOutcome: result => result.error || result.action,
  crypto: {randomUUID: () => Math.random().toString()},
     voice: {stopReadback() { return 1; }, speak() {}, restoreDraft(...args) { restored.push(args); return true; }},
-    currentState: null, attentionTarget: null,
+    currentState: null, attentionTarget: null, paneViews: new Map(),
     retainOutcome(id, result) { context.retainSpeech({id, status: result.error || result.action, delivery: result.delivery}); },
     targetName: () => 'fixture',
   });

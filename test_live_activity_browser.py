@@ -88,6 +88,33 @@ class LiveActivityBrowserTests(unittest.TestCase):
             self.assertEqual(page.evaluate('requests.length'), 4)
             browser.close()
 
+    def test_slash_command_reveals_live_terminal_only_for_its_recipient(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content('<div id="history"></div>')
+            page.add_script_tag(path=str(Path(__file__).with_name('terminal.js')))
+            page.evaluate('''() => {
+              window.target = {tab:'@1',pane:'%1',identity:'one'};
+              window.reader = new ConversationHistory(document.querySelector('#history'), (url, body) =>
+                Promise.resolve({identity:body.identity, turns:[]}));
+              reader.update(target, true, {state:'ready'}, 'Native prompt');
+              reader.showCommandOutput({...target,identity:'old'}, '/status', 'submitted');
+              reader.showCommandOutput(target, '/status', 'not_attempted');
+              reader.showCommandOutput(target, 'Explain /status', 'submitted');
+            }''')
+            self.assertFalse(page.locator('.conversation-activity').evaluate('node => node.open'))
+            page.evaluate("reader.showCommandOutput(target, '/status', 'submitted')")
+            expect(page.locator('.activity-terminal')).to_be_visible()
+            page.evaluate("reader.update(target, true, {state:'working'}, 'Status: synthetic model')")
+            page.evaluate("reader.update(target, true, {state:'ready'}, 'Status: synthetic model; context 42%')")
+            expect(page.locator('.activity-terminal')).to_have_text('Status: synthetic model; context 42%')
+            expect(page.locator('.activity-terminal')).to_be_visible()
+            self.assertEqual(page.locator('.history-turn').count(), 0)
+            page.evaluate("reader.update({...target,identity:'replacement'}, true, {state:'ready'}, 'New conversation')")
+            self.assertFalse(page.locator('.conversation-activity').evaluate('node => node.open'))
+            browser.close()
+
     def test_late_subagent_response_cannot_fill_replacement_conversation(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()

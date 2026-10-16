@@ -49,6 +49,15 @@ class ConversationHistory {
     const interval = this.live.state === 'working' ? 1000 : 3000;
     if (changed || Date.now() - this.lastFetch >= interval) this.load(false);
   }
+  showCommandOutput(target, text, delivery) {
+    if (!['submitted', 'uncertain'].includes(delivery) || !/^\/[a-z][\w-]*(?:[ \t][^\r\n]*)?$/i.test(text.trim()) ||
+        !this.live || !target || target.tab !== this.target.tab || target.pane !== this.target.pane || target.identity !== this.identity) return;
+    this.live.element.open = true;
+    this.live.commandOutput = true;
+    this.live.terminal.open = true;
+    renderTerminal(this.live.screen, this.live.nativeScreen || '');
+    if (this.element.isConnected) this.element.scrollTop = this.element.scrollHeight;
+  }
   async load(older) {
     if (this.loading || !this.target || this.element.hidden || !this.element.isConnected) return;
     const target = this.target;
@@ -319,7 +328,7 @@ class ConversationActivity {
     const working = activity.state === 'working' || children.some(child => child.state === 'working');
     const state = working ? 'working' : activity.state;
     if (state !== this.state) {
-      this.element.open = working || state === 'unknown' || state === 'stopped';
+      this.element.open = (this.commandOutput && this.terminal.open) || working || state === 'unknown' || state === 'stopped';
       this.state = state;
     }
     const labels = {working: 'Working…', ready: 'Activity', idle: 'Activity', stopped: 'Interrupted', failed: 'Failed'};

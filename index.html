@@ -1451,6 +1451,7 @@
         const attentionAction = ['recommend_next', 'list_ready', 'select_recommended', 'read_recommended'].includes(result.action);
         const recoverable = !attentionAction && result.delivery === 'not_attempted' && (result.outcome === 'error' || result.action === 'no_action');
         retainOutcome(id, result);
+        paneViews.get(captureTarget?.tab + ':' + captureTarget?.pane)?.history.showCommandOutput(captureTarget, text, result.delivery);
         if (result.outcome === 'ok') {
           const requestedView = result.view_target || (['select_tab', 'select_recommended', 'read_recommended'].includes(result.action) ? result.recommendation || {tab: result.target, pane: result.pane} : null);
           if (requestedView?.tab) await selectTab(requestedView.tab, requestedView.pane);
