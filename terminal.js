@@ -44,8 +44,10 @@ class ConversationHistory {
       this.loading = null;
       this.lastFetch = 0;
     }
+    const changed = this.live.activity?.state !== activity?.state;
     this.live.update(activity, screen);
-    if (Date.now() - this.lastFetch > 3000) this.load(false);
+    const interval = this.live.state === 'working' ? 1000 : 3000;
+    if (changed || Date.now() - this.lastFetch >= interval) this.load(false);
   }
   async load(older) {
     if (this.loading || !this.target || this.element.hidden || !this.element.isConnected) return;
@@ -345,10 +347,11 @@ class ConversationActivity {
         node.addEventListener('toggle', () => { if (node.open) this.loadChild(entry); });
         this.agents.append(node);
       }
+      const changed = entry.child.state !== child.state;
       entry.child = child;
       const status = {working: 'Working…', ready: 'Finished', idle: 'Idle', stopped: 'Interrupted', failed: 'Failed'}[child.state] || 'Activity unavailable';
       entry.summary.textContent = child.name.split('/').filter(Boolean).pop() + ' · ' + status;
-      if (entry.node.open && Date.now() - entry.fetched > 3000) this.loadChild(entry);
+      if (entry.node.open && (changed || Date.now() - entry.fetched >= (child.state === 'working' ? 1000 : 3000))) this.loadChild(entry);
     }
     this.nativeScreen = screen;
     if (this.terminal.open) renderTerminal(this.screen, screen || '');

@@ -54,6 +54,40 @@ class LiveActivityBrowserTests(unittest.TestCase):
             self.assertIn('Activity unavailable', page.locator('.conversation-activity').inner_text())
             self.assertIn('Connection lost', page.locator('.conversation-activity').inner_text())
 
+    def test_active_history_refreshes_faster_and_completion_refreshes_immediately(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.set_content('<div id="history"></div>')
+            page.add_script_tag(path=str(Path(__file__).with_name('terminal.js')))
+            page.evaluate('''() => {
+              window.now = 10000; Date.now = () => now;
+              window.requests = [];
+              window.reader = new ConversationHistory(document.querySelector('#history'), (url, body) => {
+                requests.push(body);
+                return new Promise(resolve => window.finish = () => resolve({identity: body.identity, turns: []}));
+              });
+              window.target = {tab:'@1',pane:'%1',identity:'one'};
+              reader.update(target, true, {state:'working'}, '');
+            }''')
+            page.evaluate("now += 1000; reader.update(target, true, {state:'working'}, '')")
+            self.assertEqual(page.evaluate('requests.length'), 1)
+            page.evaluate('finish()')
+            page.wait_for_function('!reader.loading')
+            page.evaluate("reader.update(target, true, {state:'working'}, '')")
+            self.assertEqual(page.evaluate('requests.length'), 2)
+            page.evaluate('finish()')
+            page.wait_for_function('!reader.loading')
+            page.evaluate("now += 100; reader.update(target, true, {state:'ready'}, '')")
+            self.assertEqual(page.evaluate('requests.length'), 3)
+            page.evaluate('finish()')
+            page.wait_for_function('!reader.loading')
+            page.evaluate("now += 1000; reader.update(target, true, {state:'ready'}, '')")
+            self.assertEqual(page.evaluate('requests.length'), 3)
+            page.evaluate("now += 2000; reader.update(target, true, {state:'ready'}, '')")
+            self.assertEqual(page.evaluate('requests.length'), 4)
+            browser.close()
+
     def test_late_subagent_response_cannot_fill_replacement_conversation(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
